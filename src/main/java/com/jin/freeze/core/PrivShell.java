@@ -1,18 +1,25 @@
 package com.jin.freeze.core;
 
 import android.content.pm.PackageManager;
+import android.os.SystemClock;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import rikka.shizuku.Shizuku;
 
 /**
  * 需要特权执行的命令统一入口：root 优先，没有 root 时走 Shizuku。
  * 两个通道都不可用时返回明确提示，不再静默失败。
+ *
+ * 判定口径：
+ * - 只缓存「已通过」的结果；失败结果带 2.5s TTL，过期后下次调用会重新探测，
+ *   避免授权管理器的弹窗还没点/刚拒绝一次就把整个进程永久钉死在「未授权」。
+ * - 每次探测都记下最后的 Result，UI 可区分「超时」「被拒绝」「su 不存在」。
  */
 public final class PrivShell {
 
@@ -33,7 +40,10 @@ public final class PrivShell {
     }
 
     private static final Object LOCK = new Object();
+    private static final long NONE_TTL_MS = 2500;
     private static volatile Mode cached;
+    private static volatile long failedAt;
+    private static volatile Result last;
     private static volatile boolean detecting;
 
     private PrivShell() {
@@ -44,31 +54,69 @@ public final class PrivShell {
         return cached;
     }
 
+    /** 清掉缓存，下一次 mode() 会真正重新探测（授权完成后调用）。 */
     public static void reset() {
         synchronized (LOCK) {
             cached = null;
+            failedAt = 0;
         }
+    }
+
+    public static boolean detecting() {
+        return detecting;
+    }
+
+    /** 最近一次探测的原始结果，用于区分超时 / 拒绝。 */
+    public static Result last() {
+        return last;
+    }
+
+    /** 失败原因的人话说明。 */
+    public static String failureHint() {
+        Result r = last;
+        if (r == null) {
+            return "尚未检测";
+        }
+        if (r.timeout) {
+            return "su 响应超时（授权弹窗可能还没确认）";
+        }
+        if (r.out == null || r.out.isEmpty()) {
+            return "su 被拒绝或不可用";
+        }
+        return r.out;
     }
 
     /** 在 IO 线程调用：首次会尝试 su，失败再看 Shizuku。 */
     public static Mode mode() {
+        return mode(false);
+    }
+
+    /** force=true：忽略失败缓存立即重测；已通过的结果不会重复探测。 */
+    public static Mode mode(boolean force) {
         Mode m = cached;
-        if (m != null) {
+        if (m == Mode.ROOT || m == Mode.SHIZUKU) {
             return m;
         }
         synchronized (LOCK) {
-            if (cached != null) {
-                return cached;
+            m = cached;
+            if (m == Mode.ROOT || m == Mode.SHIZUKU) {
+                return m;
+            }
+            if (!force && m == Mode.NONE
+                    && SystemClock.elapsedRealtime() - failedAt < NONE_TTL_MS) {
+                return m;
             }
             detecting = true;
             try {
                 Result r = runLocal(new String[]{"su", "-c", "id"}, 8);
+                last = r;
                 if (r.out != null && r.out.contains("uid=0")) {
                     cached = Mode.ROOT;
                 } else if (shizukuGranted()) {
                     cached = Mode.SHIZUKU;
                 } else {
                     cached = Mode.NONE;
+                    failedAt = SystemClock.elapsedRealtime();
                 }
             } finally {
                 detecting = false;
@@ -117,23 +165,49 @@ public final class PrivShell {
         }
     }
 
+    /**
+     * 读流放到独立线程，主线程只等 waitFor 的超时：
+     * su 在等授权弹窗时 stdin/stdout 都不会 EOF，先读后等会导致永久卡死。
+     */
     private static Result runLocal(String[] argv, int timeoutSeconds) {
         Process p = null;
         try {
             p = new ProcessBuilder(argv).redirectErrorStream(true).start();
-            StringBuilder sb = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    sb.append(line).append('\n');
+            final Process proc = p;
+            final StringBuilder sb = new StringBuilder();
+            final AtomicReference<Throwable> readError = new AtomicReference<>();
+            Thread reader = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(
+                        new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        synchronized (sb) {
+                            sb.append(line).append('\n');
+                        }
+                    }
+                } catch (Throwable e) {
+                    readError.set(e);
                 }
-            }
+            });
+            reader.setDaemon(true);
+            reader.start();
             if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 p.destroy();
-                return new Result(-1, sb.toString(), true);
+                String out;
+                synchronized (sb) {
+                    out = sb.toString();
+                }
+                return new Result(-1, out, true);
             }
-            return new Result(p.exitValue(), sb.toString().trim(), false);
+            reader.join(500);
+            if (readError.get() != null && sb.length() == 0) {
+                return new Result(-1, readError.get().getClass().getSimpleName(), false);
+            }
+            String out;
+            synchronized (sb) {
+                out = sb.toString();
+            }
+            return new Result(p.exitValue(), out.trim(), false);
         } catch (Exception e) {
             if (p != null) {
                 p.destroy();

@@ -45,19 +45,37 @@ public final class Shell {
         Process p = null;
         try {
             p = new ProcessBuilder(argv).redirectErrorStream(true).start();
-            StringBuilder sb = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    sb.append(line).append('\n');
+            final Process proc = p;
+            final StringBuilder sb = new StringBuilder();
+            // 读流必须异步：su 等授权弹窗时不会 EOF，先读后等会永久卡住
+            Thread reader = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(
+                        new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        synchronized (sb) {
+                            sb.append(line).append('\n');
+                        }
+                    }
+                } catch (Exception ignored) {
                 }
-            }
+            });
+            reader.setDaemon(true);
+            reader.start();
             if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 p.destroy();
-                return new Result(-1, sb.toString(), true);
+                String out;
+                synchronized (sb) {
+                    out = sb.toString();
+                }
+                return new Result(-1, out, true);
             }
-            return new Result(p.exitValue(), sb.toString().trim(), false);
+            reader.join(500);
+            String out;
+            synchronized (sb) {
+                out = sb.toString();
+            }
+            return new Result(p.exitValue(), out.trim(), false);
         } catch (Exception e) {
             if (p != null) {
                 p.destroy();

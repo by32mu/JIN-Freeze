@@ -99,6 +99,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
     private static final String KEY_CURRENT_TAB = "current_tab";
+    /** 默认标签：进入冻结列表时优先停在这里；空表示没设置，按顺序落到第一个可见标签。 */
+    private static final String KEY_DEFAULT_TAB = "default_tab";
     /** 是否允许在列表区域左右滑动切换标签；关掉后只能点标签。 */
     private static final String KEY_TAB_SWIPE = "tab_swipe";
     /** 半屏浮层高度：拖把手松手后落盘，与布局设置那套参数互不影响。 */
@@ -289,6 +291,10 @@ public class FreezeListActivity extends BaseActivity {
     private float swipeDownX;
     private float swipeDownY;
     private boolean swipeTracking;
+    /** 标签滑动切页动画进行中：不接管新的横向手势，避免叠加。 */
+    private boolean tabAnimating;
+    /** 曾经离开前台：下次 onStart 视为「重新进入列表」，落回默认标签。 */
+    private boolean wasStopped;
 
     /** 启动过渡：半屏外整屏压暗的那层（布局内，位于面板之下）。 */
     private View introScrimView;
@@ -304,6 +310,8 @@ public class FreezeListActivity extends BaseActivity {
     private boolean introIconsLight;
     /** 未授权提示框（启动检查与布局设置共用），避免同一时刻叠出两个。 */
     private android.app.Dialog privDialog;
+    /** 布局设置标题里「冻结权限：X」的刷新入口，授权状态变化时直接重绘。 */
+    private Runnable privTitleRefresh;
     private static final String TAG_INTRO = "FW_INTRO";
     private final Runnable introReveal = this::startIntroReveal;
     private final Runnable introSafety = this::guardIntroStuck;
@@ -1086,6 +1094,8 @@ public class FreezeListActivity extends BaseActivity {
         if (panelMode) {
             schedulePanelStatusTone();
         }
+        // 桌面图标再次拉起也算新一次进入：落回默认标签
+        resetToDefaultTab();
     }
 
     /** 入口带的一次性标记：消费掉，避免重建时重复播放。 */
@@ -1535,7 +1545,7 @@ public class FreezeListActivity extends BaseActivity {
             decor.removeCallbacks(toneAfterTouch);
             decor.postDelayed(toneAfterTouch, 80);
         }
-        if (!tabSwipeEnabled || moveMode || editMode || working) {
+        if (!tabSwipeEnabled || moveMode || editMode || working || tabAnimating) {
             return super.dispatchTouchEvent(ev);
         }
         switch (ev.getActionMasked()) {
@@ -1556,27 +1566,104 @@ public class FreezeListActivity extends BaseActivity {
                     }
                 }
                 if (swipeTracking) {
+                    followTabSwipe(ev.getX() - swipeDownX);
                     return true;
                 }
                 break;
             case android.view.MotionEvent.ACTION_UP:
                 if (swipeTracking) {
-                    float dx = ev.getX() - swipeDownX;
-                    if (Math.abs(dx) > Ui.dp(this, 56)) {
-                        switchTabBySwipe(dx < 0 ? 1 : -1);
-                    }
+                    settleTabSwipe(ev.getX() - swipeDownX);
                     swipeTracking = false;
                     return true;
                 }
                 swipeTracking = false;
                 break;
             case android.view.MotionEvent.ACTION_CANCEL:
+                if (swipeTracking) {
+                    // 手势被打断也回到原位，不留半截位移
+                    settleTabSwipe(0f);
+                }
                 swipeTracking = false;
                 break;
             default:
                 break;
         }
         return super.dispatchTouchEvent(ev);
+    }
+
+    /** 跟手拖动：有相邻标签时列表按手指位移移动，边缘只剩 1/4 位移做阻尼。 */
+    private void followTabSwipe(float dx) {
+        View v = tabSlideView();
+        if (v == null) {
+            return;
+        }
+        int dir = dx < 0 ? 1 : -1;
+        float move = hasTabNeighbor(dir) ? dx : dx * 0.25f;
+        float cap = v.getWidth() * 0.6f;
+        v.setTranslationX(Math.max(-cap, Math.min(cap, move)));
+    }
+
+    /**
+     * 松手收尾：过阈值且有相邻标签就滑出 → 切换 → 从另一侧滑入；
+     * 否则回弹。全程位移动画，不做瞬间跳变。
+     */
+    private void settleTabSwipe(float dx) {
+        final View v = tabSlideView();
+        if (v == null) {
+            return;
+        }
+        final int dir = dx < 0 ? 1 : -1;
+        boolean canSwitch = Math.abs(dx) > Ui.dp(this, 56) && hasTabNeighbor(dir);
+        android.util.Log.d("FW_TAB", "swipe dx=" + Math.round(dx) + " dir=" + dir
+                + " switch=" + canSwitch);
+        if (!canSwitch) {
+            v.animate().translationX(0f)
+                    .setDuration(180)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .start();
+            return;
+        }
+        final float w = v.getWidth();
+        tabAnimating = true;
+        v.animate().translationX(dir > 0 ? -w : w)
+                .setDuration(150)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        tabAnimating = false;
+                        return;
+                    }
+                    switchTabBySwipe(dir);
+                    v.setTranslationX(dir > 0 ? w : -w);
+                    v.animate().translationX(0f)
+                            .setDuration(190)
+                            .setInterpolator(new DecelerateInterpolator())
+                            .withEndAction(() -> tabAnimating = false)
+                            .start();
+                })
+                .start();
+    }
+
+    /** 横向滑动动画作用的视图（列表区域）。 */
+    private View tabSlideView() {
+        return scrollView;
+    }
+
+    /** 当前标签在 dir 方向（-1 上一条 / 1 下一条）是否还有可见标签。 */
+    private boolean hasTabNeighbor(int dir) {
+        List<Tab> visible = new ArrayList<>();
+        for (Tab t : tabs) {
+            if (t.visible) {
+                visible.add(t);
+            }
+        }
+        for (int i = 0; i < visible.size(); i++) {
+            if (visible.get(i).id.equals(currentTabId)) {
+                int next = i + dir;
+                return next >= 0 && next < visible.size();
+            }
+        }
+        return false;
     }
 
     /** 触点是否落在列表滚动区域内，且不在悬浮按钮上。 */
@@ -1633,10 +1720,34 @@ public class FreezeListActivity extends BaseActivity {
         super.onResume();
         // 每次回到页面都重新读一次系统真值
         reload();
+        // 授权管理器里点完「允许」回到凚时自动重测：失败缓存有 TTL，这里强制重来一次
+        if (privDialog != null && privDialog.isShowing()) {
+            recheckPrivilegeAsync(true, true, null);
+        } else if (PrivShell.peek() == null || PrivShell.peek() == PrivShell.Mode.NONE) {
+            recheckPrivilegeAsync(false, false, null);
+        }
         // 半屏显示期间状态栏压在桌面上，按壁纸明暗决定图标深浅（过渡中不压，交给过渡自己控）
         if (panelMode && !introPlaying) {
             schedulePanelStatusTone();
         }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (wasStopped) {
+            wasStopped = false;
+            // 从后台回前台算新一次进入，落回默认标签；进选应用页这类内部跳转不算
+            if (!pickerOpen && !isFinishing()) {
+                resetToDefaultTab();
+            }
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        wasStopped = true;
     }
 
     @Override
@@ -1800,10 +1911,39 @@ public class FreezeListActivity extends BaseActivity {
             tabs.add(Math.min(1, tabs.size()), t);
         }
         loadAppTabs();
-        currentTabId = prefs().getString(KEY_CURRENT_TAB, TAB_USER);
-        Tab cur = findTab(currentTabId);
-        if (cur == null || !cur.visible) {
-            currentTabId = firstVisibleTabId();
+        // 每次进入列表都落回默认标签（没设置过就按原来的第一个可见标签）
+        currentTabId = defaultTabId();
+        prefs().edit().putString(KEY_CURRENT_TAB, currentTabId).apply();
+    }
+
+    /** 默认标签：设置过且仍然可见才生效，否则回落到第一个可见标签。 */
+    private String defaultTabId() {
+        String id = prefs().getString(KEY_DEFAULT_TAB, null);
+        if (id != null) {
+            Tab t = findTab(id);
+            if (t != null && t.visible) {
+                return id;
+            }
+        }
+        return firstVisibleTabId();
+    }
+
+    /** 回到默认标签（切换列表内容与标签条）；已在默认标签上则不动。 */
+    private void resetToDefaultTab() {
+        String id = defaultTabId();
+        android.util.Log.d("FW_TAB", "reset -> " + id + " (from " + currentTabId + ")");
+        if (id.equals(currentTabId)) {
+            return;
+        }
+        currentTabId = id;
+        prefs().edit().putString(KEY_CURRENT_TAB, id).apply();
+        android.util.Log.d("FW_TAB", "select " + id);
+        setSysHintVisible();
+        renderTabBar();
+        render();
+        if (scrollView != null) {
+            scrollView.setTranslationX(0f);
+            scrollView.scrollTo(0, 0);
         }
     }
 
@@ -1946,6 +2086,7 @@ public class FreezeListActivity extends BaseActivity {
         renderTabBar();
         render();
         if (scrollView != null) {
+            scrollView.setTranslationX(0f);
             scrollView.scrollTo(0, 0);
         }
     }
@@ -3719,7 +3860,7 @@ public class FreezeListActivity extends BaseActivity {
         tabTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
 
         TextView tabHint = new TextView(this);
-        tabHint.setText("取消勾选即隐藏该标签（其中的应用数据保留）；所有标签都可改名，删除仅限自定义标签，删除后应用回到原归属。");
+        tabHint.setText("取消勾选即隐藏该标签（其中的应用数据保留）；所有标签都可改名，删除仅限自定义标签，删除后应用回到原归属。\n「设为默认」决定每次进入列表停在哪一栏，再点「默认」可取消。");
         tabHint.setTextSize(10);
         tabHint.setTextColor(getColor(R.color.text_secondary));
         tabHint.setPadding(0, 0, 0, Ui.dp(this, 4));
@@ -3778,6 +3919,34 @@ public class FreezeListActivity extends BaseActivity {
                 });
                 row.addView(cb, new LinearLayout.LayoutParams(
                         0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                // 默认标签只在入口按钮上体现状态，标签条本身不加任何标记
+                final boolean isDefault = t.id.equals(defaultTabId());
+                TextView def = new TextView(this);
+                def.setText(isDefault ? "默认" : "设为默认");
+                def.setTextSize(11);
+                def.setTextColor(getColor(isDefault ? R.color.blue : R.color.text_secondary));
+                def.setTypeface(null, isDefault ? android.graphics.Typeface.BOLD
+                        : android.graphics.Typeface.NORMAL);
+                def.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
+                if (!t.visible) {
+                    // 隐藏的标签不能当默认，入口保持可读但不可点
+                    def.setAlpha(0.4f);
+                    row.addView(def);
+                } else {
+                    def.setOnClickListener(v -> {
+                        if (t.id.equals(defaultTabId())) {
+                            prefs().edit().remove(KEY_DEFAULT_TAB).apply();
+                            Toast.makeText(this, "已取消默认，进入时回到第一个标签",
+                                    Toast.LENGTH_SHORT).show();
+                        } else {
+                            prefs().edit().putString(KEY_DEFAULT_TAB, t.id).apply();
+                            Toast.makeText(this, "「" + t.name + "」已设为默认标签",
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                        refreshTabSettings[0].run();
+                    });
+                    row.addView(def);
+                }
                 // 内置标签也能改名（只改显示名，不影响它承载用户/系统应用的性质）；删除仍只限自定义标签
                 TextView rename = new TextView(this);
                 rename.setText("改名");
@@ -4882,6 +5051,7 @@ public class FreezeListActivity extends BaseActivity {
             view.setText(sb);
         };
         refresh[0].run();
+        privTitleRefresh = refresh[0];
         IO.execute(() -> {
             PrivShell.mode();
             main.post(refresh[0]);
@@ -4955,9 +5125,8 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView message = new TextView(this);
-        message.setText("未获得 root，也未安装 Shizuku。\n\n"
-                + "安装并启动 Shizuku 后回到这里点击授权即可；"
-                + "若设备已有 root，请确认已允许本应用使用超级用户权限。");
+        message.setText("安装并启动 Shizuku 后回到凚点击授权即可；\n\n"
+                + "若有 root，请授权，并强制停止凚后再启动。");
         message.setTextSize(12);
         message.setLineSpacing(Ui.dp(this, 2), 1f);
         message.setTextColor(getColor(R.color.text_secondary));
@@ -4970,14 +5139,40 @@ public class FreezeListActivity extends BaseActivity {
         ok.setText("知道了");
         ok.setTextSize(13);
         ok.setTypeface(null, android.graphics.Typeface.BOLD);
-        ok.setTextColor(getColor(R.color.blue));
+        ok.setTextColor(getColor(R.color.text_secondary));
         ok.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        ok.setPadding(Ui.dp(this, 10), Ui.dp(this, 10), 0, Ui.dp(this, 8));
+        ok.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), 0, Ui.dp(this, 8));
         ok.setOnClickListener(v -> dialog.dismiss());
+
+        final TextView retry = new TextView(this);
+        retry.setText("重新检测");
+        retry.setTextSize(13);
+        retry.setTypeface(null, android.graphics.Typeface.BOLD);
+        retry.setTextColor(getColor(R.color.blue));
+        retry.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        retry.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), Ui.dp(this, 12), Ui.dp(this, 8));
+        retry.setOnClickListener(v -> {
+            retry.setEnabled(false);
+            retry.setText("检测中…");
+            recheckPrivilegeAsync(true, true, () -> {
+                retry.setEnabled(true);
+                retry.setText("重新检测");
+                if (!isFinishing() && privDialog != null && privDialog.isShowing()) {
+                    Toast.makeText(this, "仍未授权：" + PrivShell.failureHint(),
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        actions.addView(retry);
+        actions.addView(ok);
         LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         olp.topMargin = Ui.dp(this, 2);
-        root.addView(ok, olp);
+        root.addView(actions, olp);
 
         dialog.setContentView(root);
         // 首帧就按圆角收窄落位，onShow 再兜一次，避免先出大块默认底再跳
@@ -5014,9 +5209,34 @@ public class FreezeListActivity extends BaseActivity {
         });
     }
 
+    /**
+     * 重新探测权限：force=false 走缓存，force=true 立即重测。
+     * 通过时关掉未授权弹窗并刷新「冻结权限」标题；仍失败时回调 onStillNone。
+     */
+    private void recheckPrivilegeAsync(boolean force, boolean dismissWhenGranted,
+                                       Runnable onStillNone) {
+        IO.execute(() -> {
+            PrivShell.Mode mode = PrivShell.mode(force);
+            main.post(() -> {
+                if (mode != PrivShell.Mode.NONE) {
+                    if (dismissWhenGranted && privDialog != null && privDialog.isShowing()) {
+                        privDialog.dismiss();
+                    }
+                    if (privTitleRefresh != null) {
+                        privTitleRefresh.run();
+                    }
+                    return;
+                }
+                if (onStillNone != null) {
+                    onStillNone.run();
+                }
+            });
+        });
+    }
+
     /** 备份文本里随名单一起带走的设置键（不含包名、顺序这类多行数据）。 */
     private static final String[] BACKUP_SETTING_KEYS = {
-            "tabs", "app_tabs", "current_tab", "custom_order",
+            "tabs", "app_tabs", "current_tab", "default_tab", "custom_order",
             "grid_columns", "grid_icon_dp", "grid_icon_manual", "grid_show_name",
             "grid_move_mode", "fab_dx", "fab_dy", "fab_size", "show_frozen_toast",
             "panel_height_dp", "panel_handle_enabled", "panel_hide_recents",

@@ -9,6 +9,19 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowBackground">@color/page_bg</item>
+        <!-- 系统 AlertDialog / 列表选择框 / 输入框统一用圆角窗口底，避免落到 ROM 的方角底板 -->
+        <item name="alertDialogTheme">@style/Theme.Jin.Alert</item>
+        <item name="android:alertDialogTheme">@style/Theme.Jin.Alert</item>
+        <item name="materialAlertDialogTheme">@style/Theme.Jin.Alert</item>
+    </style>
+
+    <!-- 弹框：四角 16dp 圆角，与自绘弹层保持一致 -->
+    <style name="Theme.Jin.Alert" parent="Theme.MaterialComponents.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:backgroundDimAmount">0.42</item>
+        <item name="android:windowMinWidthMajor">@android:dimen/dialog_min_width_major</item>
+        <item name="android:windowMinWidthMinor">@android:dimen/dialog_min_width_minor</item>
     </style>
 
     <!-- 入口壳：启动预览/过渡帧统一深黑，避免拉起时露出白底 -->
@@ -18,6 +31,10 @@
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowDisablePreview">true</item>
+        <!-- Android 12+ 系统 Splash 的背景/图标：不显式声明时按 colorBackground 取白色，
+             会在应用打开动画里铺一张整屏白卡；与冰箱一致压成全透明 -->
+        <item name="android:windowSplashScreenBackground">@android:color/transparent</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
@@ -30,6 +47,10 @@
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowDisablePreview">true</item>
+        <!-- 半屏面板由桌面图标拉起会新建 task，A12+ 会为它建 Splash 起始窗口；
+             不声明 windowSplashScreenBackground 时底色回落到 Material 的白色 colorBackground -->
+        <item name="android:windowSplashScreenBackground">@android:color/transparent</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
@@ -60,6 +81,9 @@
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowDisablePreview">true</item>
+        <!-- 同上：全屏形态也由入口壳拉起，Splash 底色压透明 -->
+        <item name="android:windowSplashScreenBackground">@android:color/transparent</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

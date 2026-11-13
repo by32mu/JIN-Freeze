@@ -6,9 +6,7 @@ import android.os.Bundle;
 
 /**
  * LSPosed 模块页的「打开」入口（intent-filter 带 de.robv.android.xposed.category.MODULE_SETTINGS）。
- *
- * 桌面图标用 activity-alias 承载，可以被「隐藏桌面图标」关掉；这里是不经过 launcher 的入口，
- * 所以隐藏图标后依然能从 LSPosed 模块列表进入凚。
+ * 只负责转到桌面图标同一个入口 Activity，权限检查与过渡都由它统一处理。
  */
 public class ModuleEntryActivity extends Activity {
 
