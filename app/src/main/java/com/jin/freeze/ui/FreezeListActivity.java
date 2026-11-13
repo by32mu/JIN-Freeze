@@ -117,6 +117,12 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_FULLSCREEN_OPEN = "fullscreen_open";
     /** 半屏上方非面板区域的遮罩强度：0=近乎全透明，100=最模糊；只作用于半屏。 */
     private static final String KEY_BLUR = "backdrop_blur";
+    /** 半屏面板本体档位：0=完全透明（背后看得清）、50=最模糊、100=实心。 */
+    private static final String KEY_SURFACE = "surface";
+    /** 底部雪花按钮底板档位：与面板同一套语义，单独记忆。 */
+    private static final String KEY_FAB_SURFACE = "fab_surface";
+    /** 默认实心：与装机现有观感一致，升级后不突然变样。 */
+    private static final int SURFACE_SOLID = 100;
     private static final String TAB_USER = "user";
     private static final String TAB_SYSTEM = "system";
     /** 图标长按出操作单的判定时长：350–450ms 档，比系统默认 500ms 短，按住一秒内稳出。 */
@@ -359,6 +365,8 @@ public class FreezeListActivity extends BaseActivity {
         if (panelMode) {
             panelHandleEnabled = prefs().getBoolean(KEY_PANEL_HANDLE, true);
             setupPanel();
+            applyPanelSurface();
+            applyFabSurface();
             applyPanelFabPosition();
         } else {
             fabGroup.post(this::applyFabPosition);
@@ -455,6 +463,34 @@ public class FreezeListActivity extends BaseActivity {
                 w.setAttributes(attrs);
             } catch (Exception ignored) {
             }
+        }
+    }
+
+    /** 半屏面板本体：只动面板自己的背景透明度，不碰上方遮罩的深浅与窗口模糊。 */
+    private void applyPanelSurface() {
+        applySurface(findViewById(R.id.panel),
+                prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID));
+    }
+
+    /** 底部雪花按钮底板：与面板同一套档位，值单独记忆；点按/长按行为不变。 */
+    private void applyFabSurface() {
+        int pct = prefs().getInt(lk(KEY_FAB_SURFACE), SURFACE_SOLID);
+        applySurface(fabGroup, pct);
+        applySurface(unfreezeFab, pct);
+    }
+
+    /**
+     * 档位：0 = 完全透明（背后看得清）、50 = 磨砂（透出背后并压暗）、100 = 完全不透明（实心）。
+     * 只改视图自身背景的 alpha：窗口背景模糊与遮罩颜色都不动，所以半屏外那层不受影响。
+     */
+    private void applySurface(View v, int pct) {
+        if (v == null) {
+            return;
+        }
+        int p = Math.max(0, Math.min(100, pct));
+        android.graphics.drawable.Drawable bg = v.getBackground();
+        if (bg != null) {
+            bg.mutate().setAlpha(Math.round(255f * p / 100f));
         }
     }
 
@@ -2992,6 +3028,75 @@ public class FreezeListActivity extends BaseActivity {
 
             box.addView(blurLabel);
             box.addView(blurBar);
+
+            // 半屏面板本体：0=完全透明、50=最模糊、100=实心；只改面板自己，外面那层遮罩不动
+            final TextView panelLabel = new TextView(this);
+            panelLabel.setTextSize(11);
+            panelLabel.setTextColor(getColor(R.color.text_secondary));
+            panelLabel.setPadding(0, Ui.dp(this, 10), 0, 0);
+
+            final SeekBar panelBar = new SeekBar(this);
+            panelBar.setMax(100);
+            int panelPct = Math.max(0, Math.min(100,
+                    prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
+            panelBar.setProgress(panelPct);
+            panelLabel.setText("半屏面板：" + panelPct + "%（0 全透明 · 50 模糊 · 100 实心）");
+            panelBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                    if (!fromUser) {
+                        return;
+                    }
+                    prefs().edit().putInt(lk(KEY_SURFACE), p).apply();
+                    panelLabel.setText("半屏面板：" + p + "%（0 全透明 · 50 模糊 · 100 实心）");
+                    applyPanelSurface();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar sb) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                }
+            });
+
+            // 底部雪花按钮底板：与面板同一套档位语义，值单独记忆
+            final TextView fabAlphaLabel = new TextView(this);
+            fabAlphaLabel.setTextSize(11);
+            fabAlphaLabel.setTextColor(getColor(R.color.text_secondary));
+            fabAlphaLabel.setPadding(0, Ui.dp(this, 10), 0, 0);
+
+            final SeekBar fabAlphaBar = new SeekBar(this);
+            fabAlphaBar.setMax(100);
+            int fabAlphaPct = Math.max(0, Math.min(100,
+                    prefs().getInt(lk(KEY_FAB_SURFACE), SURFACE_SOLID)));
+            fabAlphaBar.setProgress(fabAlphaPct);
+            fabAlphaLabel.setText("雪花按钮：" + fabAlphaPct + "%（0 全透明 · 50 模糊 · 100 实心）");
+            fabAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                    if (!fromUser) {
+                        return;
+                    }
+                    prefs().edit().putInt(lk(KEY_FAB_SURFACE), p).apply();
+                    fabAlphaLabel.setText("雪花按钮：" + p + "%（0 全透明 · 50 模糊 · 100 实心）");
+                    applyFabSurface();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar sb) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                }
+            });
+
+            box.addView(panelLabel);
+            box.addView(panelBar);
+            box.addView(fabAlphaLabel);
+            box.addView(fabAlphaBar);
         }
 
         // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
