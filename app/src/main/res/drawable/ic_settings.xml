@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <!-- 纯线条齿轮：与 ic_search / ic_add 同为细线风格，描边不上填充块 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M10.46,5.43 L10.83,5.35 L13.17,5.35 L13.54,5.43 L15.56,6.26 L15.87,6.47 L17.53,8.13 L17.74,8.44 L18.57,10.46 L18.65,10.83 L18.65,13.17 L18.57,13.54 L17.74,15.56 L17.53,15.87 L15.87,17.53 L15.56,17.74 L13.54,18.57 L13.17,18.65 L10.83,18.65 L10.46,18.57 L8.44,17.74 L8.13,17.53 L6.47,15.87 L6.26,15.56 L5.43,13.54 L5.35,13.17 L5.35,10.83 L5.43,10.46 L6.26,8.44 L6.47,8.13 L8.13,6.47 L8.44,6.26 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.7"
+        android:pathData="M9.15,12 a2.85,2.85 0 1,0 5.7,0 a2.85,2.85 0 1,0 -5.7,0" />
+</vector>

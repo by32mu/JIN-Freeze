@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="blue">#6D93F8</color>
+    <color name="blue_dark">#3A5EA8</color>
+    <color name="blue_light">#33477A</color>
+    <color name="page_bg">#121317</color>
+    <color name="card_bg">#1C1F24</color>
+    <color name="status_bg">#1F2633</color>
+    <color name="text_primary">#E6E8EB</color>
+    <color name="text_secondary">#9AA0A8</color>
+    <!-- 深色模式下不能还是纯黑，用高对比浅色 -->
+    <color name="header_icon_black">#F2F3F5</color>
+    <color name="panel_scrim">#66000000</color>
+    <color name="divider">#2A2E35</color>
+    <color name="soft_bg">#232B3A</color>
+</resources>

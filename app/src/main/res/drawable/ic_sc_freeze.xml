@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 静态快捷方式：一键冻结。雪花，线条风格与顶栏图标一致 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4E7CF6"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12,3.5V20.5M4.65,7.75L19.35,16.25M19.35,7.75L4.65,16.25M12,6.5L14,4.84M12,6.5L10,4.84M12,17.5L14,19.16M12,17.5L10,19.16M16.76,9.25L19.21,10.14M16.76,9.25L17.21,6.69M7.24,14.75L4.79,13.86M7.24,14.75L6.79,17.31M7.24,9.25L6.79,6.69M7.24,9.25L4.79,10.14M16.76,14.75L17.21,17.31M16.76,14.75L19.21,13.86" />
+</vector>

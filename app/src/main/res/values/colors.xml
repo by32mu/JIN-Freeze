@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="blue">#4E7CF6</color>
+    <color name="blue_dark">#2F5AD8</color>
+    <color name="blue_light">#5B8DEF</color>
+    <color name="page_bg">#F4F6FA</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="status_bg">#E8F0FA</color>
+    <color name="text_primary">#1F2329</color>
+    <color name="text_secondary">#8A9099</color>
+    <!-- 解冻图标：浅色模式纯黑，深色模式走高对比浅色 -->
+    <color name="header_icon_black">#000000</color>
+    <!-- 半屏浮层上方遮罩：透出桌面，同时保证底部面板可读 -->
+    <color name="panel_scrim">#33000000</color>
+    <color name="divider">#EDEFF3</color>
+    <color name="soft_bg">#EBF1FE</color>
+</resources>

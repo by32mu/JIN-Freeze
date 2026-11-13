@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 静态快捷方式：打开冻结列表。列表条目样式，行首方块 + 文本行 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- 行首方块 -->
+    <path
+        android:fillColor="#4E7CF6"
+        android:pathData="M3.9,5H5.3A0.9,0.9 0 0 1 6.2,5.9V7.3A0.9,0.9 0 0 1 5.3,8.2H3.9A0.9,0.9 0 0 1 3,7.3V5.9A0.9,0.9 0 0 1 3.9,5Z" />
+    <path
+        android:fillColor="#4E7CF6"
+        android:pathData="M3.9,10.4H5.3A0.9,0.9 0 0 1 6.2,11.3V12.7A0.9,0.9 0 0 1 5.3,13.6H3.9A0.9,0.9 0 0 1 3,12.7V11.3A0.9,0.9 0 0 1 3.9,10.4Z" />
+    <path
+        android:fillColor="#4E7CF6"
+        android:pathData="M3.9,15.8H5.3A0.9,0.9 0 0 1 6.2,16.7V18.1A0.9,0.9 0 0 1 5.3,19H3.9A0.9,0.9 0 0 1 3,18.1V16.7A0.9,0.9 0 0 1 3.9,15.8Z" />
+
+    <!-- 三行文本 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4E7CF6"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M9.4,6.6H20.6M9.4,12H20.6M9.4,17.4H20.6" />
+</vector>

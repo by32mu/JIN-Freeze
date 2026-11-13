@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="20dp"
+    android:height="20dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 打开的锁：一键解冻。细线条版本，线宽与冻结图标/首页图标一致 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M8,12H16A2,2 0 0 1 18,14V20A2,2 0 0 1 16,22H8A2,2 0 0 1 6,20V14A2,2 0 0 1 8,12Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M13,12V8A4,4 0 0 1 21,8V9" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M12,14.6a1.4,1.4 0 1 1 0,2.8a1.4,1.4 0 1 1 0,-2.8z" />
+</vector>

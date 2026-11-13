@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 二级页顶栏：与首页 KSU 状态条同一套视觉（#E8F0FA/#1F2633、圆角 16dp、左右各留 14dp） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:left="14dp" android:right="14dp">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/status_bg" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+</layer-list>

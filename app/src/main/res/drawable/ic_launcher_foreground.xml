@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标前景：冰蓝雪花，画在 108dp 画布的安全区内，深浅色桌面下都清晰 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="0">
+        <path
+            android:pathData="M54,30 L54,78"
+            android:strokeColor="#EAF6FF"
+            android:strokeLineCap="round"
+            android:strokeWidth="4" />
+        <path
+            android:pathData="M54,37 L49,42 M54,37 L59,42 M54,71 L49,66 M54,71 L59,66"
+            android:strokeColor="#BFE2FF"
+            android:strokeLineCap="round"
+            android:strokeWidth="3.6" />
+    </group>
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="60">
+        <path
+            android:pathData="M54,30 L54,78"
+            android:strokeColor="#EAF6FF"
+            android:strokeLineCap="round"
+            android:strokeWidth="4" />
+        <path
+            android:pathData="M54,37 L49,42 M54,37 L59,42 M54,71 L49,66 M54,71 L59,66"
+            android:strokeColor="#BFE2FF"
+            android:strokeLineCap="round"
+            android:strokeWidth="3.6" />
+    </group>
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="120">
+        <path
+            android:pathData="M54,30 L54,78"
+            android:strokeColor="#EAF6FF"
+            android:strokeLineCap="round"
+            android:strokeWidth="4" />
+        <path
+            android:pathData="M54,37 L49,42 M54,37 L59,42 M54,71 L49,66 M54,71 L59,66"
+            android:strokeColor="#BFE2FF"
+            android:strokeLineCap="round"
+            android:strokeWidth="3.6" />
+    </group>
+
+    <!-- 中心一点冷光，让雪花在深色背景上更立体 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,53.2 a0.9,0.9 0 1,0 0.01,0 z" />
+</vector>

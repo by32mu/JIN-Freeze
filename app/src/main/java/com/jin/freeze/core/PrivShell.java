@@ -1,0 +1,190 @@
+package com.jin.freeze.core;
+
+import android.content.pm.PackageManager;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
+
+import rikka.shizuku.Shizuku;
+
+/**
+ * 需要特权执行的命令统一入口：root 优先，没有 root 时走 Shizuku。
+ * 两个通道都不可用时返回明确提示，不再静默失败。
+ */
+public final class PrivShell {
+
+    public enum Mode {
+        ROOT, SHIZUKU, NONE
+    }
+
+    public static final class Result {
+        public final int code;
+        public final String out;
+        public final boolean timeout;
+
+        Result(int code, String out, boolean timeout) {
+            this.code = code;
+            this.out = out;
+            this.timeout = timeout;
+        }
+    }
+
+    private static final Object LOCK = new Object();
+    private static volatile Mode cached;
+    private static volatile boolean detecting;
+
+    private PrivShell() {
+    }
+
+    /** 已探测到的通道；未探测过返回 null（UI 用，不触发阻塞探测）。 */
+    public static Mode peek() {
+        return cached;
+    }
+
+    public static void reset() {
+        synchronized (LOCK) {
+            cached = null;
+        }
+    }
+
+    /** 在 IO 线程调用：首次会尝试 su，失败再看 Shizuku。 */
+    public static Mode mode() {
+        Mode m = cached;
+        if (m != null) {
+            return m;
+        }
+        synchronized (LOCK) {
+            if (cached != null) {
+                return cached;
+            }
+            detecting = true;
+            try {
+                Result r = runLocal(new String[]{"su", "-c", "id"}, 8);
+                if (r.out != null && r.out.contains("uid=0")) {
+                    cached = Mode.ROOT;
+                } else if (shizukuGranted()) {
+                    cached = Mode.SHIZUKU;
+                } else {
+                    cached = Mode.NONE;
+                }
+            } finally {
+                detecting = false;
+            }
+            return cached;
+        }
+    }
+
+    public static boolean available() {
+        Mode m = mode();
+        return m != Mode.NONE;
+    }
+
+    public static String label() {
+        Mode m = cached;
+        if (m == null) {
+            return "检测中";
+        }
+        switch (m) {
+            case ROOT:
+                return "root";
+            case SHIZUKU:
+                return "Shizuku";
+            default:
+                return "未授权";
+        }
+    }
+
+    public static Result exec(String cmd, int timeoutSeconds) {
+        Mode m = mode();
+        if (m == Mode.ROOT) {
+            return runLocal(new String[]{"su", "-c", cmd}, timeoutSeconds);
+        }
+        if (m == Mode.SHIZUKU) {
+            return runShizuku(cmd, timeoutSeconds);
+        }
+        return new Result(-1, "未获得 root 或 Shizuku 权限", false);
+    }
+
+    private static boolean shizukuGranted() {
+        try {
+            return Shizuku.pingBinder()
+                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static Result runLocal(String[] argv, int timeoutSeconds) {
+        Process p = null;
+        try {
+            p = new ProcessBuilder(argv).redirectErrorStream(true).start();
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    sb.append(line).append('\n');
+                }
+            }
+            if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                p.destroy();
+                return new Result(-1, sb.toString(), true);
+            }
+            return new Result(p.exitValue(), sb.toString().trim(), false);
+        } catch (Exception e) {
+            if (p != null) {
+                p.destroy();
+            }
+            return new Result(-1, e.getClass().getSimpleName() + ": " + e.getMessage(), false);
+        }
+    }
+
+    private static Result runShizuku(String cmd, int timeoutSeconds) {
+        Process p = null;
+        try {
+            p = Shizuku.newProcess(new String[]{"sh", "-c", cmd}, null, null);
+            final Process proc = p;
+            final StringBuilder err = new StringBuilder();
+            Thread errReader = new Thread(() -> {
+                try (InputStream es = proc.getErrorStream()) {
+                    BufferedReader r = new BufferedReader(
+                            new InputStreamReader(es, StandardCharsets.UTF_8));
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        err.append(line).append('\n');
+                    }
+                } catch (Exception ignored) {
+                }
+            });
+            errReader.start();
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    sb.append(line).append('\n');
+                }
+            }
+            if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                p.destroy();
+                return new Result(-1, sb.toString(), true);
+            }
+            errReader.join(500);
+            if (err.length() > 0) {
+                if (sb.length() > 0) {
+                    sb.append('\n');
+                }
+                sb.append(err);
+            }
+            return new Result(p.exitValue(), sb.toString().trim(), false);
+        } catch (Throwable e) {
+            if (p != null) {
+                p.destroy();
+            }
+            return new Result(-1, "Shizuku 执行失败：" + e.getClass().getSimpleName(), false);
+        }
+    }
+}

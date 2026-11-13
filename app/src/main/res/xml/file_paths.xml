@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="ksudl" path="ksudl/" />
+    <cache-path name="incoming" path="incoming/" />
+    <external-files-path name="themes" path="themes/" />
+    <!-- 提取出的安装包走 FileProvider 分享给「打开方式」里的其他应用 -->
+    <external-path name="storage" path="." />
+</paths>

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <application
+        android:name=".JinApp"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Jin">
+
+        <!-- 桌面图标入口：按「全屏打开模式」分流，本身不显示界面 -->
+        <activity
+            android:name=".ui.LaunchActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="com.jin.freeze.entry"
+            android:theme="@style/Theme.Jin.Entry">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- 半屏面板形态 -->
+        <activity
+            android:name=".ui.FreezePanelActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.jin.freeze.panel"
+            android:theme="@style/Theme.Jin.Panel"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 全屏列表形态 -->
+        <activity
+            android:name=".ui.FreezeListActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 搜索入口：选择应用加入名单 -->
+        <activity
+            android:name=".ui.AppFreezeActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 快捷方式落点：打开列表 / 一键冻结 / 一键解冻 -->
+        <activity
+            android:name=".ui.QuickLaunchActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:taskAffinity="com.jin.freeze.quick"
+            android:theme="@style/Theme.Jin.Entry">
+            <intent-filter>
+                <action android:name="com.jin.freeze.action.OPEN_FREEZE_LIST" />
+                <action android:name="com.jin.freeze.action.FREEZE_ALL" />
+                <action android:name="com.jin.freeze.action.UNFREEZE_ALL" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- 老式快捷方式提供者：手势工具通过 ACTION_CREATE_SHORTCUT 枚举 -->
+        <activity
+            android:name=".ui.ShortcutProviderActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.CREATE_SHORTCUT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Shizuku：无 root 时由它代为执行 pm -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+
+</manifest>

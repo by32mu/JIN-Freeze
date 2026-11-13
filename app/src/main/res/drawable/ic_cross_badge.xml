@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 未安装状态卡角标：与对勾同尺寸、同描边、同颜色，只把图形换成叉 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M44,24a20,20 0 1,0 -40,0a20,20 0 1,0 40,0"
+        android:strokeColor="@color/blue"
+        android:strokeWidth="3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M17,17l14,14M31,17l-14,14"
+        android:strokeColor="@color/blue"
+        android:strokeLineCap="round"
+        android:strokeWidth="4" />
+</vector>

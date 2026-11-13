@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 静态快捷方式：长按桌面图标可见；动态兜底由 ShortcutSync 按需补位 -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_list"
+        android:shortcutId="open_freeze_list"
+        android:shortcutLongLabel="@string/sc_open_list_long"
+        android:shortcutShortLabel="@string/sc_open_list">
+        <intent
+            android:action="com.jin.freeze.action.OPEN_FREEZE_LIST"
+            android:targetClass="com.jin.freeze.ui.QuickLaunchActivity"
+            android:targetPackage="com.jin.freeze" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_freeze"
+        android:shortcutId="freeze_all"
+        android:shortcutLongLabel="@string/sc_freeze_all_long"
+        android:shortcutShortLabel="@string/sc_freeze_all">
+        <intent
+            android:action="com.jin.freeze.action.FREEZE_ALL"
+            android:targetClass="com.jin.freeze.ui.QuickLaunchActivity"
+            android:targetPackage="com.jin.freeze" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_unfreeze"
+        android:shortcutId="unfreeze_all"
+        android:shortcutLongLabel="@string/sc_unfreeze_all_long"
+        android:shortcutShortLabel="@string/sc_unfreeze_all">
+        <intent
+            android:action="com.jin.freeze.action.UNFREEZE_ALL"
+            android:targetClass="com.jin.freeze.ui.QuickLaunchActivity"
+            android:targetPackage="com.jin.freeze" />
+    </shortcut>
+
+</shortcuts>

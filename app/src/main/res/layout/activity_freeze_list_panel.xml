@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 半屏浮层形态：透明背景，底部圆角面板占屏幕下方约七成 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- 面板上方的遮罩：透出桌面（高版本会叠加窗口模糊），点一下关闭 -->
+    <View
+        android:id="@+id/panel_scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/panel_scrim"
+        android:clickable="true"
+        android:focusable="false" />
+
+    <LinearLayout
+        android:id="@+id/panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@drawable/bg_sheet"
+        android:elevation="16dp"
+        android:orientation="vertical">
+
+        <!-- 可拖动把手：视觉是 36dp 细横条，热区放大到 22dp 高 -->
+        <FrameLayout
+            android:id="@+id/panel_handle"
+            android:layout_width="match_parent"
+            android:layout_height="22dp"
+            android:layout_marginTop="4dp">
+
+            <View
+                android:layout_width="36dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center"
+                android:background="@drawable/bg_sheet_handle" />
+        </FrameLayout>
+
+        <!-- 标签条：文字 + 下划线指示当前标签 -->
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fillViewport="true"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/tab_bar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_horizontal"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <ScrollView
+                android:id="@+id/scroll"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/grid"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="14dp"
+                    android:paddingTop="4dp"
+                    android:paddingEnd="14dp"
+                    android:paddingBottom="96dp" />
+            </ScrollView>
+
+            <!-- 空态：名单为空时给添加与迁移两个入口 -->
+            <LinearLayout
+                android:id="@+id/panel_empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:paddingStart="28dp"
+                android:paddingEnd="28dp"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:alpha="0.35"
+                    android:contentDescription="空名单"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_sc_freeze" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="名单为空"
+                    android:textColor="@color/text_primary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:text="点左下角搜索添加应用"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/empty_add"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/bg_btn_white"
+                    android:gravity="center"
+                    android:paddingStart="18dp"
+                    android:paddingTop="9dp"
+                    android:paddingEnd="18dp"
+                    android:paddingBottom="9dp"
+                    android:text="＋ 添加应用"
+                    android:textColor="@color/blue"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+            </LinearLayout>
+        </FrameLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1px"
+            android:background="@color/divider" />
+
+        <!-- 最底状态条：搜索入口（进添加应用页）+ 布局设置 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp">
+
+            <ImageButton
+                android:id="@+id/panel_search"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="添加应用"
+                android:padding="10dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_search"
+                android:tint="@color/text_secondary" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <ImageButton
+                android:id="@+id/layout"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="布局设置"
+                android:padding="10dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_settings"
+                android:tint="@color/text_secondary" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 底部中央悬浮雪花按钮（面板形态不参与偏移设置） -->
+    <LinearLayout
+        android:id="@+id/fab_group"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="0dp"
+        android:background="@drawable/bg_fab_group"
+        android:elevation="24dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="4dp">
+
+        <ImageButton
+            android:id="@+id/btn_freeze"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="一键冻结"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_sc_freeze" />
+    </LinearLayout>
+
+    <!-- 长按冻结按钮浮出的一键解冻：贴在雪花按钮正上方，不压拖动条与底栏 -->
+    <ImageButton
+        android:id="@+id/btn_unfreeze_fab"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_gravity="top|start"
+        android:background="@drawable/bg_fab_group"
+        android:contentDescription="一键解冻"
+        android:elevation="24dp"
+        android:padding="8dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_sc_unfreeze"
+        android:visibility="gone" />
+
+</FrameLayout>
