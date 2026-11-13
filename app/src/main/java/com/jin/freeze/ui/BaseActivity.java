@@ -43,6 +43,18 @@ public class BaseActivity extends AppCompatActivity {
             return insets;
         });
         applyBarIconAppearance(window);
+        // onCreate 阶段视图还没挂到窗口上，此时设置的图标明暗可能不生效；
+        // 等 content 挂载后补一次，保证浅色/深色图标真的按当前模式落地
+        content.post(() -> {
+            if (!isBarIconAppearanceForced()) {
+                applyBarIconAppearance(window);
+            }
+        });
+    }
+
+    /** 过渡期间子类会临时把状态栏图标切成白色，此时不要再被上面的补挂覆盖。 */
+    protected boolean isBarIconAppearanceForced() {
+        return false;
     }
 
     private void applyBarIconAppearance(Window window) {

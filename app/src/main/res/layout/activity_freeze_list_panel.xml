@@ -213,5 +213,14 @@
         android:scaleType="fitCenter"
         android:src="@drawable/ic_sc_unfreeze"
         android:visibility="gone" />
+    <!-- 启动/收起过渡：由 playIntro 置为可见并从透明压暗，未播放时保持不可见 -->
+    <View
+        android:id="@+id/panel_intro_scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/launch_scrim"
+        android:clickable="true"
+        android:focusable="false"
+        android:visibility="gone" />
 
 </FrameLayout>

@@ -8,8 +8,10 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
@@ -23,6 +25,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -34,6 +37,8 @@ import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.jin.freeze.R;
 import com.jin.freeze.core.LaunchTarget;
@@ -127,7 +132,12 @@ public class FreezeListActivity extends BaseActivity {
     public static final String EXTRA_ACTION = "action";
     public static final String ACTION_FREEZE = "freeze";
     public static final String ACTION_UNFREEZE = "unfreeze";
-
+    /** 桌面图标入口每次拉起都带上：singleTask 复用时也要重播同样的过渡，避免越点越快。 */
+    public static final String EXTRA_PLAY_INTRO = "play_intro";
+    /** 过渡三段时长（压暗 / 停留 / 淡出）：冷启动、复用拉起、收起共用同一组值。 */
+    private static final int INTRO_IN_MS = 300;
+    private static final int INTRO_HOLD_MS = 260;
+    private static final int INTRO_OUT_MS = 340;
     private static final class Item {
         String pkg;
         String label;
@@ -227,6 +237,22 @@ public class FreezeListActivity extends BaseActivity {
     private float swipeDownX;
     private float swipeDownY;
     private boolean swipeTracking;
+
+    /** 启动过渡：半屏外整屏压暗的那层（布局内，位于面板之下）。 */
+    private View introScrimView;
+    /** 状态栏那一条黑：挂在 DecorView 顶部，高度在首次显示前一次算好，显示后不再重排。 */
+    private View introStatusView;
+    /** 过渡进行中：期间再次收到拉起请求不重启，跟着这一轮自然走完。 */
+    private boolean introPlaying;
+    /** 已在等首帧起跑：避免同一轮里挂上第二个起跑点。 */
+    private boolean introStartPosted;
+    /** 每次起跑递增；旧动画的收尾回调凭它作废，不会把新一轮的遮罩关掉。 */
+    private int introRun;
+    /** 是否已把状态栏图标切成白色（黑条过半才切，避免亮底上看不清）。 */
+    private boolean introIconsLight;
+    private static final String TAG_INTRO = "FW_INTRO";
+    private final Runnable introReveal = this::startIntroReveal;
+    private final Runnable introSafety = this::guardIntroStuck;
 
     /** 已冻结灰度滤镜，和「应用冻结」页保持一致。 */
     private static final android.graphics.ColorMatrixColorFilter GRAY;
@@ -370,6 +396,14 @@ public class FreezeListActivity extends BaseActivity {
         pendingAction = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_ACTION);
         // 首启迁移提示：等第一轮名单读完再判断，避免误判为空
         main.postDelayed(this::maybeOfferMigration, 900);
+
+        if (panelMode) {
+            // 状态栏黑条在这里一次挂好（高度一次算准），之后只改 alpha，不触发窗口/inset 重算
+            ensureIntroStatusView();
+            if (savedInstanceState == null && consumeIntroRequest()) {
+                playIntro();
+            }
+        }
     }
 
     /** 半屏浮层形态：圆角面板默认占屏幕约七成，拖把手可改高度，上方透出桌面。 */
@@ -385,7 +419,7 @@ public class FreezeListActivity extends BaseActivity {
         panelContentPx = Math.max(panelMinHpx, Math.min(panelMaxHpx, content));
         View scrim = findViewById(R.id.panel_scrim);
         if (scrim != null) {
-            scrim.setOnClickListener(v -> finish());
+            scrim.setOnClickListener(v -> closeWithIntro(this::finish));
         }
         View handle = findViewById(R.id.panel_handle);
         if (handle != null) {
@@ -543,6 +577,331 @@ public class FreezeListActivity extends BaseActivity {
         return false;
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        // singleTask 复用时窗口不重建：这里补播过渡，保证第 N 次拉起和第 1 次是同一条节奏
+        if (panelMode && intent != null && intent.getBooleanExtra(EXTRA_PLAY_INTRO, false)) {
+            intent.removeExtra(EXTRA_PLAY_INTRO);
+            android.util.Log.d(TAG_INTRO, "onNewIntent replay");
+            playIntro();
+        }
+    }
+
+    /** 入口带的一次性标记：消费掉，避免重建时重复播放。 */
+    private boolean consumeIntroRequest() {
+        Intent intent = getIntent();
+        if (intent == null || !intent.getBooleanExtra(EXTRA_PLAY_INTRO, false)) {
+            return false;
+        }
+        intent.removeExtra(EXTRA_PLAY_INTRO);
+        return true;
+    }
+
+    /**
+     * 拉起过渡的统一入口。
+     * 关键：动画时钟对齐到窗口的首帧绘制，而不是 onCreate/onNewIntent 的调用时刻。
+     * 冷启动时两者能差几百毫秒，若在 onCreate 就起跑，窗口真正显示时动画可能已经跑到一半甚至结束，
+     * 于是「第一次慢、之后一开就到位」的差异就出来了。对齐首帧后每次看到的都是完整一轮。
+     */
+    private void playIntro() {
+        if (!panelMode) {
+            return;
+        }
+        if (introScrimView == null) {
+            introScrimView = findViewById(R.id.panel_intro_scrim);
+        }
+        if (introScrimView == null) {
+            return;
+        }
+        if (introStatusView == null) {
+            ensureIntroStatusView();
+        }
+        if (introStartPosted) {
+            return;
+        }
+        introStartPosted = true;
+        final View decor = getWindow().getDecorView();
+        final android.view.ViewTreeObserver.OnPreDrawListener listener =
+                new android.view.ViewTreeObserver.OnPreDrawListener() {
+                    @Override
+                    public boolean onPreDraw() {
+                        removePreDraw(decor, this);
+                        startIntroNow("pre-draw");
+                        return true;
+                    }
+                };
+        decor.getViewTreeObserver().addOnPreDrawListener(listener);
+        // 窗口没有新的绘制（例如已在最前）时兜底起跑，不会一直等
+        decor.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!introStartPosted) {
+                    return;
+                }
+                removePreDraw(decor, listener);
+                startIntroNow("fallback");
+            }
+        }, 260);
+    }
+
+    private static void removePreDraw(View decor,
+                                      android.view.ViewTreeObserver.OnPreDrawListener listener) {
+        android.view.ViewTreeObserver vto = decor.getViewTreeObserver();
+        if (vto.isAlive()) {
+            vto.removeOnPreDrawListener(listener);
+        }
+    }
+
+    /**
+     * 真正起跑：整屏由透明慢慢压暗 → 停留 → 慢慢淡出。
+     * 只在没有过渡在跑时起跑；已经在跑就让它自然走完，不重启、不叠加。
+     */
+    private void startIntroNow(String reason) {
+        introStartPosted = false;
+        if (!panelMode || introScrimView == null) {
+            return;
+        }
+        if (introPlaying) {
+            android.util.Log.d(TAG_INTRO, "start skipped: already playing");
+            return;
+        }
+        final int run = ++introRun;
+        introPlaying = true;
+        introScrimView.animate().cancel();
+        if (introStatusView != null) {
+            introStatusView.animate().cancel();
+        }
+        main.removeCallbacks(introReveal);
+        main.removeCallbacks(introSafety);
+        introScrimView.setVisibility(View.VISIBLE);
+        introScrimView.setAlpha(0f);
+        introScrimView.animate().alpha(1f)
+                .setDuration(INTRO_IN_MS)
+                .setInterpolator(new DecelerateInterpolator())
+                .setUpdateListener(a -> syncIntroIcons(introScrimView.getAlpha()))
+                .start();
+        if (introStatusView != null) {
+            introStatusView.setVisibility(View.VISIBLE);
+            introStatusView.setAlpha(0f);
+            introStatusView.animate().alpha(1f)
+                    .setDuration(INTRO_IN_MS)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .start();
+        }
+        android.util.Log.d(TAG_INTRO, "start run=" + run + " " + reason);
+        main.postDelayed(introReveal, INTRO_IN_MS + INTRO_HOLD_MS);
+        main.postDelayed(introSafety, INTRO_IN_MS + INTRO_HOLD_MS + INTRO_OUT_MS + 400);
+    }
+
+    /** 兜底：动画回调万一没落地（窗口/监听时序），也把状态清干净，避免之后每轮都被跳过。 */
+    private void guardIntroStuck() {
+        if (!introPlaying) {
+            return;
+        }
+        android.util.Log.d(TAG_INTRO, "safety run=" + introRun);
+        if (introScrimView != null && introScrimView.getVisibility() == View.VISIBLE
+                && introScrimView.getAlpha() > 0.01f) {
+            startIntroReveal();
+            return;
+        }
+        finishIntro(introRun);
+    }
+
+    /** 停留结束：遮罩按同一条慢节奏淡出，露出背后模糊桌面，不再有第二个闪白/闪黑的中间态。 */
+    private void startIntroReveal() {
+        if (!introPlaying || introScrimView == null) {
+            return;
+        }
+        final int run = introRun;
+        android.util.Log.d(TAG_INTRO, "reveal run=" + run);
+        introScrimView.animate().alpha(0f)
+                .setDuration(INTRO_OUT_MS)
+                .setInterpolator(new DecelerateInterpolator())
+                .setUpdateListener(a -> syncIntroIcons(introScrimView.getAlpha()))
+                .withEndAction(() -> finishIntro(run))
+                .start();
+        if (introStatusView != null) {
+            introStatusView.animate().alpha(0f)
+                    .setDuration(INTRO_OUT_MS)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .start();
+        }
+    }
+
+    private void finishIntro(int run) {
+        if (run != introRun) {
+            return;
+        }
+        introPlaying = false;
+        if (introScrimView != null) {
+            introScrimView.setVisibility(View.GONE);
+        }
+        // 状态栏那条黑留在原位（半屏显示期间一直压黑，图标才始终看得清）
+        applyPanelStatusIcons();
+        android.util.Log.d(TAG_INTRO, "finish run=" + run);
+    }
+
+    /**
+     * 收起也走同一条节奏：先把半屏外慢慢压暗，压满再结束，避免「一关就闪没」。
+     * 遮罩已全黑时按最短 120ms 收尾，不会额外拖慢。
+     */
+    private void closeWithIntro(Runnable finishAction) {
+        if (!panelMode) {
+            finishAction.run();
+            return;
+        }
+        if (introScrimView == null) {
+            introScrimView = findViewById(R.id.panel_intro_scrim);
+        }
+        if (introScrimView == null) {
+            finishAction.run();
+            return;
+        }
+        if (introStatusView == null) {
+            ensureIntroStatusView();
+        }
+        final int run = ++introRun;
+        introPlaying = true;
+        main.removeCallbacks(introReveal);
+        float from = introScrimView.getVisibility() == View.VISIBLE
+                ? Math.min(1f, Math.max(0f, introScrimView.getAlpha())) : 0f;
+        introScrimView.animate().cancel();
+        if (introStatusView != null) {
+            introStatusView.animate().cancel();
+        }
+        int ms = Math.max(120, Math.round(INTRO_IN_MS * (1f - from)));
+        introScrimView.setVisibility(View.VISIBLE);
+        introScrimView.setAlpha(from);
+        introScrimView.animate().alpha(1f)
+                .setDuration(ms)
+                .setInterpolator(new DecelerateInterpolator())
+                .setUpdateListener(a -> syncIntroIcons(introScrimView.getAlpha()))
+                .withEndAction(() -> {
+                    if (run == introRun) {
+                        finishAction.run();
+                    }
+                })
+                .start();
+        if (introStatusView != null) {
+            introStatusView.setVisibility(View.VISIBLE);
+            introStatusView.setAlpha(from);
+            introStatusView.animate().alpha(1f)
+                    .setDuration(ms)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .start();
+        }
+    }
+
+    /**
+     * 状态栏那一条黑：一次算好高度挂到 DecorView 顶部。
+     * 不用 setStatusBarColor —— 那会触发窗口 inset 重算，半屏会「跳一下」。
+     */
+    private void ensureIntroStatusView() {
+        if (introStatusView != null) {
+            return;
+        }
+        int top = introStatusInsetPx();
+        if (top <= 0) {
+            return;
+        }
+        View v = new View(this);
+        v.setBackgroundColor(getResources().getColor(R.color.launch_scrim));
+        v.setAlpha(0f);
+        v.setVisibility(View.GONE);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, top, Gravity.TOP);
+        ((ViewGroup) getWindow().getDecorView()).addView(v, lp);
+        introStatusView = v;
+    }
+
+    /** 状态栏（含挖孔）顶边高度：显示前同步取窗口 metrics，取不到再退回系统资源与兜底值。 */
+    private int introStatusInsetPx() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            try {
+                android.view.WindowInsets ins = getWindowManager()
+                        .getCurrentWindowMetrics().getWindowInsets();
+                int top = ins.getInsetsIgnoringVisibility(
+                        android.view.WindowInsets.Type.statusBars()
+                                | android.view.WindowInsets.Type.displayCutout()).top;
+                if (top > 0) {
+                    return top;
+                }
+            } catch (Throwable ignored) {
+                // 个别 ROM 在建窗阶段取不到，退回资源值
+            }
+        }
+        int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        if (id > 0) {
+            return getResources().getDimensionPixelSize(id);
+        }
+        return Ui.dp(this, 24);
+    }
+
+    /** 黑条过半才把状态栏图标切成白色，淡出过一半再切回跟随背景，保证任何时刻都看得清。 */
+    private void syncIntroIcons(float blackAlpha) {
+        boolean forceWhite = blackAlpha > 0.45f;
+        if (forceWhite == introIconsLight) {
+            return;
+        }
+        introIconsLight = forceWhite;
+        if (forceWhite) {
+            statusIconsController().setAppearanceLightStatusBars(false);
+            return;
+        }
+        applyPanelStatusIcons();
+    }
+
+    /**
+     * 半屏显示期间状态栏压在桌面/壁纸上，按壁纸主色的亮度决定图标深浅：
+     * 深色背景用白图标，浅色背景用深色图标。
+     */
+    private void applyPanelStatusIcons() {
+        introIconsLight = false;
+        statusIconsController().setAppearanceLightStatusBars(!darkBackdrop());
+    }
+
+    /** 结束过渡 / 离开页面都把状态栏恢复成跟随深浅色，不残留强制白色。 */
+    private void restoreStatusBarIcons() {
+        introIconsLight = false;
+        statusIconsController().setAppearanceLightStatusBars(!nightMode());
+    }
+
+    private WindowInsetsControllerCompat statusIconsController() {
+        return WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+    }
+
+    private boolean nightMode() {
+        return (getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    /** 半屏背后是否为深色背景：优先用系统给出的壁纸主色亮度，取不到再退回深色模式。 */
+    private boolean darkBackdrop() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            try {
+                android.app.WallpaperColors colors = android.app.WallpaperManager
+                        .getInstance(this)
+                        .getWallpaperColors(android.app.WallpaperManager.FLAG_SYSTEM);
+                if (colors != null && colors.getPrimaryColor() != null) {
+                    int c = colors.getPrimaryColor().toArgb();
+                    double lum = (0.299 * android.graphics.Color.red(c)
+                            + 0.587 * android.graphics.Color.green(c)
+                            + 0.114 * android.graphics.Color.blue(c)) / 255.0;
+                    return lum < 0.55;
+                }
+            } catch (Throwable ignored) {
+                // 部分系统不给壁纸颜色，退回深浅色判断
+            }
+        }
+        return nightMode();
+    }
+
+    @Override
+    protected boolean isBarIconAppearanceForced() {
+        return introPlaying;
+    }
+
     private void openPicker() {
         // 勾选「隐藏半屏后台」时，面板一暂停就会被移除；选应用期间先豁免
         pickerOpen = true;
@@ -663,11 +1022,19 @@ public class FreezeListActivity extends BaseActivity {
         super.onResume();
         // 每次回到页面都重新读一次系统真值
         reload();
+        // 半屏显示期间状态栏压在桌面上，按壁纸明暗决定图标深浅（过渡中不动）
+        if (panelMode && !introPlaying) {
+            applyPanelStatusIcons();
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        // 离开页面就把状态栏图标恢复成跟随深浅色，不残留过渡时的强制白色
+        if (panelMode) {
+            restoreStatusBarIcons();
+        }
         // 勾选「隐藏后台」时，离开列表就把自身任务从最近任务摘掉；全屏与半屏都生效。
         // 用 finishAndRemoveTask 而不是 finish()，避免只关页面留下空任务卡片。
         if (panelHideRecents && !pickerOpen) {
@@ -683,8 +1050,10 @@ public class FreezeListActivity extends BaseActivity {
     public void onBackPressed() {
         if (panelMode) {
             android.util.Log.d("FW_GESTURE", "onBackPressed -> remove task");
-            finishAndRemoveTask();
-            overridePendingTransition(0, 0);
+            closeWithIntro(() -> {
+                finishAndRemoveTask();
+                overridePendingTransition(0, 0);
+            });
             return;
         }
         super.onBackPressed();
@@ -2098,6 +2467,14 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     protected void onDestroy() {
         fabHandler.removeCallbacks(fabCollapseRunnable);
+        main.removeCallbacks(introReveal);
+        main.removeCallbacks(introSafety);
+        if (introScrimView != null) {
+            introScrimView.animate().cancel();
+        }
+        if (introStatusView != null) {
+            introStatusView.animate().cancel();
+        }
         stopFreezeSpin();
         super.onDestroy();
     }

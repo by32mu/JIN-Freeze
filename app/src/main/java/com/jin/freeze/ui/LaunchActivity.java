@@ -18,8 +18,13 @@ public class LaunchActivity extends Activity {
         Intent target = new Intent(this,
                 fullscreen ? FreezeListActivity.class : FreezePanelActivity.class);
         target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (!fullscreen) {
+            // 桌面图标入口每次都要播放下滑压暗过渡，面板被复用时同样生效
+            target.putExtra(FreezeListActivity.EXTRA_PLAY_INTRO, true);
+        }
         startActivity(target);
         finish();
+        // 入口壳本身不可见：与半屏面板之间不留第二段窗口动画，避免再闪一层底色
         overridePendingTransition(0, 0);
     }
 }

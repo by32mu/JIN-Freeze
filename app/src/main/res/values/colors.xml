@@ -12,6 +12,8 @@
     <color name="header_icon_black">#000000</color>
     <!-- 半屏浮层上方遮罩：透出桌面，同时保证底部面板可读 -->
     <color name="panel_scrim">#33000000</color>
+    <!-- 启动/收起过渡的底色：系统启动窗口与 Splash 统一用深黑，避免闪白 -->
+    <color name="launch_scrim">#111318</color>
     <color name="divider">#EDEFF3</color>
     <color name="soft_bg">#EBF1FE</color>
 </resources>
