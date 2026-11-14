@@ -507,10 +507,11 @@ public class FreezeListActivity extends BaseActivity {
         applySurface(unfreezeFab, pct);
     }
 
-    /** 搜索框颜色的当前档位（0 全透明 / 100 实心），与背景档位各自独立。 */
+    /** 搜索框颜色当前档位：全屏默认 30%，半屏默认 100%；已存过值的用户沿用自己的值。 */
     private int searchPct() {
+        int def = panelMode ? SURFACE_SOLID : 30;
         return Math.max(0, Math.min(100,
-                prefs().getInt(lk(KEY_SEARCH_SURFACE), SURFACE_SOLID)));
+                prefs().getInt(lk(KEY_SEARCH_SURFACE), def)));
     }
 
     /** 按百分比缩放颜色自身的 alpha，保留色相。 */
