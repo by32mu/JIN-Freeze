@@ -46,19 +46,19 @@
             </intent-filter>
         </activity>
 
-        <!-- 半屏面板形态 -->
+        <!-- 半屏面板形态：与全屏共用默认 taskAffinity，保证最近任务里只有一张凚卡片 -->
         <activity
             android:name=".ui.FreezePanelActivity"
             android:exported="false"
             android:launchMode="singleTask"
-            android:taskAffinity="com.jin.freeze.panel"
             android:theme="@style/Theme.Jin.Panel"
             android:windowSoftInputMode="adjustResize" />
 
-        <!-- 全屏列表形态 -->
+        <!-- 全屏列表形态：singleTask 复用同一任务，桌面重复进入不会叠新任务 -->
         <activity
             android:name=".ui.FreezeListActivity"
             android:exported="false"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.Jin.Full"
             android:windowSoftInputMode="adjustResize" />
 

@@ -753,8 +753,11 @@ public class FreezeListActivity extends BaseActivity {
         int pct = fullSurfacePct();
         int alpha = Math.round(255f * pct / 100f);
         if (wallpaperDrawable != null) {
-            wallpaperDrawable.mutate().setAlpha(alpha);
-            w.setBackgroundDrawable(wallpaperDrawable);
+            // 必须给窗口一个新的 drawable 实例：Window/DecorView 收到同一个实例会直接 return，
+            // 只改 alpha 不会触发重绘（表现就是拖滑块整页背景不动）。
+            WallpaperDrawable next = new WallpaperDrawable(wallpaperBitmap, 0);
+            next.setAlpha(alpha);
+            w.setBackgroundDrawable(next);
         } else {
             int base = getColor(R.color.page_bg);
             w.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.argb(alpha,
@@ -877,17 +880,13 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 全屏「同一档位」铺到所有可见底板：顶栏、搜索框、用户/系统标签胶囊、
-     * 以及移动模式下的选中高亮框（整页底色在窗口背景上）。列表每次重绘后要再调一次，避免新建的视图漏掉。
+     * 全屏「同一档位」铺到顶栏与移动模式下的选中高亮框（整页底色在窗口背景上）。
+     * 用户/系统分组胶囊不在其列：胶囊颜色与「全屏背景」透明度调节无关，始终保持原样。
+     * 列表每次重绘后要再调一次，避免新建的视图漏掉。
      */
     private void applyFullscreenSurfaces(int pct) {
         // page_root 的底板已经交给窗口背景（applyWindowBackdrop），这里不再给它上第二层 alpha
         applySurface(findViewById(R.id.page_header), pct);
-        if (tabBar != null) {
-            for (int i = 0; i < tabBar.getChildCount(); i++) {
-                applySurface(tabBar.getChildAt(i), pct);
-            }
-        }
         if (grid != null) {
             for (int r = 0; r < grid.getChildCount(); r++) {
                 View row = grid.getChildAt(r);
