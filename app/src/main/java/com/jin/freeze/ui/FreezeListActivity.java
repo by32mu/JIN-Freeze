@@ -3359,7 +3359,7 @@ public class FreezeListActivity extends BaseActivity {
 
         TextView message = new TextView(this);
         message.setText("开关已记录，但还没在 system_server 里跑起来。\n\n"
-                + "1. 在 LSPosed 里启用凚，作用域勾选「系统框架」；\n"
+                + "1. 在 LSPosed 里启用凚（作用域已预置，不用手动勾选）；\n"
                 + "2. 重启手机；\n"
                 + "3. 重启后划卡才会真正冻结。");
         message.setTextSize(12);

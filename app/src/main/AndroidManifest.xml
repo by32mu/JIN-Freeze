@@ -14,16 +14,8 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Jin">
 
-        <!-- 旧 API 模块声明：未激活 LSPosed 时这些 meta-data 只是静态信息，不影响凚 正常启动 -->
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="划卡冻结：最近任务划掉或一键清理时冻结凚 冻结列表内的应用" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="93" />
+        <!-- 模块声明只用 META-INF/xposed（module.prop + java_init.list + scope.list，静态作用域），
+             不写旧 API 的 xposedmodule meta-data，与 hyper2B 的接入方式一致 -->
 
         <!-- 桌面图标入口：按「全屏打开模式」分流，本身不显示界面 -->
         <activity

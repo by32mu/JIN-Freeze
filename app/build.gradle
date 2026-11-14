@@ -10,8 +10,8 @@ android {
         applicationId "com.jin.freeze"
         minSdk 24
         targetSdk 34
-        versionCode 18
-        versionName "1.1.11"
+        versionCode 19
+        versionName "1.1.12"
     }
 
     buildTypes {
@@ -35,5 +35,5 @@ dependencies {
     implementation 'dev.rikka.shizuku:api:12.2.0'
     implementation 'dev.rikka.shizuku:provider:12.2.0'
     // LSPosed 模块接口：只在 LSPosed 注入的 system_server 里加载，应用自身不引用（compileOnly 不打包）
-    compileOnly fileTree(dir: 'libs', include: ['libxposed-api-102.jar', 'libxposed-interface-102.jar', 'xposed-api-82.jar'])
+    compileOnly fileTree(dir: 'libs', include: ['libxposed-api-102.jar', 'libxposed-interface-102.jar'])
 }

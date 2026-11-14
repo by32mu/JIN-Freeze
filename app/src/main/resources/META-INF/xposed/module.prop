@@ -1,5 +1,9 @@
-# libxposed 现代模块元数据（由 LSPosed 读取）
+# libxposed 现代模块元数据（Java Properties 格式，由 LSPosed 读取）
+# minApiVersion    —— 框架至少需实现的 API 版本
+# targetApiVersion —— 按 API 102 语义构建
+# exceptionMode    —— 钩子异常保护模式：只记日志，原方法照常执行
+# staticScope      —— 作用域固定为 scope.list，不接受额外作用域
 minApiVersion=101
 targetApiVersion=102
 exceptionMode=protective
-staticScope=false
+staticScope=true
