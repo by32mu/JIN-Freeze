@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.jin.freeze'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.jin.freeze"
+        minSdk 24
+        targetSdk 34
+        versionCode 21
+        versionName "1.1.14"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    // 无 root 时通过 Shizuku 执行 pm 冻结/解冻（12.2.0 仍公开 newProcess）
+    implementation 'dev.rikka.shizuku:api:12.2.0'
+    implementation 'dev.rikka.shizuku:provider:12.2.0'
+    // LSPosed 模块接口：只在 LSPosed 注入的 system_server 里加载，应用自身不引用（compileOnly 不打包）
+    compileOnly fileTree(dir: 'libs', include: ['libxposed-api-102.jar', 'libxposed-interface-102.jar'])
+}
