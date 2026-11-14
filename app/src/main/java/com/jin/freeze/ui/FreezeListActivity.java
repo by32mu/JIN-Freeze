@@ -12,6 +12,7 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Rect;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
@@ -379,6 +380,9 @@ public class FreezeListActivity extends BaseActivity {
         prefs().edit().remove("accent_surface").remove("panel_accent_surface").apply();
         // 先在进内容之前把壁纸准备好：解码有进程内缓存，首帧就可以直接挂上，不会先露一帧白底
         loadWallpaperFromPrefs();
+        // 整页底板在窗口第一次显示之前就挂到窗口背景上：首帧就带着「全屏背景」设定的透明度，
+        // 不会先由系统/窗口兜一层实心（浅色模式是白）底、下一帧才被透明度盖回来
+        applyWindowBackdrop();
         setContentView(panelMode
                 ? R.layout.activity_freeze_list_panel
                 : R.layout.activity_freeze_list);
@@ -632,16 +636,39 @@ public class FreezeListActivity extends BaseActivity {
     /**
      * 模糊在挂背景之前同步算好（结果有缓存，同一档位只算一次）：
      * 打开和拖动滑块都是直接落到目标档位，不会先露一帧清晰图，也不会先露白。
+     *
+     * 设了非 0 模糊时，首帧先挂「降采样 + 快速模糊」的结果（几十毫秒），保证打开瞬间就是模糊态；
+     * 全分辨率模糊随后在后台算好替换，画面只会更细腻，不会变清晰。
      */
     private void rebuildWallpaperDrawable() {
         if (wallpaperSourceBitmap == null) {
             wallpaperDrawable = null;
             return;
         }
-        Bitmap base = wallpaperSourceBitmap;
-        swapWallpaperBitmap(wallpaperBlur > 0
-                ? WallpaperSource.blurred(this, wallpaperUri, base, wallpaperBlur, srcMode())
-                : base);
+        final Bitmap base = wallpaperSourceBitmap;
+        final int pct = wallpaperBlur;
+        final String uri = wallpaperUri;
+        final int mode = srcMode();
+        if (pct <= 0 || uri == null) {
+            swapWallpaperBitmap(base);
+            return;
+        }
+        swapWallpaperBitmap(WallpaperSource.quickBlur(this, uri, base, pct, mode));
+        IO.execute(() -> {
+            final Bitmap full = WallpaperSource.blurred(this, uri, base, pct, mode);
+            main.post(() -> {
+                if (isFinishing() || isDestroyed() || full == null) {
+                    return;
+                }
+                // 期间又换了图/档位，就丢弃这次结果，避免把旧档位的模糊挂上去
+                if (wallpaperBlur != pct || !uri.equals(wallpaperUri)
+                        || wallpaperSourceBitmap != base) {
+                    return;
+                }
+                swapWallpaperBitmap(full);
+                applyWallpaperBackground();
+            });
+        });
     }
 
     /** 本形态对应的壁纸/模糊缓存槽位：半屏与全屏各一套，互不串用。 */
@@ -667,8 +694,8 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 把壁纸挂到背景层：半屏是在面板底板上、全屏是在 page_root 上。
-     * 透明度仍由原来的背景滑块控制（applySurface 改这个 drawable 的 alpha）。
+     * 把壁纸挂到背景层：半屏是在面板底板上、全屏是交给窗口背景（applyWindowBackdrop）。
+     * 透明度仍由原来的背景滑块控制（全屏改窗口底板的 alpha，半屏改面板 drawable 的 alpha）。
      */
     private void applyWallpaperBackground() {
         if (panelMode) {
@@ -688,12 +715,39 @@ public class FreezeListActivity extends BaseActivity {
             if (root == null) {
                 return;
             }
-            if (wallpaperDrawable != null) {
-                root.setBackground(wallpaperDrawable);
-            } else {
-                root.setBackgroundColor(getColor(R.color.page_bg));
-            }
+            // 底板只由窗口背景这一层承担（见 applyWindowBackdrop）：page_root 留空，
+            // 否则两层背景各带一次 alpha，叠出来会比设定值更实
+            root.setBackground(null);
             applyFullscreenSurface();
+        }
+    }
+
+    /** 当前「全屏背景」档位：0 = 整页透明，100 = 实心。半屏不参与。 */
+    private int fullSurfacePct() {
+        return Math.max(0, Math.min(100, prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
+    }
+
+    /**
+     * 窗口底板：全屏把整页底色（壁纸或 page_bg）按当前档位直接挂到 Window 背景上，
+     * 窗口第一次显示时就是设定好的透明度——窗口层面没有「先实心一帧」的机会。
+     * 半屏的底板是带圆角、只占下半屏的面板，窗口背景保持主题里的完全透明。
+     */
+    private void applyWindowBackdrop() {
+        android.view.Window w = getWindow();
+        if (w == null || panelMode) {
+            return;
+        }
+        int pct = fullSurfacePct();
+        int alpha = Math.round(255f * pct / 100f);
+        if (wallpaperDrawable != null) {
+            wallpaperDrawable.mutate().setAlpha(alpha);
+            w.setBackgroundDrawable(wallpaperDrawable);
+        } else {
+            int base = getColor(R.color.page_bg);
+            w.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.argb(alpha,
+                    android.graphics.Color.red(base),
+                    android.graphics.Color.green(base),
+                    android.graphics.Color.blue(base))));
         }
     }
 
@@ -778,29 +832,25 @@ public class FreezeListActivity extends BaseActivity {
 
     /**
      * 全屏背景：0 = 整页透明（背后页面看得清）、50 = 磨砂、100 = 实心。
-     * 与半屏同一套档位语义，但键独立记忆；窗口模糊与状态栏/导航栏底色跟着同一档位走，
-     * 默认 100% 时窗口、状态栏仍是原来的 page_bg，观感不变。
+     * 与半屏同一套档位语义，但键独立记忆；整页底色（含状态栏/导航栏那两条）由窗口背景统一承担，
+     * 窗口模糊跟同一档位走，默认 100% 时观感与原来的 page_bg 实心页面一致。
      */
     private void applyFullscreenSurface() {
         if (panelMode) {
             return;
         }
-        int pct = Math.max(0, Math.min(100,
-                prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
+        int pct = fullSurfacePct();
+        // 拖动滑块时窗口底板也跟着走：整页背景的 alpha 始终只有一个来源
+        applyWindowBackdrop();
         applyFullscreenSurfaces(pct);
         android.view.Window w = getWindow();
         if (w == null) {
             return;
         }
-        int base = getColor(R.color.page_bg);
-        int alpha = Math.round(255f * pct / 100f);
-        int argb = android.graphics.Color.argb(alpha,
-                android.graphics.Color.red(base),
-                android.graphics.Color.green(base),
-                android.graphics.Color.blue(base));
-        // 内容区被 inset 让出状态栏/导航栏，这两条也要跟着档位淡出，否则会留一条实心底色
-        w.setStatusBarColor(argb);
-        w.setNavigationBarColor(argb);
+        // 窗口背景已经覆盖整块窗口（含状态栏/导航栏那两条），系统栏再刷一层同色会比页面更实；
+        // 首帧前也不该让系统栏先按主题里的 page_bg 实心铺一条白，所以这里统一保持完全透明
+        w.setStatusBarColor(android.graphics.Color.TRANSPARENT);
+        w.setNavigationBarColor(android.graphics.Color.TRANSPARENT);
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             try {
                 w.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
@@ -814,11 +864,11 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 全屏「同一档位」铺到所有可见底板：页面背景、顶栏、搜索框、用户/系统标签胶囊、
-     * 以及移动模式下的选中高亮框。列表每次重绘后要再调一次，避免新建的视图漏掉。
+     * 全屏「同一档位」铺到所有可见底板：顶栏、搜索框、用户/系统标签胶囊、
+     * 以及移动模式下的选中高亮框（整页底色在窗口背景上）。列表每次重绘后要再调一次，避免新建的视图漏掉。
      */
     private void applyFullscreenSurfaces(int pct) {
-        applySurface(findViewById(R.id.page_root), pct);
+        // page_root 的底板已经交给窗口背景（applyWindowBackdrop），这里不再给它上第二层 alpha
         applySurface(findViewById(R.id.page_header), pct);
         if (tabBar != null) {
             for (int i = 0; i < tabBar.getChildCount(); i++) {
@@ -3587,6 +3637,14 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 wpBlurLabel.setText("壁纸模糊度：" + p + "%（0 为完全清晰）");
+                // 拖动过程中就用降采样快速模糊跟住：任何时候都是模糊图，不会回退到清晰帧
+                wallpaperBlur = Math.max(0, Math.min(100, p));
+                if (wallpaperSourceBitmap != null && wallpaperUri != null) {
+                    swapWallpaperBitmap(WallpaperSource.quickBlur(
+                            FreezeListActivity.this, wallpaperUri, wallpaperSourceBitmap,
+                            wallpaperBlur, srcMode()));
+                    applyWallpaperBackground();
+                }
             }
 
             @Override

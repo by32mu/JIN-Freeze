@@ -28,10 +28,19 @@ final class WallpaperSource {
     private static final String[] KEY_URI = {"panel_wallpaper_uri", "wallpaper_uri"};
     private static final String[] KEY_BLUR = {"panel_wallpaper_blur", "wallpaper_blur"};
 
+    /** 快速模糊的降采样上限（像素）：首帧先挂这张，几十毫秒内算完，绝不露清晰原图。 */
+    private static final int QUICK_MAX = 420;
+
     private static final String[] srcUri = new String[MODES];
     private static final Bitmap[] srcBitmap = new Bitmap[MODES];
     private static final String[] blurKey = new String[MODES];
     private static final Bitmap[] blurBitmap = new Bitmap[MODES];
+    /** 降采样快速模糊结果，同样按形态分槽，不与全分辨率结果混用。 */
+    private static final String[] quickKey = new String[MODES];
+    private static final Bitmap[] quickBitmap = new Bitmap[MODES];
+    /** 降采样后的原图（拖动滑块时反复用，避免每次都重新缩放）。 */
+    private static final String[] quickSrcKey = new String[MODES];
+    private static final Bitmap[] quickSrcBitmap = new Bitmap[MODES];
 
     private WallpaperSource() {
     }
@@ -55,6 +64,10 @@ final class WallpaperSource {
         srcBitmap[m] = bmp;
         blurKey[m] = null;
         blurBitmap[m] = null;
+        quickKey[m] = null;
+        quickBitmap[m] = null;
+        quickSrcKey[m] = null;
+        quickSrcBitmap[m] = null;
         return bmp;
     }
 
@@ -96,6 +109,46 @@ final class WallpaperSource {
                 Math.max(0, Math.min(100, sp.getInt(KEY_BLUR[m], 0))), m);
     }
 
+    /**
+     * 降采样后的快速模糊：把原图缩到短边约 420px 再跑模糊，耗时几十毫秒，
+     * 用来在首帧先顶住模糊态（全屏打开、拖动滑块时），之后再换成全分辨率结果。
+     * 返回 null 以外的结果都已经是模糊图，pct 为 0 时才返回原图。
+     */
+    static synchronized Bitmap quickBlur(Context c, String uriString, Bitmap src, int pct, int mode) {
+        if (src == null) {
+            return null;
+        }
+        int p = Math.max(0, Math.min(100, pct));
+        if (p <= 0) {
+            return src;
+        }
+        int m = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
+        String key = "q" + m + "#" + uriString + "#" + p;
+        if (key.equals(quickKey[m]) && quickBitmap[m] != null && !quickBitmap[m].isRecycled()) {
+            return quickBitmap[m];
+        }
+        int max = Math.max(src.getWidth(), src.getHeight());
+        int sample = Math.max(1, max / QUICK_MAX);
+        String srcKey = m + "#" + uriString;
+        Bitmap small;
+        if (sample <= 1) {
+            small = src;
+        } else if (srcKey.equals(quickSrcKey[m]) && quickSrcBitmap[m] != null
+                && !quickSrcBitmap[m].isRecycled()) {
+            small = quickSrcBitmap[m];
+        } else {
+            int w = Math.max(1, src.getWidth() / sample);
+            int h = Math.max(1, src.getHeight() / sample);
+            small = Bitmap.createScaledBitmap(src, w, h, true);
+            quickSrcKey[m] = srcKey;
+            quickSrcBitmap[m] = small;
+        }
+        Bitmap out = softBlur(small, p);
+        quickKey[m] = key;
+        quickBitmap[m] = out;
+        return out;
+    }
+
     /** 清除某个形态的自定义壁纸时，只放掉那一套缓存（只断引用，交给 GC）。 */
     static synchronized void drop(int mode) {
         int m = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
@@ -103,6 +156,10 @@ final class WallpaperSource {
         srcBitmap[m] = null;
         blurKey[m] = null;
         blurBitmap[m] = null;
+        quickKey[m] = null;
+        quickBitmap[m] = null;
+        quickSrcKey[m] = null;
+        quickSrcBitmap[m] = null;
     }
 
     /** 全部放掉。 */

@@ -24,10 +24,15 @@
     <style name="Theme.Jin.Full" parent="Theme.Jin">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
+        <!-- 继承来的 colorBackground 在浅色模式是纯白，系统兜底窗口/启动窗口会拿它铺一帧，
+             这里连同系统栏一起透明化，首帧只由代码挂上去的窗口底板决定 -->
+        <item name="android:colorBackground">@android:color/transparent</item>
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowDisablePreview">true</item>
         <item name="android:windowContentOverlay">@null</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowSplashScreenBackground">@color/launch_scrim</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/transparent</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
