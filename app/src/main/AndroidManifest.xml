@@ -14,6 +14,17 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Jin">
 
+        <!-- 旧 API 模块声明：未激活 LSPosed 时这些 meta-data 只是静态信息，不影响凚 正常启动 -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="划卡冻结：最近任务划掉或一键清理时冻结凚 冻结列表内的应用" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="93" />
+
         <!-- 桌面图标入口：按「全屏打开模式」分流，本身不显示界面 -->
         <activity
             android:name=".ui.LaunchActivity"
@@ -29,6 +40,18 @@
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- LSPosed 模块列表里的「打开」入口 -->
+        <activity
+            android:name=".ui.ModuleEntryActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Jin.Entry">
+            <intent-filter>
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
         </activity>
 
         <!-- 半屏面板形态 -->

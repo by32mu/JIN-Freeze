@@ -10,8 +10,8 @@ android {
         applicationId "com.jin.freeze"
         minSdk 24
         targetSdk 34
-        versionCode 17
-        versionName "1.1.10"
+        versionCode 18
+        versionName "1.1.11"
     }
 
     buildTypes {
@@ -34,4 +34,6 @@ dependencies {
     // 无 root 时通过 Shizuku 执行 pm 冻结/解冻（12.2.0 仍公开 newProcess）
     implementation 'dev.rikka.shizuku:api:12.2.0'
     implementation 'dev.rikka.shizuku:provider:12.2.0'
+    // LSPosed 模块接口：只在 LSPosed 注入的 system_server 里加载，应用自身不引用（compileOnly 不打包）
+    compileOnly fileTree(dir: 'libs', include: ['libxposed-api-102.jar', 'libxposed-interface-102.jar', 'xposed-api-82.jar'])
 }

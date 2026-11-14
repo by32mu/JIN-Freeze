@@ -43,9 +43,11 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.jin.freeze.R;
+import com.jin.freeze.JinApp;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.ShizukuGate;
+import com.jin.freeze.core.SwipeFreeze;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 
 import org.json.JSONArray;
@@ -337,6 +339,7 @@ public class FreezeListActivity extends BaseActivity {
                 Set<String> cur = new HashSet<>(pkgs());
                 cur.addAll(picked);
                 prefs().edit().putStringSet(KEY_PKGS, cur).apply();
+                SwipeFreeze.syncAsync(this);
                 reload();
             });
 
@@ -496,6 +499,8 @@ public class FreezeListActivity extends BaseActivity {
         loadTabs();
         setSysHintVisible();
         renderTabBar();
+        // 进页面就把名单文件刷新一次：新装/卸载、标签变化都靠这次对齐
+        SwipeFreeze.syncAsync(this);
 
         if (search != null) {
             search.addTextChangedListener(new android.text.TextWatcher() {
@@ -1816,6 +1821,7 @@ public class FreezeListActivity extends BaseActivity {
             arr.put(o);
         }
         prefs().edit().putString(KEY_TABS, arr.toString()).apply();
+        SwipeFreeze.syncAsync(this);
     }
 
     private void loadAppTabs() {
@@ -1851,6 +1857,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         prefs().edit().putString(KEY_APP_TABS, o.toString()).apply();
+        SwipeFreeze.syncAsync(this);
     }
 
     /** 应用归属：没有显式映射（或映射到已删标签）时按 FLAG_SYSTEM 落回内置标签。 */
@@ -1962,6 +1969,23 @@ public class FreezeListActivity extends BaseActivity {
                 .setNegativeButton("取消", null)
                 .create();
         d.show();
+        // 弹窗出现后等布局完成再聚焦并拉起输入法，键盘跟着弹窗一起上来
+        android.view.Window win = d.getWindow();
+        if (win != null) {
+            win.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        }
+        input.post(() -> {
+            input.requestFocus();
+            android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+            }
+        });
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
+            hideIme(input);
+            d.dismiss();
+        });
         d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String name = input.getText().toString().trim();
             if (name.isEmpty()) {
@@ -1988,8 +2012,17 @@ public class FreezeListActivity extends BaseActivity {
             if (done != null) {
                 done.run();
             }
+            hideIme(input);
             d.dismiss();
         });
+    }
+
+    private void hideIme(View v) {
+        android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+        }
     }
 
     /** 删除自定义标签：其应用清掉归属映射，按 FLAG_SYSTEM 回到内置标签，不丢数据。 */
@@ -2104,6 +2137,7 @@ public class FreezeListActivity extends BaseActivity {
             }
             if (!kept.equals(wanted)) {
                 prefs().edit().putStringSet(KEY_PKGS, kept).apply();
+                SwipeFreeze.syncAsync(this);
             }
             List<Item> list = new ArrayList<>();
             if (custom && !order.isEmpty()) {
@@ -3085,6 +3119,301 @@ public class FreezeListActivity extends BaseActivity {
         super.onDestroy();
     }
 
+    /**
+     * 布局设置里的「划卡冻结（LSPosed）」开关，下面挂生效标签。
+     *
+     * 开关只在 root 通道可用：名单文件要由 root 写成 system:system / 644，
+     * Shizuku 是 uid 2000 写不进去，所以没有 root 时开关置灰。
+     */
+    private void addSwipeFreezeSection(LinearLayout box) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, Ui.dp(this, 10), 0, 0);
+
+        final CheckBox enableBox = new CheckBox(this);
+        enableBox.setText("划卡冻结（LSPosed）");
+        enableBox.setTextSize(12);
+        enableBox.setMinimumHeight(Ui.dp(this, 32));
+        enableBox.setChecked(SwipeFreeze.enabled(this));
+        // 先置灰，root 检测完成后再决定是否可用
+        enableBox.setEnabled(false);
+
+        row.addView(enableBox, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 子项：只有开关勾选后才出现；缩进 + 小圆点，表明挂在「划卡冻结」节点下
+        final LinearLayout child = new LinearLayout(this);
+        child.setOrientation(LinearLayout.HORIZONTAL);
+        child.setGravity(Gravity.CENTER_VERTICAL);
+        child.setPadding(Ui.dp(this, 32), 0, 0, 0);
+
+        View dot = new View(this);
+        android.graphics.drawable.GradientDrawable dotBg = new android.graphics.drawable.GradientDrawable();
+        dotBg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        dotBg.setColor(getColor(R.color.accent_surface_stroke));
+        dot.setBackground(dotBg);
+        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(
+                Ui.dp(this, 6), Ui.dp(this, 6));
+        dotLp.rightMargin = Ui.dp(this, 10);
+        child.addView(dot, dotLp);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.HORIZONTAL);
+        content.setGravity(Gravity.CENTER_VERTICAL);
+        content.setMinimumHeight(Ui.dp(this, 40));
+
+        TextView label = new TextView(this);
+        label.setText("按标签冻结");
+        label.setTextSize(12);
+        label.setTextColor(getColor(R.color.text_primary));
+        content.addView(label);
+
+        final TextView summary = new TextView(this);
+        summary.setTextSize(11);
+        summary.setTextColor(getColor(R.color.text_secondary));
+        summary.setSingleLine(true);
+        summary.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams summaryLp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        summaryLp.leftMargin = Ui.dp(this, 10);
+        content.addView(summary, summaryLp);
+
+        TextView chevron = new TextView(this);
+        chevron.setText("›");
+        chevron.setTextSize(14);
+        chevron.setTextColor(getColor(R.color.text_secondary));
+        chevron.setPadding(Ui.dp(this, 8), 0, 0, 0);
+        content.addView(chevron);
+
+        child.addView(content, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        summary.setText(tagSummaryText());
+        child.setVisibility(enableBox.isChecked() ? View.VISIBLE : View.GONE);
+        child.setOnClickListener(v -> showTagPickerDialog(summary));
+
+        enableBox.setOnCheckedChangeListener((btn, on) -> {
+            SwipeFreeze.setEnabled(this, on);
+            SwipeFreeze.syncAsync(this);
+            child.setVisibility(on ? View.VISIBLE : View.GONE);
+            if (!on) {
+                return;
+            }
+            final boolean wasOn = on;
+            JinApp.IO.execute(() -> {
+                boolean active = SwipeFreeze.moduleActive();
+                if (active || !wasOn) {
+                    return;
+                }
+                runOnUiThread(this::showSwipeFreezePrompt);
+            });
+        });
+
+        box.addView(row);
+        box.addView(child);
+
+        // root 探测会碰 su，放后台线程；没有 root 时开关置灰（Shizuku 写不进 /data/system）
+        JinApp.IO.execute(() -> {
+            boolean root = SwipeFreeze.hasRoot();
+            runOnUiThread(() -> {
+                enableBox.setEnabled(root);
+                if (!root) {
+                    enableBox.setChecked(false);
+                }
+            });
+        });
+    }
+
+    /** 「按标签冻结」这一行右侧的启用数/总数，例如 5/5；never-set 的勾选按全选处理。 */
+    private String tagSummaryText() {
+        List<SwipeFreeze.Tag> tags = SwipeFreeze.allTags(this);
+        int total = tags.size();
+        if (total == 0) {
+            return "0/0";
+        }
+        Set<String> selected = SwipeFreeze.selectedTags(this);
+        int on = 0;
+        for (SwipeFreeze.Tag tag : tags) {
+            if (selected == null || selected.contains(tag.id)) {
+                on++;
+            }
+        }
+        return on + "/" + total;
+    }
+
+    /** 「按标签冻结」勾选界面：列出凚 的全部标签，默认全选，勾选即时持久化。 */
+    private void showTagPickerDialog(TextView summary) {
+        final android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int padH = Ui.dp(this, 18);
+        root.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 8));
+
+        TextView title = new TextView(this);
+        title.setText("按标签冻结");
+        title.setTextSize(15);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setTextColor(getColor(R.color.text_primary));
+        root.addView(title);
+
+        TextView hint = new TextView(this);
+        hint.setText("应用的标签与勾选项有交集才冻结；一个都不勾则不冻结。");
+        hint.setTextSize(11);
+        hint.setTextColor(getColor(R.color.text_secondary));
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hlp.topMargin = Ui.dp(this, 6);
+        root.addView(hint, hlp);
+
+        // 标签按稳定 id 存取，改名不会让已勾选的过滤失效
+        final List<SwipeFreeze.Tag> tags = SwipeFreeze.allTags(this);
+        Set<String> selected = SwipeFreeze.selectedTags(this);
+        final Set<String> checkedIds = new HashSet<>();
+
+        LinearLayout tagList = new LinearLayout(this);
+        tagList.setOrientation(LinearLayout.VERTICAL);
+        for (SwipeFreeze.Tag tag : tags) {
+            boolean on = selected == null || selected.contains(tag.id);
+            if (on) {
+                checkedIds.add(tag.id);
+            }
+            CheckBox tagBox = new CheckBox(this);
+            tagBox.setText(tag.name);
+            tagBox.setTextSize(12);
+            tagBox.setMinimumHeight(Ui.dp(this, 36));
+            tagBox.setTag(tag.id);
+            tagBox.setChecked(on);
+            tagBox.setOnCheckedChangeListener((btn, isChecked) -> {
+                String id = (String) btn.getTag();
+                if (isChecked) {
+                    checkedIds.add(id);
+                } else {
+                    checkedIds.remove(id);
+                }
+                SwipeFreeze.setSelectedTags(this, checkedIds);
+                SwipeFreeze.syncAsync(this);
+            });
+            tagList.addView(tagBox);
+        }
+        if (tags.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("冻结列表里还没有应用");
+            empty.setTextSize(12);
+            empty.setTextColor(getColor(R.color.text_secondary));
+            empty.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 10));
+            tagList.addView(empty);
+        }
+
+        android.widget.ScrollView scroller = new android.widget.ScrollView(this);
+        scroller.addView(tagList);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                tags.size() > 8 ? Ui.dp(this, 320) : ViewGroup.LayoutParams.WRAP_CONTENT);
+        slp.topMargin = Ui.dp(this, 6);
+        root.addView(scroller, slp);
+
+        TextView done = new TextView(this);
+        done.setText("完成");
+        done.setTextSize(13);
+        done.setTypeface(null, android.graphics.Typeface.BOLD);
+        done.setTextColor(getColor(R.color.blue));
+        done.setGravity(Gravity.CENTER);
+        done.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
+        done.setOnClickListener(v -> dialog.dismiss());
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp.topMargin = Ui.dp(this, 4);
+        root.addView(done, dlp);
+
+        dialog.setContentView(root);
+        Ui.roundDialog(dialog, root, 88);
+        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, 88));
+        dialog.setOnDismissListener(d -> summary.setText(tagSummaryText()));
+        android.view.Window w = dialog.getWindow();
+        if (w != null) {
+            w.setDimAmount(0.4f);
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setGravity(Gravity.CENTER);
+        }
+        dialog.show();
+    }
+
+    /** 开关提示：沿用凚 现有圆角对话框（Ui.roundDialog + bg_dialog），不用系统方形 AlertDialog。 */
+    private void showSwipeFreezePrompt() {
+        final android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int padH = Ui.dp(this, 18);
+        root.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 8));
+
+        TextView title = new TextView(this);
+        title.setText("划卡冻结需激活 LSPosed 并重启");
+        title.setTextSize(15);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setTextColor(getColor(R.color.text_primary));
+        root.addView(title);
+
+        TextView message = new TextView(this);
+        message.setText("开关已记录，但还没在 system_server 里跑起来。\n\n"
+                + "1. 在 LSPosed 里启用凚，作用域勾选「系统框架」；\n"
+                + "2. 重启手机；\n"
+                + "3. 重启后划卡才会真正冻结。");
+        message.setTextSize(12);
+        message.setLineSpacing(Ui.dp(this, 2), 1f);
+        message.setTextColor(getColor(R.color.text_secondary));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.topMargin = Ui.dp(this, 8);
+        root.addView(message, mlp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView close = new TextView(this);
+        close.setText("知道了");
+        close.setTextSize(13);
+        close.setTextColor(getColor(R.color.text_primary));
+        close.setGravity(Gravity.CENTER);
+        close.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
+        close.setOnClickListener(v -> dialog.dismiss());
+
+        TextView go = new TextView(this);
+        go.setText("前往 LSPosed");
+        go.setTextSize(13);
+        go.setTypeface(null, android.graphics.Typeface.BOLD);
+        go.setTextColor(getColor(R.color.blue));
+        go.setGravity(Gravity.CENTER);
+        go.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
+        go.setOnClickListener(v -> {
+            dialog.dismiss();
+            SwipeFreeze.openLsposed(this);
+        });
+
+        actions.addView(close, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        actions.addView(go, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        alp.topMargin = Ui.dp(this, 4);
+        root.addView(actions, alp);
+
+        dialog.setContentView(root);
+        Ui.roundDialog(dialog, root, 88);
+        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, 88));
+        android.view.Window w = dialog.getWindow();
+        if (w != null) {
+            w.setDimAmount(0.4f);
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setGravity(Gravity.CENTER);
+        }
+        dialog.show();
+    }
+
     private void showLayoutDialog() {
         int pad = Ui.dp(this, 16);
         LinearLayout box = new LinearLayout(this);
@@ -3503,6 +3832,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         box.addView(fullBox);
+        addSwipeFreezeSection(box);
 
         if (hideRecentsBox != null) {
             box.addView(hideRecentsBox);

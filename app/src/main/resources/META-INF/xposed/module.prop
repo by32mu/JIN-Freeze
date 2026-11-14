@@ -1,0 +1,5 @@
+# libxposed 现代模块元数据（由 LSPosed 读取）
+minApiVersion=101
+targetApiVersion=102
+exceptionMode=protective
+staticScope=false
