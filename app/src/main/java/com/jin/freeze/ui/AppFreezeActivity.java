@@ -72,7 +72,8 @@ public class AppFreezeActivity extends BaseActivity {
         ImageView icon;
     }
 
-    private final ExecutorService IO = Executors.newSingleThreadExecutor();
+    // 进程内共用一个后台线程：不再每开一次页面就新建一个永不回收的线程
+    private final ExecutorService IO = com.jin.freeze.JinApp.IO;
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private final List<App> all = new ArrayList<>();

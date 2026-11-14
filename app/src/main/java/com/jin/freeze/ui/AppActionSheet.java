@@ -43,22 +43,28 @@ public final class AppActionSheet {
     }
 
     public static void show(Context c, String label, Drawable icon, boolean frozen, Actions actions) {
-        show(c, label, icon, frozen, 100, actions);
+        show(c, label, icon, frozen, WallpaperSource.MODE_PANEL, 100, actions);
+    }
+
+    public static void show(Context c, String label, Drawable icon, boolean frozen,
+                            int bgAlphaPct, Actions actions) {
+        show(c, label, icon, frozen, WallpaperSource.MODE_PANEL, bgAlphaPct, actions);
     }
 
     /**
-     * @param bgAlphaPct 选项框背景透明度：直接沿用宿主页当前那条背景滑块的值
-     *                   （半屏用 panel_surface，全屏用 full_surface），不另算一份。
+     * @param wallpaperMode 宿主形态：半屏取半屏那张壁纸+模糊度，全屏取全屏那张，两套缓存互不串用
+     * @param bgAlphaPct    选项框背景透明度：直接沿用宿主页当前那条背景滑块的值
+     *                      （半屏用 panel_surface，全屏用 full_surface），不另算一份。
      */
     public static void show(Context c, String label, Drawable icon, boolean frozen,
-                            int bgAlphaPct, Actions actions) {
+                            int wallpaperMode, int bgAlphaPct, Actions actions) {
         // 用自带样式：窗口与 BottomSheet 底板都是透明，否则系统默认的方角白底会盖住卡片圆角
         final BottomSheetDialog sheet = new BottomSheetDialog(c, R.style.Theme_Jin_Sheet);
-        // 勾了「同步长按选项框」时用半屏那张壁纸做底（含它的模糊度），上面压一层深色 scrim 保证字和图可读
+        // 勾了「同步长按选项框」时用本形态那张壁纸做底（含它自己的模糊度），上面压一层深色 scrim 保证字和图可读
         final android.graphics.Bitmap wallpaper =
                 c.getSharedPreferences(WallpaperSource.PREF, Context.MODE_PRIVATE)
                         .getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)
-                        ? WallpaperSource.panelSheetBitmap(c) : null;
+                        ? WallpaperSource.sheetBitmap(c, wallpaperMode) : null;
         final boolean onWallpaper = wallpaper != null;
         final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
         final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);

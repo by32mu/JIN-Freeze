@@ -198,7 +198,8 @@ public class FreezeListActivity extends BaseActivity {
         boolean custom;
     }
 
-    private final ExecutorService IO = Executors.newSingleThreadExecutor();
+    // 进程内共用一个后台线程：不再每开一次面板就新建一个永不回收的线程
+    private final ExecutorService IO = com.jin.freeze.JinApp.IO;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Item> items = new ArrayList<>();
     private final Map<String, Cell> cells = new HashMap<>();
@@ -384,7 +385,7 @@ public class FreezeListActivity extends BaseActivity {
         applyWallpaperBackground();
         // 长按选项框勾了「同步」时，提前在后台备好半屏壁纸，长按弹出就不用等解码/模糊
         if (prefs().getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)) {
-            IO.execute(() -> WallpaperSource.panelSheetBitmap(this));
+            IO.execute(() -> WallpaperSource.sheetBitmap(this, srcMode()));
         }
         // 半屏「隐藏状态栏」只藏图标内容：隐藏后 inset 会归零，这里按记住的高度补回顶部让位，
         // 面板位置、上方背景都与正常显示时一致，不会变成沉浸式全屏。
@@ -639,8 +640,13 @@ public class FreezeListActivity extends BaseActivity {
         }
         Bitmap base = wallpaperSourceBitmap;
         swapWallpaperBitmap(wallpaperBlur > 0
-                ? WallpaperSource.blurred(this, wallpaperUri, base, wallpaperBlur)
+                ? WallpaperSource.blurred(this, wallpaperUri, base, wallpaperBlur, srcMode())
                 : base);
+    }
+
+    /** 本形态对应的壁纸/模糊缓存槽位：半屏与全屏各一套，互不串用。 */
+    private int srcMode() {
+        return panelMode ? WallpaperSource.MODE_PANEL : WallpaperSource.MODE_FULL;
     }
 
     private void swapWallpaperBitmap(Bitmap bmp) {
@@ -650,7 +656,7 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 按目标视图尺寸解码（屏幕宽高）：由 WallpaperSource 统一缓存，反复打开不再重复解码。 */
     private Bitmap decodeWallpaper(Uri uri) {
-        return WallpaperSource.decode(this, uri == null ? null : uri.toString());
+        return WallpaperSource.decode(this, uri == null ? null : uri.toString(), srcMode());
     }
 
     /** 位图归 WallpaperSource 缓存所有，这里只断引用，不回收，避免把缓存里的图回收掉。 */
@@ -702,7 +708,7 @@ public class FreezeListActivity extends BaseActivity {
         wallpaperUri = null;
         wallpaperBlur = 0;
         releaseWallpaper();
-        WallpaperSource.drop();
+        WallpaperSource.drop(srcMode());
         applyWallpaperBackground();
     }
 
@@ -2538,7 +2544,7 @@ public class FreezeListActivity extends BaseActivity {
         int sheetAlpha = panelMode
                 ? prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)
                 : prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID);
-        AppActionSheet.show(this, it.label, it.icon, it.frozen, sheetAlpha, new AppActionSheet.Actions() {
+        AppActionSheet.show(this, it.label, it.icon, it.frozen, srcMode(), sheetAlpha, new AppActionSheet.Actions() {
             @Override
             public void run() {
                 runApp(it);

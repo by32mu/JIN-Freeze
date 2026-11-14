@@ -16,40 +16,50 @@ import java.io.InputStream;
 final class WallpaperSource {
 
     static final String PREF = "freeze_list";
-    /** 长按选项框是否跟随半屏壁纸做底。 */
+    /** 长按选项框是否跟随自定义壁纸做底。 */
     static final String KEY_SHEET_WALLPAPER = "sheet_wallpaper_bg";
 
-    private static String srcUri;
-    private static Bitmap srcBitmap;
-    private static String blurKey;
-    private static Bitmap blurBitmap;
+    /** 半屏与全屏各自一套壁纸/模糊缓存，互不顶替、互不串用。 */
+    static final int MODE_PANEL = 0;
+    static final int MODE_FULL = 1;
+    private static final int MODES = 2;
+
+    /** 对应形态的壁纸配置键（全屏的键没有 panel_ 前缀）。 */
+    private static final String[] KEY_URI = {"panel_wallpaper_uri", "wallpaper_uri"};
+    private static final String[] KEY_BLUR = {"panel_wallpaper_blur", "wallpaper_blur"};
+
+    private static final String[] srcUri = new String[MODES];
+    private static final Bitmap[] srcBitmap = new Bitmap[MODES];
+    private static final String[] blurKey = new String[MODES];
+    private static final Bitmap[] blurBitmap = new Bitmap[MODES];
 
     private WallpaperSource() {
     }
 
     /** 按目标视图尺寸解码（屏幕宽高）：只按 2 的幂降采样到不小于目标，不做额外缩放或模糊。 */
-    static synchronized Bitmap decode(Context c, String uriString) {
+    static synchronized Bitmap decode(Context c, String uriString, int mode) {
         if (uriString == null || uriString.isEmpty()) {
             return null;
         }
-        if (uriString.equals(srcUri) && srcBitmap != null && !srcBitmap.isRecycled()) {
-            return srcBitmap;
+        int m = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
+        if (uriString.equals(srcUri[m]) && srcBitmap[m] != null && !srcBitmap[m].isRecycled()) {
+            return srcBitmap[m];
         }
         Bitmap bmp = decodeFile(c, Uri.parse(uriString));
         if (bmp == null) {
             return null;
         }
-        recycleQuietly(srcBitmap);
-        recycleQuietly(blurBitmap);
-        srcUri = uriString;
-        srcBitmap = bmp;
-        blurKey = null;
-        blurBitmap = null;
+        // 不在这里 recycle 旧图：面板/全屏的 WallpaperDrawable 可能还持有同一个 Bitmap，
+        // 提前回收会让那边画出空白。只换引用，旧图交由 GC 回收。
+        srcUri[m] = uriString;
+        srcBitmap[m] = bmp;
+        blurKey[m] = null;
+        blurBitmap[m] = null;
         return bmp;
     }
 
-    /** 模糊结果同样缓存：同一张图同一个档位只算一次。 */
-    static synchronized Bitmap blurred(Context c, String uriString, Bitmap src, int pct) {
+    /** 模糊结果同样按形态缓存：同一张图同一个档位只算一次，两个模式各算各的。 */
+    static synchronized Bitmap blurred(Context c, String uriString, Bitmap src, int pct, int mode) {
         if (src == null) {
             return null;
         }
@@ -57,47 +67,48 @@ final class WallpaperSource {
         if (p <= 0) {
             return src;
         }
-        String key = uriString + "#" + p;
-        if (key.equals(blurKey) && blurBitmap != null && !blurBitmap.isRecycled()) {
-            return blurBitmap;
+        int m = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
+        String key = m + "#" + uriString + "#" + p;
+        if (key.equals(blurKey[m]) && blurBitmap[m] != null && !blurBitmap[m].isRecycled()) {
+            return blurBitmap[m];
         }
         Bitmap out = softBlur(src, p);
-        recycleQuietly(blurBitmap);
-        blurKey = key;
-        blurBitmap = out;
+        blurKey[m] = key;
+        blurBitmap[m] = out;
         return out;
     }
 
-    /** 长按选项框要用的底图：固定取半屏那张（含它自己的模糊度）。 */
-    static Bitmap panelSheetBitmap(Context c) {
+    /**
+     * 长按选项框要用的底图：按形态取各自那张（半屏取半屏壁纸/模糊度，全屏取全屏壁纸/模糊度）。
+     */
+    static Bitmap sheetBitmap(Context c, int mode) {
+        int m = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
         SharedPreferences sp = c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
-        String uri = sp.getString("panel_wallpaper_uri", null);
+        String uri = sp.getString(KEY_URI[m], null);
         if (uri == null || uri.isEmpty()) {
             return null;
         }
-        Bitmap src = decode(c, uri);
+        Bitmap src = decode(c, uri, m);
         if (src == null) {
             return null;
         }
         return blurred(c, uri, src,
-                Math.max(0, Math.min(100, sp.getInt("panel_wallpaper_blur", 0))));
+                Math.max(0, Math.min(100, sp.getInt(KEY_BLUR[m], 0))), m);
     }
 
-    /** 清除自定义壁纸时把缓存一起放掉。 */
+    /** 清除某个形态的自定义壁纸时，只放掉那一套缓存（只断引用，交给 GC）。 */
+    static synchronized void drop(int mode) {
+        int m = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
+        srcUri[m] = null;
+        srcBitmap[m] = null;
+        blurKey[m] = null;
+        blurBitmap[m] = null;
+    }
+
+    /** 全部放掉。 */
     static synchronized void drop() {
-        recycleQuietly(srcBitmap);
-        if (blurBitmap != srcBitmap) {
-            recycleQuietly(blurBitmap);
-        }
-        srcUri = null;
-        srcBitmap = null;
-        blurKey = null;
-        blurBitmap = null;
-    }
-
-    private static void recycleQuietly(Bitmap b) {
-        if (b != null && !b.isRecycled()) {
-            b.recycle();
+        for (int m = 0; m < MODES; m++) {
+            drop(m);
         }
     }
 
@@ -144,21 +155,23 @@ final class WallpaperSource {
     private static Bitmap softBlur(Bitmap src, int pct) {
         int w = src.getWidth();
         int h = src.getHeight();
-        int[] buf = new int[w * h];
-        src.getPixels(buf, 0, w, 0, 0, w, h);
         int radius = Math.max(1, Math.round(Math.min(w, h) / 90f * pct / 100f * 2f));
+        // 两块缓冲区来回倒（横 A→B、纵 B→A），结果再落到 Bitmap。
+        // 原来每趟都 new int[w*h]，一张 1280×2772 的图一次模糊要临时分配 5 个 14MB 数组。
+        int[] a = new int[w * h];
+        int[] b = new int[w * h];
+        src.getPixels(a, 0, w, 0, 0, w, h);
         for (int i = 0; i < 2; i++) {
-            buf = boxPass(buf, w, h, radius, true);
-            buf = boxPass(buf, w, h, radius, false);
+            boxPass(a, b, w, h, radius, true);
+            boxPass(b, a, w, h, radius, false);
         }
         Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        out.setPixels(buf, 0, w, 0, 0, w, h);
+        out.setPixels(a, 0, w, 0, 0, w, h);
         return out;
     }
 
     /** 一次可分离盒式模糊（窗口和滚动累加，复杂度 O(w*h)）。 */
-    private static int[] boxPass(int[] in, int w, int h, int r, boolean horizontal) {
-        int[] out = new int[in.length];
+    private static void boxPass(int[] in, int[] out, int w, int h, int r, boolean horizontal) {
         int div = r * 2 + 1;
         if (horizontal) {
             for (int y = 0; y < h; y++) {
@@ -181,7 +194,7 @@ final class WallpaperSource {
                     sb += (add & 0xff) - (sub & 0xff);
                 }
             }
-            return out;
+            return;
         }
         for (int x = 0; x < w; x++) {
             int sr = 0;
@@ -202,6 +215,5 @@ final class WallpaperSource {
                 sb += (add & 0xff) - (sub & 0xff);
             }
         }
-        return out;
     }
 }
