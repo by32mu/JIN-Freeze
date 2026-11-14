@@ -8,9 +8,18 @@
     <color name="status_bg">#1F2633</color>
     <color name="text_primary">#E6E8EB</color>
     <color name="text_secondary">#9AA0A8</color>
+    <!-- 全屏灰字改黑：深色底上纯黑不可见，用与主文字一致的浅色 -->
+    <color name="fs_text_muted">#E6E8EB</color>
     <!-- 深色模式下不能还是纯黑，用高对比浅色 -->
     <color name="header_icon_black">#F2F3F5</color>
+    <!-- 深色下纯黑（#000000）落在 #121317 顶栏上完全看不见，这里保留浅色保证可读；浅色模式为纯黑 -->
+    <color name="unlock_icon">#F2F3F5</color>
     <color name="panel_scrim">#66000000</color>
     <color name="divider">#2A2E35</color>
     <color name="soft_bg">#232B3A</color>
+    <!-- 冻结列表的选中框 / 搜索框：深色下同样的低饱和蓝灰，提亮到能看清 -->
+    <color name="accent_surface_bg">#26303D</color>
+    <color name="accent_surface_stroke">#8FA3C0</color>
+    <color name="accent_surface_stroke_soft">#3B4757</color>
+    <color name="sel_fill">#338FA3C0</color>
 </resources>

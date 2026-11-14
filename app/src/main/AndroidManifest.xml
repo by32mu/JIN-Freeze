@@ -44,6 +44,7 @@
         <activity
             android:name=".ui.FreezeListActivity"
             android:exported="false"
+            android:theme="@style/Theme.Jin.Full"
             android:windowSoftInputMode="adjustResize" />
 
         <!-- 搜索入口：选择应用加入名单 -->
@@ -52,13 +53,13 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
-        <!-- 快捷方式落点：打开列表 / 一键冻结 / 一键解冻 -->
+        <!-- 快捷方式落点：打开列表 / 一键冻结 / 一键解冻；批量动作不建窗口 -->
         <activity
             android:name=".ui.QuickLaunchActivity"
             android:excludeFromRecents="true"
             android:exported="true"
             android:taskAffinity="com.jin.freeze.quick"
-            android:theme="@style/Theme.Jin.Entry">
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="com.jin.freeze.action.OPEN_FREEZE_LIST" />
                 <action android:name="com.jin.freeze.action.FREEZE_ALL" />
@@ -66,6 +67,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!-- 一键冻结 / 一键解冻执行体：不创建界面、不改状态栏 -->
+        <service
+            android:name=".ui.ShortcutBatchService"
+            android:exported="false" />
 
         <!-- 老式快捷方式提供者：手势工具通过 ACTION_CREATE_SHORTCUT 枚举 -->
         <activity

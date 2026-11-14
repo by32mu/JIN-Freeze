@@ -34,4 +34,14 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
+
+    <!-- 全屏列表：透明窗口，让「全屏背景」滑块能把整页压到半透明并叠加窗口模糊（默认 100% 实心时观感不变） -->
+    <style name="Theme.Jin.Full" parent="Theme.Jin">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
 </resources>

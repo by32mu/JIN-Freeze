@@ -128,6 +128,14 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_SURFACE = "surface";
     /** 底部雪花按钮底板档位：与面板同一套语义，单独记忆。 */
     private static final String KEY_FAB_SURFACE = "fab_surface";
+    /** 全屏背景档位：0=完全透明、50=模糊、100=实心；与半屏的 panel_surface 各自记忆。 */
+    private static final String KEY_FULL_SURFACE = "full_surface";
+    /** 全屏里的雪花按钮底板档位：单独记忆，不和半屏共用。 */
+    private static final String KEY_FULL_FAB_SURFACE = "full_fab_surface";
+    /** 搜索框颜色档位：独立记忆，与全屏/半屏背景都解耦。 */
+    private static final String KEY_SEARCH_SURFACE = "search_surface";
+    /** 启动时检查 root / Shizuku：入口带上这个标记，页面起来后探测一次。 */
+    public static final String EXTRA_CHECK_PRIV = "check_priv";
     /** 默认实心：与装机现有观感一致，升级后不突然变样。 */
     private static final int SURFACE_SOLID = 100;
     private static final String TAB_USER = "user";
@@ -263,6 +271,8 @@ public class FreezeListActivity extends BaseActivity {
     private int introRun;
     /** 是否已把状态栏图标切成白色（黑条过半才切，避免亮底上看不清）。 */
     private boolean introIconsLight;
+    /** 未授权提示框（启动检查与布局设置共用），避免同一时刻叠出两个。 */
+    private android.app.Dialog privDialog;
     private static final String TAG_INTRO = "FW_INTRO";
     private final Runnable introReveal = this::startIntroReveal;
     private final Runnable introSafety = this::guardIntroStuck;
@@ -297,6 +307,8 @@ public class FreezeListActivity extends BaseActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         panelMode = isPanelMode();
+        // 列表选中项不再有高亮框，清掉历史遗留的档位键
+        prefs().edit().remove("accent_surface").remove("panel_accent_surface").apply();
         setContentView(panelMode
                 ? R.layout.activity_freeze_list_panel
                 : R.layout.activity_freeze_list);
@@ -374,8 +386,12 @@ public class FreezeListActivity extends BaseActivity {
             setupPanel();
             applyPanelSurface();
             applyFabSurface();
+            applySearchSurface();
             applyPanelFabPosition();
         } else {
+            applyFullscreenSurface();
+            applyFullscreenFabSurface();
+            applyFullscreenTextColors();
             fabGroup.post(this::applyFabPosition);
             // 监听父容器尺寸变化（而不是按钮组自身），避免设置边距时自触发死循环
             ((View) fabGroup.getParent()).addOnLayoutChangeListener(
@@ -418,6 +434,11 @@ public class FreezeListActivity extends BaseActivity {
             if (savedInstanceState == null && consumeIntroRequest()) {
                 playIntro();
             }
+        }
+
+        // 打开 app 先检查一次权限：root / Shizuku 都没有时弹统一提示框
+        if (savedInstanceState == null && consumeCheckRequest()) {
+            checkPrivilegeOnStart();
         }
     }
 
@@ -482,6 +503,154 @@ public class FreezeListActivity extends BaseActivity {
     /** 底部雪花按钮底板：与面板同一套档位，值单独记忆；点按/长按行为不变。 */
     private void applyFabSurface() {
         int pct = prefs().getInt(lk(KEY_FAB_SURFACE), SURFACE_SOLID);
+        applySurface(fabGroup, pct);
+        applySurface(unfreezeFab, pct);
+    }
+
+    /** 搜索框颜色的当前档位（0 全透明 / 100 实心），与背景档位各自独立。 */
+    private int searchPct() {
+        return Math.max(0, Math.min(100,
+                prefs().getInt(lk(KEY_SEARCH_SURFACE), SURFACE_SOLID)));
+    }
+
+    /** 按百分比缩放颜色自身的 alpha，保留色相。 */
+    private static int scaleAlpha(int color, int pct) {
+        int a = Math.round(android.graphics.Color.alpha(color) * pct / 100f);
+        return android.graphics.Color.argb(a,
+                android.graphics.Color.red(color),
+                android.graphics.Color.green(color),
+                android.graphics.Color.blue(color));
+    }
+
+    /** 搜索框：填充与描边一起跟「搜索框颜色」档位缩放，和背景档位、选中框都互不影响。 */
+    private void applySearchSurface() {
+        if (search == null) {
+            return;
+        }
+        int pct = searchPct();
+        int radius = Ui.dp(this, 16);
+        int fill = scaleAlpha(getColor(R.color.accent_surface_bg), pct);
+
+        android.graphics.drawable.GradientDrawable normal =
+                new android.graphics.drawable.GradientDrawable();
+        normal.setCornerRadius(radius);
+        normal.setColor(fill);
+        normal.setStroke(Ui.dp(this, 1),
+                scaleAlpha(getColor(R.color.accent_surface_stroke_soft), pct));
+
+        android.graphics.drawable.GradientDrawable focused =
+                new android.graphics.drawable.GradientDrawable();
+        focused.setCornerRadius(radius);
+        focused.setColor(fill);
+        focused.setStroke(Ui.dp(this, 2),
+                scaleAlpha(getColor(R.color.accent_surface_stroke), pct));
+
+        android.graphics.drawable.StateListDrawable sld =
+                new android.graphics.drawable.StateListDrawable();
+        sld.addState(new int[]{android.R.attr.state_focused}, focused);
+        sld.addState(new int[0], normal);
+        search.setBackground(sld);
+    }
+
+    /**
+     * 全屏背景：0 = 整页透明（背后页面看得清）、50 = 磨砂、100 = 实心。
+     * 与半屏同一套档位语义，但键独立记忆；窗口模糊与状态栏/导航栏底色跟着同一档位走，
+     * 默认 100% 时窗口、状态栏仍是原来的 page_bg，观感不变。
+     */
+    private void applyFullscreenSurface() {
+        if (panelMode) {
+            return;
+        }
+        int pct = Math.max(0, Math.min(100,
+                prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
+        applyFullscreenSurfaces(pct);
+        android.view.Window w = getWindow();
+        if (w == null) {
+            return;
+        }
+        int base = getColor(R.color.page_bg);
+        int alpha = Math.round(255f * pct / 100f);
+        int argb = android.graphics.Color.argb(alpha,
+                android.graphics.Color.red(base),
+                android.graphics.Color.green(base),
+                android.graphics.Color.blue(base));
+        // 内容区被 inset 让出状态栏/导航栏，这两条也要跟着档位淡出，否则会留一条实心底色
+        w.setStatusBarColor(argb);
+        w.setNavigationBarColor(argb);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            try {
+                w.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
+                android.view.WindowManager.LayoutParams attrs = w.getAttributes();
+                int maxRadius = Ui.dp(this, 28);
+                attrs.setBlurBehindRadius(Math.round(maxRadius * pct / 100f));
+                w.setAttributes(attrs);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /**
+     * 全屏「同一档位」铺到所有可见底板：页面背景、顶栏、搜索框、用户/系统标签胶囊、
+     * 以及移动模式下的选中高亮框。列表每次重绘后要再调一次，避免新建的视图漏掉。
+     */
+    private void applyFullscreenSurfaces(int pct) {
+        applySurface(findViewById(R.id.page_root), pct);
+        applySurface(findViewById(R.id.page_header), pct);
+        if (tabBar != null) {
+            for (int i = 0; i < tabBar.getChildCount(); i++) {
+                applySurface(tabBar.getChildAt(i), pct);
+            }
+        }
+        if (grid != null) {
+            for (int r = 0; r < grid.getChildCount(); r++) {
+                View row = grid.getChildAt(r);
+                if (!(row instanceof ViewGroup)) {
+                    continue;
+                }
+                ViewGroup cellsOfRow = (ViewGroup) row;
+                for (int c = 0; c < cellsOfRow.getChildCount(); c++) {
+                    applySurface(cellsOfRow.getChildAt(c), pct);
+                }
+            }
+        }
+        // 搜索框颜色归自己的档位单独管，上面这轮铺完再盖回自己的 alpha
+        applySearchSurface();
+    }
+
+    /** 全屏里原来偏灰的入口/提示文字统一压成同一个深色（深色模式用高对比浅色）。 */
+    private void applyFullscreenTextColors() {
+        if (panelMode) {
+            return;
+        }
+        int color = getColor(R.color.fs_text_muted);
+        int[] ids = {R.id.layout, R.id.backup, R.id.restore, R.id.sys_hint, R.id.count};
+        for (int id : ids) {
+            View v = findViewById(id);
+            if (v instanceof TextView) {
+                ((TextView) v).setTextColor(color);
+            }
+        }
+        if (search != null) {
+            search.setHintTextColor(color);
+        }
+    }
+
+    /** 列表/标签重绘后补一遍：新加的胶囊、格子、高亮框也要跟着当前档位。 */
+    private void reapplyFullscreenSurfaces() {
+        if (panelMode) {
+            return;
+        }
+        applyFullscreenSurfaces(Math.max(0, Math.min(100,
+                prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID))));
+    }
+
+    /** 全屏里的雪花按钮底板：同一套档位，单独记忆。 */
+    private void applyFullscreenFabSurface() {
+        if (panelMode) {
+            return;
+        }
+        int pct = Math.max(0, Math.min(100,
+                prefs().getInt(KEY_FULL_FAB_SURFACE, SURFACE_SOLID)));
         applySurface(fabGroup, pct);
         applySurface(unfreezeFab, pct);
     }
@@ -628,6 +797,11 @@ public class FreezeListActivity extends BaseActivity {
             intent.removeExtra(EXTRA_PLAY_INTRO);
             android.util.Log.d(TAG_INTRO, "onNewIntent replay");
             playIntro();
+        }
+        // 再次点桌面图标也算一次「打开 app」：复用同一套启动检查
+        if (intent != null && intent.getBooleanExtra(EXTRA_CHECK_PRIV, false)) {
+            intent.removeExtra(EXTRA_CHECK_PRIV);
+            checkPrivilegeOnStart();
         }
     }
 
@@ -1362,6 +1536,7 @@ public class FreezeListActivity extends BaseActivity {
             lp.rightMargin = Ui.dp(this, 6);
             tabBar.addView(chip, lp);
         }
+        reapplyFullscreenSurfaces();
     }
 
     private void selectTab(String id) {
@@ -1557,7 +1732,6 @@ public class FreezeListActivity extends BaseActivity {
                 list.addAll(map.values());
                 Collections.sort(list, FreezeListActivity::byDefault);
             }
-            final boolean ok = truthOk;
             main.post(() -> {
                 if (isFinishing() || isDestroyed()) {
                     return;
@@ -1566,10 +1740,6 @@ public class FreezeListActivity extends BaseActivity {
                 items.addAll(list);
                 loadedOnce = true;
                 render();
-                if (!ok && !list.isEmpty()) {
-                    Toast.makeText(this, "读取系统冻结状态失败，显示可能不准确",
-                            Toast.LENGTH_SHORT).show();
-                }
                 // 冻结设置成「后收起」时，等这一轮状态刷新落地再关面板，回到进入前的应用
                 if (dismissAfterReload) {
                     dismissAfterReload = false;
@@ -1637,6 +1807,7 @@ public class FreezeListActivity extends BaseActivity {
             emptyState.setVisibility(loadedOnce && shown.isEmpty() ? View.VISIBLE : View.GONE);
         }
         if (shown.isEmpty()) {
+            reapplyFullscreenSurfaces();
             return;
         }
         LinearLayout row = null;
@@ -1653,6 +1824,7 @@ public class FreezeListActivity extends BaseActivity {
             }
             row.addView(buildCell(shown.get(i)));
         }
+        reapplyFullscreenSurfaces();
     }
 
     private void updateCount(List<Item> shown) {
@@ -1674,7 +1846,8 @@ public class FreezeListActivity extends BaseActivity {
         freezeBtn.setAlpha(empty || working ? 0.4f : 1f);
         freezeBtn.setEnabled(!empty && !working);
         if (unfreezeBtn != null) {
-            unfreezeBtn.setAlpha(empty || working ? 0.4f : 1f);
+            // 一键解冻图标始终保持纯黑（深色模式走高对比浅色）；名单为空只置灰交互，不再把图标淡成 40%
+            unfreezeBtn.setAlpha(1f);
             unfreezeBtn.setEnabled(!empty && !working);
         }
     }
@@ -1848,17 +2021,14 @@ public class FreezeListActivity extends BaseActivity {
             bindCellTo(cellOrder.get(i), shown.get(i));
         }
         updateCount(shown);
+        reapplyFullscreenSurfaces();
     }
 
     // ---------------- 点击移动图标（移动模式） ----------------
 
-    /** 选中态的描边底色，跟随主题取蓝色资源。 */
+    /** 全屏列表选中项不再画高亮框：直接跟页面背景同色（保持点击行为不变）。 */
     private android.graphics.drawable.Drawable selectedBackground() {
-        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
-        g.setCornerRadius(Ui.dp(this, 12));
-        g.setColor(0x224E7CF6);
-        g.setStroke(Ui.dp(this, 1), getColor(R.color.blue));
-        return g;
+        return null;
     }
 
     /** 移动模式：第一次点击选中并高亮，第二次点目标项即插到目标前面并实时落盘。 */
@@ -3104,7 +3274,109 @@ public class FreezeListActivity extends BaseActivity {
             box.addView(panelBar);
             box.addView(fabAlphaLabel);
             box.addView(fabAlphaBar);
+        } else {
+            // 全屏形态也补两条：全屏背景档位 + 雪花按钮底板档位。
+            // 与半屏同一套语义（0 全透明 / 50 模糊 / 100 实心），键独立记忆，默认实心不变观感。
+            final TextView fullBgLabel = new TextView(this);
+            fullBgLabel.setTextSize(11);
+            fullBgLabel.setTextColor(getColor(R.color.text_secondary));
+            fullBgLabel.setPadding(0, Ui.dp(this, 12), 0, 0);
+
+            final SeekBar fullBgBar = new SeekBar(this);
+            fullBgBar.setMax(100);
+            int fullBgPct = Math.max(0, Math.min(100,
+                    prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
+            fullBgBar.setProgress(fullBgPct);
+            fullBgLabel.setText("全屏背景：" + fullBgPct + "%（0 全透明 · 50 模糊 · 100 实心）");
+            fullBgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                    if (!fromUser) {
+                        return;
+                    }
+                    prefs().edit().putInt(KEY_FULL_SURFACE, p).apply();
+                    fullBgLabel.setText("全屏背景：" + p + "%（0 全透明 · 50 模糊 · 100 实心）");
+                    applyFullscreenSurface();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar sb) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                }
+            });
+
+            final TextView fullFabLabel = new TextView(this);
+            fullFabLabel.setTextSize(11);
+            fullFabLabel.setTextColor(getColor(R.color.text_secondary));
+            fullFabLabel.setPadding(0, Ui.dp(this, 10), 0, 0);
+
+            final SeekBar fullFabBar = new SeekBar(this);
+            fullFabBar.setMax(100);
+            int fullFabPct = Math.max(0, Math.min(100,
+                    prefs().getInt(KEY_FULL_FAB_SURFACE, SURFACE_SOLID)));
+            fullFabBar.setProgress(fullFabPct);
+            fullFabLabel.setText("雪花按钮：" + fullFabPct + "%（0 全透明 · 50 模糊 · 100 实心）");
+            fullFabBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                    if (!fromUser) {
+                        return;
+                    }
+                    prefs().edit().putInt(KEY_FULL_FAB_SURFACE, p).apply();
+                    fullFabLabel.setText("雪花按钮：" + p + "%（0 全透明 · 50 模糊 · 100 实心）");
+                    applyFullscreenFabSurface();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar sb) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                }
+            });
+
+            box.addView(fullBgLabel);
+            box.addView(fullBgBar);
+            box.addView(fullFabLabel);
+            box.addView(fullFabBar);
         }
+
+        // 搜索框颜色：独立档位，与背景档位解耦（列表选中项已不再画高亮框）
+        final TextView searchLabel = new TextView(this);
+        searchLabel.setTextSize(11);
+        searchLabel.setTextColor(getColor(R.color.text_secondary));
+        searchLabel.setPadding(0, Ui.dp(this, 10), 0, 0);
+
+        final SeekBar searchBar = new SeekBar(this);
+        searchBar.setMax(100);
+        int searchStart = searchPct();
+        searchBar.setProgress(searchStart);
+        searchLabel.setText("搜索框颜色：" + searchStart + "%（0 全透明 · 100 实心）");
+        searchBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                prefs().edit().putInt(lk(KEY_SEARCH_SURFACE), p).apply();
+                searchLabel.setText("搜索框颜色：" + p + "%（0 全透明 · 100 实心）");
+                applySearchSurface();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+        box.addView(searchLabel);
+        box.addView(searchBar);
 
         // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
         TextView backupTitle = new TextView(this);
@@ -3869,13 +4141,7 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         if (!ShizukuGate.installed(this)) {
-            new AlertDialog.Builder(this)
-                    .setTitle("没有可用的特权通道")
-                    .setMessage("未获得 root，也未安装 Shizuku。\n\n"
-                            + "安装并启动 Shizuku 后回到这里点击授权即可；"
-                            + "若设备已有 root，请确认已允许本应用使用超级用户权限。")
-                    .setPositiveButton("知道了", null)
-                    .show();
+            showPrivilegeMissingDialog();
             return;
         }
         ShizukuGate.request(this, () -> {
@@ -3884,6 +4150,93 @@ public class FreezeListActivity extends BaseActivity {
                 PrivShell.mode();
                 main.post(refresh);
             });
+        });
+    }
+
+    /**
+     * 未授权提示：布局设置的权限行与启动检查共用同一个弹窗。
+     * 圆角（16dp 裁切）+ 收窄宽度 + 紧凑内边距，标题「您未授权于凚」，下面保留原来的说明小字。
+     */
+    private void showPrivilegeMissingDialog() {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        if (privDialog != null && privDialog.isShowing()) {
+            return;
+        }
+        final android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int padH = Ui.dp(this, 18);
+        root.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 4));
+
+        TextView title = new TextView(this);
+        title.setText("您未授权于凚");
+        title.setTextSize(15);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setTextColor(getColor(R.color.text_primary));
+        root.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView message = new TextView(this);
+        message.setText("未获得 root，也未安装 Shizuku。\n\n"
+                + "安装并启动 Shizuku 后回到这里点击授权即可；"
+                + "若设备已有 root，请确认已允许本应用使用超级用户权限。");
+        message.setTextSize(12);
+        message.setLineSpacing(Ui.dp(this, 2), 1f);
+        message.setTextColor(getColor(R.color.text_secondary));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.topMargin = Ui.dp(this, 8);
+        root.addView(message, mlp);
+
+        TextView ok = new TextView(this);
+        ok.setText("知道了");
+        ok.setTextSize(13);
+        ok.setTypeface(null, android.graphics.Typeface.BOLD);
+        ok.setTextColor(getColor(R.color.blue));
+        ok.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        ok.setPadding(Ui.dp(this, 10), Ui.dp(this, 10), 0, Ui.dp(this, 8));
+        ok.setOnClickListener(v -> dialog.dismiss());
+        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        olp.topMargin = Ui.dp(this, 2);
+        root.addView(ok, olp);
+
+        dialog.setContentView(root);
+        // 首帧就按圆角收窄落位，onShow 再兜一次，避免先出大块默认底再跳
+        int insetDp = 92;
+        Ui.roundDialog(dialog, root, insetDp);
+        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, insetDp));
+        android.view.Window w = dialog.getWindow();
+        if (w != null) {
+            w.setDimAmount(0.4f);
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setGravity(Gravity.CENTER);
+        }
+        privDialog = dialog;
+        dialog.show();
+    }
+
+    /** 入口带的一次性启动检查标记：消费掉，避免重建时重复探测。 */
+    private boolean consumeCheckRequest() {
+        Intent intent = getIntent();
+        if (intent == null || !intent.getBooleanExtra(EXTRA_CHECK_PRIV, false)) {
+            return false;
+        }
+        intent.removeExtra(EXTRA_CHECK_PRIV);
+        return true;
+    }
+
+    /** 启动检查：root 与 Shizuku 都不可用时弹统一提示；有任一通道则静默通过。 */
+    private void checkPrivilegeOnStart() {
+        IO.execute(() -> {
+            PrivShell.Mode mode = PrivShell.mode();
+            if (mode == PrivShell.Mode.NONE) {
+                main.post(this::showPrivilegeMissingDialog);
+            }
         });
     }
 
@@ -3903,7 +4256,9 @@ public class FreezeListActivity extends BaseActivity {
             "panel_" + KEY_LAYOUT_DX, "panel_" + KEY_LAYOUT_DY,
             "panel_" + KEY_LAYOUT_OPEN_H, "panel_" + KEY_LAYOUT_EXPAND_H,
             "panel_" + KEY_LAYOUT_H_LEGACY,
-            "panel_surface", "panel_fab_surface"
+            "panel_surface", "panel_fab_surface",
+            KEY_FULL_SURFACE, KEY_FULL_FAB_SURFACE,
+            KEY_SEARCH_SURFACE, "panel_" + KEY_SEARCH_SURFACE
     };
 
     private void doImport(String raw, AlertDialog dialog) {

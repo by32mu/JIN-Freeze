@@ -18,6 +18,8 @@ public class LaunchActivity extends Activity {
         Intent target = new Intent(this,
                 fullscreen ? FreezeListActivity.class : FreezePanelActivity.class);
         target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        // 打开 app 先检查 root / Shizuku：目标页面起来后在后台探测，未授权再弹统一提示
+        target.putExtra(FreezeListActivity.EXTRA_CHECK_PRIV, true);
         if (!fullscreen) {
             // 桌面图标入口每次都要播放下滑压暗过渡，面板被复用时同样生效
             target.putExtra(FreezeListActivity.EXTRA_PLAY_INTRO, true);
