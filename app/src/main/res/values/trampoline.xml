@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 快捷方式落地壳：不建窗口，仅做分流；单独给个主题，好在 Android 12+ 关掉系统白色 Splash -->
+    <style name="Theme.Jin.Trampoline" parent="@android:style/Theme.NoDisplay" />
+</resources>

@@ -89,6 +89,24 @@
                 android:textColor="@color/blue"
                 android:textSize="13sp"
                 android:textStyle="bold" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/view_mode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:paddingLeft="8dp"
+                android:paddingTop="7dp"
+                android:paddingRight="4dp"
+                android:paddingBottom="7dp"
+                android:text="列表"
+                android:textColor="@color/blue"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <TextView

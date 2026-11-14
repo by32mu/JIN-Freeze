@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ 的系统 Splash 默认取白色背景：入口壳、全屏、半屏都改成深色，别在首帧露白 -->
+    <style name="Theme.Jin.Trampoline" parent="@android:style/Theme.NoDisplay">
+        <item name="android:windowSplashScreenBackground">@color/launch_scrim</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/transparent</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.Jin" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/blue</item>
+        <item name="colorPrimaryDark">@color/blue_dark</item>
+        <item name="colorAccent">@color/blue</item>
+        <item name="android:statusBarColor">@color/page_bg</item>
+        <item name="android:navigationBarColor">@color/page_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">@color/page_bg</item>
+        <item name="android:windowSplashScreenBackground">@color/launch_scrim</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/transparent</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.Jin.Full" parent="Theme.Jin">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowSplashScreenBackground">@color/launch_scrim</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/transparent</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+    </style>
+</resources>

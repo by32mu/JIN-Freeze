@@ -35,6 +35,23 @@
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 
+    <!-- 长按操作单：BottomSheet 默认会铺一层白/深色方角底板，这里把窗口与底板都置透明，
+         圆角只由内容卡片（16dp）负责 -->
+    <style name="Theme.Jin.Sheet" parent="Theme.MaterialComponents.DayNight.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/Widget.Jin.Sheet</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:backgroundDimAmount">0.42</item>
+    </style>
+
+    <style name="Widget.Jin.Sheet" parent="Widget.MaterialComponents.BottomSheet.Modal">
+        <item name="android:background">@android:color/transparent</item>
+        <item name="backgroundTint">@android:color/transparent</item>
+        <item name="android:elevation">0dp</item>
+    </style>
+
     <!-- 全屏列表：透明窗口，让「全屏背景」滑块能把整页压到半透明并叠加窗口模糊（默认 100% 实心时观感不变） -->
     <style name="Theme.Jin.Full" parent="Theme.Jin">
         <item name="android:windowIsTranslucent">true</item>

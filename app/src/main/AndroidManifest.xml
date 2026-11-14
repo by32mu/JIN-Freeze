@@ -59,7 +59,7 @@
             android:excludeFromRecents="true"
             android:exported="true"
             android:taskAffinity="com.jin.freeze.quick"
-            android:theme="@android:style/Theme.NoDisplay">
+            android:theme="@style/Theme.Jin.Trampoline">
             <intent-filter>
                 <action android:name="com.jin.freeze.action.OPEN_FREEZE_LIST" />
                 <action android:name="com.jin.freeze.action.FREEZE_ALL" />

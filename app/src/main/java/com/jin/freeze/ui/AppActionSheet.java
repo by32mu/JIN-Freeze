@@ -43,82 +43,156 @@ public final class AppActionSheet {
     }
 
     public static void show(Context c, String label, Drawable icon, boolean frozen, Actions actions) {
-        final BottomSheetDialog sheet = new BottomSheetDialog(c);
+        show(c, label, icon, frozen, 100, actions);
+    }
+
+    /**
+     * @param bgAlphaPct 选项框背景透明度：直接沿用宿主页当前那条背景滑块的值
+     *                   （半屏用 panel_surface，全屏用 full_surface），不另算一份。
+     */
+    public static void show(Context c, String label, Drawable icon, boolean frozen,
+                            int bgAlphaPct, Actions actions) {
+        // 用自带样式：窗口与 BottomSheet 底板都是透明，否则系统默认的方角白底会盖住卡片圆角
+        final BottomSheetDialog sheet = new BottomSheetDialog(c, R.style.Theme_Jin_Sheet);
+        // 勾了「同步长按选项框」时用半屏那张壁纸做底（含它的模糊度），上面压一层深色 scrim 保证字和图可读
+        final android.graphics.Bitmap wallpaper =
+                c.getSharedPreferences(WallpaperSource.PREF, Context.MODE_PRIVATE)
+                        .getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)
+                        ? WallpaperSource.panelSheetBitmap(c) : null;
+        final boolean onWallpaper = wallpaper != null;
+        final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
+        final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);
+        final int lineColor = onWallpaper ? 0x33FFFFFF : Ui.color(c, R.color.divider);
+        // 外层留边、内层圆角：左右 12dp，底部留出明显余量，卡片浮在中间偏下而不是贴着屏幕底
+        android.widget.FrameLayout outer = new android.widget.FrameLayout(c);
+        outer.setPadding(Ui.dp(c, 12), 0, Ui.dp(c, 12), Ui.dp(c, 56));
+
+        // 底色/壁纸按宿主页的背景透明度一起淡出：0 = 全透明，100 = 实心
+        final int bgAlpha = Math.round(255f * Math.max(0, Math.min(100, bgAlphaPct)) / 100f);
         LinearLayout content = new LinearLayout(c);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setBackgroundResource(R.drawable.bg_sheet);
-        content.setPadding(0, Ui.dp(c, 6), 0, Ui.dp(c, 12));
+        Drawable cardBg;
+        if (onWallpaper) {
+            cardBg = new android.graphics.drawable.LayerDrawable(new Drawable[]{
+                    new WallpaperDrawable(wallpaper, 0),
+                    new android.graphics.drawable.ColorDrawable(0x66000000)});
+        } else {
+            cardBg = androidx.core.content.ContextCompat.getDrawable(c, R.drawable.bg_dialog).mutate();
+        }
+        cardBg.setAlpha(bgAlpha);
+        content.setBackground(cardBg);
+        final int radius = Ui.dp(c, 16);
+        content.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override
+            public void getOutline(View view, android.graphics.Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
+            }
+        });
+        content.setClipToOutline(true);
+        content.setPadding(0, Ui.dp(c, 4), 0, Ui.dp(c, 8));
+        outer.addView(content, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         LinearLayout header = new LinearLayout(c);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(Ui.dp(c, 20), Ui.dp(c, 14), Ui.dp(c, 20), Ui.dp(c, 12));
+        header.setPadding(Ui.dp(c, 18), Ui.dp(c, 12), Ui.dp(c, 18), Ui.dp(c, 10));
         ImageView headIcon = new ImageView(c);
         if (icon != null) {
             headIcon.setImageDrawable(icon);
         } else {
             headIcon.setImageResource(R.drawable.ic_launcher);
         }
-        header.addView(headIcon, new LinearLayout.LayoutParams(Ui.dp(c, 40), Ui.dp(c, 40)));
-        TextView headName = Ui.text(c, label, 16, Ui.TEXT_PRIMARY, true);
+        header.addView(headIcon, new LinearLayout.LayoutParams(Ui.dp(c, 34), Ui.dp(c, 34)));
+        TextView headName = Ui.text(c, label, 15, fg, true);
         headName.setSingleLine(true);
         headName.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        nameLp.leftMargin = Ui.dp(c, 14);
+        nameLp.leftMargin = Ui.dp(c, 12);
         header.addView(headName, nameLp);
         content.addView(header);
-        divider(c, content, 20);
+        divider(c, content, 18, lineColor);
 
-        addItem(c, content, sheet, R.drawable.ic_action_run, "运行", actions::run);
+        addItem(c, content, sheet, R.drawable.ic_action_run, "运行", actions::run, fg, iconFg);
         addItem(c, content, sheet, frozen ? R.drawable.ic_sc_unfreeze : R.drawable.ic_sc_freeze,
-                frozen ? "解冻" : "冻结", actions::toggleFreeze);
-        divider(c, content, 20);
-        addItem(c, content, sheet, R.drawable.ic_action_tag, "更改标签页", actions::moveTab);
-        addItem(c, content, sheet, R.drawable.ic_settings, "在其他应用中配置", actions::appSettings);
-        addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome);
+                frozen ? "解冻" : "冻结", actions::toggleFreeze, fg, iconFg);
+        divider(c, content, 18, lineColor);
+        addItem(c, content, sheet, R.drawable.ic_action_tag, "更改标签页", actions::moveTab, fg, iconFg);
+        addItem(c, content, sheet, R.drawable.ic_settings, "在其他应用中配置", actions::appSettings, fg, iconFg);
+        addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
         if (actions.inList()) {
-            divider(c, content, 20);
-            addItem(c, content, sheet, R.drawable.ic_minus, "移除列表并解冻", actions::removeAndUnfreeze);
+            divider(c, content, 18, lineColor);
+            addItem(c, content, sheet, R.drawable.ic_minus, "移除列表并解冻",
+                    actions::removeAndUnfreeze, fg, iconFg);
         }
 
         ScrollView sv = new ScrollView(c);
-        sv.addView(content);
+        sv.addView(outer);
         sheet.setContentView(sv);
         sheet.getBehavior().setState(BottomSheetBehavior.STATE_EXPANDED);
+        // show 之后 BottomSheet 还会再套一层，用 onShow 再兜一次底，确保容器不留方角白底
+        sheet.setOnShowListener(d -> makeSheetTransparent(sheet));
         sheet.show();
+        makeSheetTransparent(sheet);
+    }
+
+    /** 把 BottomSheet 的窗口、decor、底板全部清成透明，圆角只由内部卡片负责。 */
+    private static void makeSheetTransparent(BottomSheetDialog sheet) {
+        final android.graphics.drawable.ColorDrawable clear =
+                new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT);
+        if (sheet.getWindow() != null) {
+            sheet.getWindow().setBackgroundDrawable(clear);
+            sheet.getWindow().setDimAmount(0.42f);
+            View decor = sheet.getWindow().getDecorView();
+            if (decor != null) decor.setBackground(clear);
+        }
+        View designSheet = sheet.findViewById(
+                com.google.android.material.R.id.design_bottom_sheet);
+        if (designSheet != null) {
+            designSheet.setBackground(clear);
+            androidx.core.view.ViewCompat.setBackgroundTintList(
+                    designSheet, ColorStateList.valueOf(android.graphics.Color.TRANSPARENT));
+        }
     }
 
     private static void addItem(Context c, LinearLayout parent, final BottomSheetDialog sheet,
-                                int iconRes, String text, final Runnable action) {
+                                int iconRes, String text, final Runnable action,
+                                int fg, int iconFg) {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(Ui.dp(c, 20), 0, Ui.dp(c, 20), 0);
-        android.util.TypedValue tv = new android.util.TypedValue();
-        c.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
-        row.setBackgroundResource(tv.resourceId);
+        row.setPadding(Ui.dp(c, 12), 0, Ui.dp(c, 12), 0);
+        // 条目按压高亮也走圆角，避免方角盖住卡片圆角
+        row.setBackgroundResource(R.drawable.bg_menu_item);
         row.setClickable(true);
         ImageView ic = new ImageView(c);
         ic.setImageResource(iconRes);
-        ic.setImageTintList(ColorStateList.valueOf(Ui.primary(c)));
-        row.addView(ic, new LinearLayout.LayoutParams(Ui.dp(c, 22), Ui.dp(c, 22)));
-        TextView label = Ui.text(c, text, 14, Ui.TEXT_PRIMARY, false);
+        ic.setImageTintList(ColorStateList.valueOf(iconFg));
+        row.addView(ic, new LinearLayout.LayoutParams(Ui.dp(c, 20), Ui.dp(c, 20)));
+        TextView label = Ui.text(c, text, 13, fg, false);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        lp.leftMargin = Ui.dp(c, 14);
+        lp.leftMargin = Ui.dp(c, 12);
         row.addView(label, lp);
         row.setOnClickListener(v -> {
             sheet.dismiss();
             action.run();
         });
-        parent.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 52)));
+        parent.addView(row, rowLp(c));
     }
 
-    private static void divider(Context c, LinearLayout parent, int insetDp) {
+    private static LinearLayout.LayoutParams rowLp(Context c) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 46));
+        lp.leftMargin = Ui.dp(c, 5);
+        lp.rightMargin = Ui.dp(c, 5);
+        return lp;
+    }
+
+    private static void divider(Context c, LinearLayout parent, int insetDp, int color) {
         View line = new View(c);
-        line.setBackgroundColor(Ui.color(c, R.color.divider));
+        line.setBackgroundColor(color);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, Ui.dp(c, 0.5f)));
         lp.leftMargin = Ui.dp(c, insetDp);

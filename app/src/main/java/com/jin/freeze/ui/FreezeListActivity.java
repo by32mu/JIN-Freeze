@@ -38,11 +38,11 @@ import android.widget.Toast;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.jin.freeze.R;
 import com.jin.freeze.core.LaunchTarget;
-import com.jin.freeze.core.LegacyMigrate;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.ShizukuGate;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
@@ -118,6 +118,17 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_PANEL_DISMISS = "dismiss_after_freeze";
     /** 「隐藏后台」：勾选后离开列表时把任务从最近任务移除；全屏/半屏各自记忆。 */
     private static final String KEY_PANEL_HIDE_RECENTS = "hide_recents";
+
+    /** 「半屏打开时隐藏状态栏」：只作用于半屏面板，不影响全屏页。 */
+    private static final String KEY_PANEL_HIDE_STATUS_BAR = "panel_hide_status_bar";
+
+    /** 自定义壁纸：原图 URI + 显示范围（缩放/横向/纵向），半屏与全屏各存一份。 */
+    private static final String KEY_WALLPAPER_URI = "wallpaper_uri";
+    private static final String KEY_WALLPAPER_ZOOM = "wallpaper_zoom";
+    private static final String KEY_WALLPAPER_DX = "wallpaper_dx";
+    private static final String KEY_WALLPAPER_DY = "wallpaper_dy";
+    /** 壁纸自己的模糊度：0 完全清晰，独立于背景透明度/模糊档位。 */
+    private static final String KEY_WALLPAPER_BLUR = "wallpaper_blur";
     /** 冻结成功后是否弹「已冻结」提示；两种形态共用同一个开关。 */
     private static final String KEY_SHOW_FROZEN_TIP = "show_frozen_toast";
     /** 桌面图标进入的形态：true=全屏冻结列表，false=半屏面板（默认）。 */
@@ -215,7 +226,7 @@ public class FreezeListActivity extends BaseActivity {
     private EditText search;
     private LinearLayout tabBar;
     private TextView sysHint;
-    /** 空态：名单为空时显示在面板中部（添加应用 / 从旧版导入）。 */
+    /** 空态：名单为空时显示在面板中部（添加应用）。 */
     private View emptyState;
     private boolean loadedOnce;
     /** 打开选应用页期间不让「隐藏半屏后台」把面板收掉，否则回传结果没人接。 */
@@ -250,6 +261,22 @@ public class FreezeListActivity extends BaseActivity {
     private boolean panelDismissAfterFreeze;
     /** 「隐藏半屏后台」开关：默认不勾选，保持半屏任务照常出现在最近任务里。 */
     protected boolean panelHideRecents;
+    /** 半屏打开时是否隐藏状态栏（布局设置开关，默认不隐藏）。 */
+    private boolean panelHideStatusBar;
+    /** 当前是否已把状态栏隐藏掉；隐藏期间不再做图标反色。 */
+    private boolean statusBarHidden;
+    /** 隐藏状态栏内容时保留的顶部空间（px），保证面板位置和背景都不变。 */
+    private int statusBarReservePx;
+
+    /** 自定义壁纸：原图与当前背景绘制器；为空表示沿用纯色/圆角底板背景。 */
+    private String wallpaperUri;
+    private Bitmap wallpaperSourceBitmap;
+    private Bitmap wallpaperBitmap;
+    /** 壁纸自己的模糊度（0 = 完全清晰），与透明度滑块分开记忆。 */
+    private int wallpaperBlur;
+    /** 布局设置里壁纸状态那一行，选图/清除后就地刷新。 */
+    private TextView layoutWpState;
+    private WallpaperDrawable wallpaperDrawable;
     private boolean dismissAfterReload;
     /** 冻结成功后的提示开关；失败提示不受它影响。 */
     private boolean showFrozenTip;
@@ -277,6 +304,14 @@ public class FreezeListActivity extends BaseActivity {
     private final Runnable introReveal = this::startIntroReveal;
     private final Runnable introSafety = this::guardIntroStuck;
 
+    /**
+     * 状态栏图标补压的时间点：桌面长按菜单收起、系统重算系统栏外观都发生在入场后一两秒内，
+     * 单次设置会被后来的值覆盖，所以要在几个时间点重复压，保证最终生效的是本窗口的值。
+     */
+    private static final int[] TONE_DELAYS_MS = {120, 320, 700, 1300};
+    private final Runnable[] toneRetries = new Runnable[TONE_DELAYS_MS.length];
+    private final Runnable toneAfterTouch = this::applyPanelBarState;
+
     /** 已冻结灰度滤镜，和「应用冻结」页保持一致。 */
     private static final android.graphics.ColorMatrixColorFilter GRAY;
 
@@ -303,15 +338,67 @@ public class FreezeListActivity extends BaseActivity {
                 reload();
             });
 
+    /** 自定义壁纸：系统文件选择器，拿到可长期读取的 URI 后立刻进入裁剪/显示范围调整。 */
+    private final ActivityResultLauncher<String[]> wallpaperPicker =
+            registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+                if (uri == null) {
+                    return;
+                }
+                try {
+                    getContentResolver().takePersistableUriPermission(uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Throwable ignored) {
+                    // 个别文件提供方不给长期权限，本次会话内仍可读
+                }
+                Bitmap bmp = decodeWallpaper(uri);
+                if (bmp == null) {
+                    Toast.makeText(this, "这张图片读不出来，换一张试试", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                releaseWallpaper();
+                wallpaperSourceBitmap = bmp;
+                wallpaperUri = uri.toString();
+                wallpaperBlur = 0;
+                prefs().edit()
+                        .putString(lk(KEY_WALLPAPER_URI), uri.toString())
+                        .putInt(lk(KEY_WALLPAPER_BLUR), 0)
+                        .apply();
+                rebuildWallpaperDrawable();
+                applyWallpaperBackground();
+                if (layoutWpState != null) {
+                    layoutWpState.setText("当前：已设置");
+                }
+            });
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         panelMode = isPanelMode();
         // 列表选中项不再有高亮框，清掉历史遗留的档位键
         prefs().edit().remove("accent_surface").remove("panel_accent_surface").apply();
+        // 先在进内容之前把壁纸准备好：解码有进程内缓存，首帧就可以直接挂上，不会先露一帧白底
+        loadWallpaperFromPrefs();
         setContentView(panelMode
                 ? R.layout.activity_freeze_list_panel
                 : R.layout.activity_freeze_list);
+        applyWallpaperBackground();
+        // 长按选项框勾了「同步」时，提前在后台备好半屏壁纸，长按弹出就不用等解码/模糊
+        if (prefs().getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)) {
+            IO.execute(() -> WallpaperSource.panelSheetBitmap(this));
+        }
+        // 半屏「隐藏状态栏」只藏图标内容：隐藏后 inset 会归零，这里按记住的高度补回顶部让位，
+        // 面板位置、上方背景都与正常显示时一致，不会变成沉浸式全屏。
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(
+                findViewById(android.R.id.content), (v, insets) -> {
+                    androidx.core.graphics.Insets bars = insets.getInsets(
+                            WindowInsetsCompat.Type.systemBars()
+                                    | WindowInsetsCompat.Type.displayCutout());
+                    androidx.core.graphics.Insets ime =
+                            insets.getInsets(WindowInsetsCompat.Type.ime());
+                    v.setPadding(bars.left, Math.max(bars.top, statusBarReservePx),
+                            bars.right, Math.max(bars.bottom, ime.bottom));
+                    return insets;
+                });
 
         View back = findViewById(R.id.back);
         if (back != null) {
@@ -383,15 +470,19 @@ public class FreezeListActivity extends BaseActivity {
         panelHideRecents = prefs().getBoolean(lk(KEY_PANEL_HIDE_RECENTS), false);
         if (panelMode) {
             panelHandleEnabled = prefs().getBoolean(KEY_PANEL_HANDLE, true);
+            panelHideStatusBar = prefs().getBoolean(KEY_PANEL_HIDE_STATUS_BAR, false);
             setupPanel();
             applyPanelSurface();
             applyFabSurface();
             applySearchSurface();
             applyPanelFabPosition();
+            applyPanelBarState();
+            applyWallpaperBackground();
         } else {
             applyFullscreenSurface();
             applyFullscreenFabSurface();
             applyFullscreenTextColors();
+            applyWallpaperBackground();
             fabGroup.post(this::applyFabPosition);
             // 监听父容器尺寸变化（而不是按钮组自身），避免设置边距时自触发死循环
             ((View) fabGroup.getParent()).addOnLayoutChangeListener(
@@ -425,8 +516,10 @@ public class FreezeListActivity extends BaseActivity {
         }
 
         pendingAction = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_ACTION);
-        // 首启迁移提示：等第一轮名单读完再判断，避免误判为空
-        main.postDelayed(this::maybeOfferMigration, 900);
+        // 「从旧版导入」已移除，清掉历史遗留的迁移标记
+        if (prefs().contains("legacy_offer_done")) {
+            prefs().edit().remove("legacy_offer_done").apply();
+        }
 
         if (panelMode) {
             // 状态栏黑条在这里一次挂好（高度一次算准），之后只改 alpha，不触发窗口/inset 重算
@@ -505,6 +598,130 @@ public class FreezeListActivity extends BaseActivity {
         int pct = prefs().getInt(lk(KEY_FAB_SURFACE), SURFACE_SOLID);
         applySurface(fabGroup, pct);
         applySurface(unfreezeFab, pct);
+    }
+
+    // ---------------- 自定义壁纸 ----------------
+
+    /** 读回本形态（半屏 / 全屏各一份）的壁纸配置与原图。 */
+    private void loadWallpaperFromPrefs() {
+        wallpaperUri = prefs().getString(lk(KEY_WALLPAPER_URI), null);
+        // 旧版的裁剪参数已废弃，顺手清掉，避免残留键
+        if (prefs().contains(lk(KEY_WALLPAPER_ZOOM))) {
+            prefs().edit()
+                    .remove(lk(KEY_WALLPAPER_ZOOM))
+                    .remove(lk(KEY_WALLPAPER_DX))
+                    .remove(lk(KEY_WALLPAPER_DY))
+                    .apply();
+        }
+        wallpaperBlur = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_WALLPAPER_BLUR), 0)));
+        if (wallpaperUri == null || wallpaperUri.isEmpty()) {
+            return;
+        }
+        wallpaperSourceBitmap = decodeWallpaper(Uri.parse(wallpaperUri));
+        if (wallpaperSourceBitmap == null) {
+            // 图片被删或权限失效：清掉配置，回到原来的纯色/圆角底板
+            wallpaperUri = null;
+            prefs().edit().remove(lk(KEY_WALLPAPER_URI)).apply();
+            return;
+        }
+        rebuildWallpaperDrawable();
+    }
+
+    /** 壁纸模糊只按用户自己这条滑块算：0 直接用原解码图（完全清晰），越大越柔和。 */
+    /**
+     * 模糊在挂背景之前同步算好（结果有缓存，同一档位只算一次）：
+     * 打开和拖动滑块都是直接落到目标档位，不会先露一帧清晰图，也不会先露白。
+     */
+    private void rebuildWallpaperDrawable() {
+        if (wallpaperSourceBitmap == null) {
+            wallpaperDrawable = null;
+            return;
+        }
+        Bitmap base = wallpaperSourceBitmap;
+        swapWallpaperBitmap(wallpaperBlur > 0
+                ? WallpaperSource.blurred(this, wallpaperUri, base, wallpaperBlur)
+                : base);
+    }
+
+    private void swapWallpaperBitmap(Bitmap bmp) {
+        wallpaperBitmap = bmp;
+        wallpaperDrawable = new WallpaperDrawable(bmp, panelMode ? Ui.dp(this, 20) : 0);
+    }
+
+    /** 按目标视图尺寸解码（屏幕宽高）：由 WallpaperSource 统一缓存，反复打开不再重复解码。 */
+    private Bitmap decodeWallpaper(Uri uri) {
+        return WallpaperSource.decode(this, uri == null ? null : uri.toString());
+    }
+
+    /** 位图归 WallpaperSource 缓存所有，这里只断引用，不回收，避免把缓存里的图回收掉。 */
+    private void releaseWallpaper() {
+        wallpaperSourceBitmap = null;
+        wallpaperBitmap = null;
+        wallpaperDrawable = null;
+    }
+
+    /**
+     * 把壁纸挂到背景层：半屏是在面板底板上、全屏是在 page_root 上。
+     * 透明度仍由原来的背景滑块控制（applySurface 改这个 drawable 的 alpha）。
+     */
+    private void applyWallpaperBackground() {
+        if (panelMode) {
+            View panel = findViewById(R.id.panel);
+            if (panel == null) {
+                return;
+            }
+            if (wallpaperDrawable != null) {
+                panel.setBackground(wallpaperDrawable);
+            } else {
+                panel.setBackgroundResource(R.drawable.bg_sheet);
+            }
+            applyPanelSurface();
+            applyPanelBottomIconTone();
+        } else {
+            View root = findViewById(R.id.page_root);
+            if (root == null) {
+                return;
+            }
+            if (wallpaperDrawable != null) {
+                root.setBackground(wallpaperDrawable);
+            } else {
+                root.setBackgroundColor(getColor(R.color.page_bg));
+            }
+            applyFullscreenSurface();
+        }
+    }
+
+    private void clearCustomWallpaper() {
+        prefs().edit()
+                .remove(lk(KEY_WALLPAPER_URI))
+                .remove(lk(KEY_WALLPAPER_ZOOM))
+                .remove(lk(KEY_WALLPAPER_DX))
+                .remove(lk(KEY_WALLPAPER_DY))
+                .remove(lk(KEY_WALLPAPER_BLUR))
+                .apply();
+        wallpaperUri = null;
+        wallpaperBlur = 0;
+        releaseWallpaper();
+        WallpaperSource.drop();
+        applyWallpaperBackground();
+    }
+
+    /** 设了自定义壁纸时，底栏的搜索/设置按钮改成深色（黑）图标，换任何图都不会糊在背景上看不清。 */
+    private void applyPanelBottomIconTone() {
+        if (!panelMode) {
+            return;
+        }
+        int tint = getColor(wallpaperDrawable != null
+                ? R.color.header_icon_black : R.color.text_secondary);
+        tintHeaderIcon(R.id.panel_search, tint);
+        tintHeaderIcon(R.id.layout, tint);
+    }
+
+    private void tintHeaderIcon(int id, int color) {
+        View v = findViewById(id);
+        if (v instanceof android.widget.ImageButton) {
+            ((android.widget.ImageButton) v).setImageTintList(ColorStateList.valueOf(color));
+        }
     }
 
     /** 搜索框颜色当前档位：全屏默认 30%，半屏默认 100%；已存过值的用户沿用自己的值。 */
@@ -804,6 +1021,10 @@ public class FreezeListActivity extends BaseActivity {
             intent.removeExtra(EXTRA_CHECK_PRIV);
             checkPrivilegeOnStart();
         }
+        // singleTask 复用：窗口不重建、不会走 onCreate，外观要在这里重新压
+        if (panelMode) {
+            schedulePanelStatusTone();
+        }
     }
 
     /** 入口带的一次性标记：消费掉，避免重建时重复播放。 */
@@ -956,7 +1177,7 @@ public class FreezeListActivity extends BaseActivity {
             introScrimView.setVisibility(View.GONE);
         }
         // 状态栏那条黑留在原位（半屏显示期间一直压黑，图标才始终看得清）
-        applyPanelStatusIcons();
+        applyPanelBarState();
         android.util.Log.d(TAG_INTRO, "finish run=" + run);
     }
 
@@ -1019,6 +1240,10 @@ public class FreezeListActivity extends BaseActivity {
         if (introStatusView != null) {
             return;
         }
+        // 半屏隐藏状态栏时没有那一条位置，不铺黑条
+        if (panelHideStatusBar) {
+            return;
+        }
         int top = introStatusInsetPx();
         if (top <= 0) {
             return;
@@ -1058,6 +1283,10 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 黑条过半才把状态栏图标切成白色，淡出过一半再切回跟随背景，保证任何时刻都看得清。 */
     private void syncIntroIcons(float blackAlpha) {
+        // 隐藏状态栏时没有图标要调，避免留下强制白色
+        if (statusBarHidden) {
+            return;
+        }
         boolean forceWhite = blackAlpha > 0.45f;
         if (forceWhite == introIconsLight) {
             return;
@@ -1072,11 +1301,105 @@ public class FreezeListActivity extends BaseActivity {
 
     /**
      * 半屏显示期间状态栏压在桌面/壁纸上，按壁纸主色的亮度决定图标深浅：
-     * 深色背景用白图标，浅色背景用深色图标。
+     * 深色背景用白图标，浅色背景用深色图标。隐藏状态栏时无需反色。
      */
     private void applyPanelStatusIcons() {
+        if (!panelMode || statusBarHidden) {
+            return;
+        }
+        // 拉起过渡期间由 syncIntroIcons 统一控制（黑条过半时强制白色）
+        if (introPlaying) {
+            return;
+        }
         introIconsLight = false;
         statusIconsController().setAppearanceLightStatusBars(!darkBackdrop());
+    }
+
+    /**
+     * 半屏系统栏状态：隐藏状态栏内容，或按壁纸亮度反色图标。两者互斥——
+     * 隐藏时不再做反色，取消勾选后立刻按当前壁纸亮度补一次反色。
+     * 隐藏的是状态栏里的图标/时间那些内容，状态栏那条空间仍然留着：
+     * 先把高度记下来，给内容顶部补同样的 padding，面板不会因此上移、背景也不变。
+     */
+    private void applyPanelBarState() {
+        if (!panelMode) {
+            return;
+        }
+        WindowInsetsControllerCompat controller = statusIconsController();
+        if (panelHideStatusBar) {
+            if (!statusBarHidden) {
+                statusBarReservePx = introStatusInsetPx();
+            }
+            statusBarHidden = true;
+            controller.hide(WindowInsetsCompat.Type.statusBars());
+            controller.setSystemBarsBehavior(
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            // 隐藏后要允许窗口画进刘海/状态栏那条区域，否则系统会拿黑色补出来
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams
+                    .LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(lp);
+            if (introStatusView != null) {
+                introStatusView.setVisibility(View.GONE);
+            }
+            applyContentInsets();
+            return;
+        }
+        if (statusBarHidden) {
+            statusBarHidden = false;
+            statusBarReservePx = 0;
+            controller.show(WindowInsetsCompat.Type.statusBars());
+            applyContentInsets();
+        }
+        applyPanelStatusIcons();
+    }
+
+    /** 内容区边距：隐藏状态栏时把那条空间补回来，面板位置与背景都和显示时一致。 */
+    private void applyContentInsets() {
+        View content = findViewById(android.R.id.content);
+        if (content == null) {
+            return;
+        }
+        androidx.core.view.ViewCompat.requestApplyInsets(content);
+    }
+
+    /**
+     * 立刻压一次外观，并在入场后的几个时间点重复压。
+     * 长按桌面图标进来时，桌面会先收起快捷方式菜单，它消失时系统可能把自己那套状态栏外观
+     * 重新刷回来——这次覆盖晚于 onResume / onWindowFocusChanged，单次设置会被冲掉，
+     * 所以补压到 1.3s（搞机助手同款处理）。
+     */
+    private void schedulePanelStatusTone() {
+        if (!panelMode) {
+            return;
+        }
+        applyPanelBarState();
+        View decor = getWindow().getDecorView();
+        for (int i = 0; i < TONE_DELAYS_MS.length; i++) {
+            if (toneRetries[i] == null) {
+                toneRetries[i] = this::applyPanelBarState;
+            }
+            decor.removeCallbacks(toneRetries[i]);
+            decor.postDelayed(toneRetries[i], TONE_DELAYS_MS[i]);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // 窗口属性（模糊标志等）重新下发后，系统栏外观与可见性可能被重置，这里再压一次
+        if (hasFocus && panelMode) {
+            schedulePanelStatusTone();
+        }
+    }
+
+    @Override
+    protected void onPostResume() {
+        super.onPostResume();
+        // 快捷方式入口经入口壳中转，回来时系统可能重置过外观，这条路径也补齐
+        if (panelMode) {
+            schedulePanelStatusTone();
+        }
     }
 
     /** 结束过渡 / 离开页面都把状态栏恢复成跟随深浅色，不残留强制白色。 */
@@ -1142,6 +1465,15 @@ public class FreezeListActivity extends BaseActivity {
      */
     @Override
     public boolean dispatchTouchEvent(android.view.MotionEvent ev) {
+        // 长按桌面图标进来的这条路径：桌面收起快捷方式菜单时可能顺带把状态栏刷回它那套外观，
+        // 且这次覆盖发生在本页回调之后。面板拿到第一下触摸时（菜单一定已消失）再压一次，
+        // 不依赖系统回调的先后顺序（搞机助手同款处理）。
+        if (panelMode && ev.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+            applyPanelBarState();
+            View decor = getWindow().getDecorView();
+            decor.removeCallbacks(toneAfterTouch);
+            decor.postDelayed(toneAfterTouch, 80);
+        }
         if (!tabSwipeEnabled || moveMode || editMode || working) {
             return super.dispatchTouchEvent(ev);
         }
@@ -1240,9 +1572,9 @@ public class FreezeListActivity extends BaseActivity {
         super.onResume();
         // 每次回到页面都重新读一次系统真值
         reload();
-        // 半屏显示期间状态栏压在桌面上，按壁纸明暗决定图标深浅（过渡中不动）
+        // 半屏显示期间状态栏压在桌面上，按壁纸明暗决定图标深浅（过渡中不压，交给过渡自己控）
         if (panelMode && !introPlaying) {
-            applyPanelStatusIcons();
+            schedulePanelStatusTone();
         }
     }
 
@@ -2202,7 +2534,11 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 长按不拖动松手：底部半屏操作单（冰箱式），拖动排序不进这里。 */
     private void showAppSheet(Item it) {
-        AppActionSheet.show(this, it.label, it.icon, it.frozen, new AppActionSheet.Actions() {
+        // 选项框背景与宿主页同一档透明度：半屏取 panel_surface，全屏取 full_surface
+        int sheetAlpha = panelMode
+                ? prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)
+                : prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID);
+        AppActionSheet.show(this, it.label, it.icon, it.frozen, sheetAlpha, new AppActionSheet.Actions() {
             @Override
             public void run() {
                 runApp(it);
@@ -2812,6 +3148,7 @@ public class FreezeListActivity extends BaseActivity {
 
         // 半屏专属：顶部小白条是否允许拖动改高度（开关与高度值分开存）
         CheckBox handleBox = null;
+        CheckBox hideStatusBarBox = null;
         CheckBox dismissBox = new CheckBox(this);
         dismissBox.setText("冻结后收起列表");
         dismissBox.setTextSize(12);
@@ -2850,6 +3187,18 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     main.postDelayed(FreezeListActivity.this::flashPanelHandle, 160);
                 }
+            });
+
+            hideStatusBarBox = new CheckBox(this);
+            hideStatusBarBox.setText("半屏打开时隐藏状态栏");
+            hideStatusBarBox.setTextSize(12);
+            hideStatusBarBox.setMinimumHeight(Ui.dp(this, 32));
+            hideStatusBarBox.setChecked(panelHideStatusBar);
+            hideStatusBarBox.setOnCheckedChangeListener((btn, on) -> {
+                panelHideStatusBar = on;
+                prefs().edit().putBoolean(KEY_PANEL_HIDE_STATUS_BAR, on).apply();
+                // 隐藏时不再反色；取消勾选立刻按壁纸亮度补一次
+                applyPanelBarState();
             });
 
         }
@@ -3105,6 +3454,9 @@ public class FreezeListActivity extends BaseActivity {
         if (handleBox != null) {
             box.addView(handleBox);
         }
+        if (hideStatusBarBox != null) {
+            box.addView(hideStatusBarBox);
+        }
         if (dismissBox != null) {
             box.addView(dismissBox);
         }
@@ -3171,6 +3523,90 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(iconTitle);
         box.addView(sizeLabel);
         box.addView(sizeBar);
+
+        // 自定义壁纸：作为背景层的底图，透明度/模糊仍由上面的背景滑块叠加；半屏与全屏各存各的
+        TextView wpTitle = new TextView(this);
+        wpTitle.setText("自定义壁纸");
+        wpTitle.setTextSize(12);
+        wpTitle.setTextColor(getColor(R.color.text_primary));
+        wpTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
+
+        final TextView wpState = new TextView(this);
+        wpState.setTextSize(11);
+        wpState.setTextColor(getColor(R.color.text_secondary));
+        wpState.setText(wallpaperUri == null || wallpaperUri.isEmpty()
+                ? "当前：未设置（使用纯色背景）" : "当前：已设置");
+        layoutWpState = wpState;
+
+        LinearLayout wpRow = new LinearLayout(this);
+        wpRow.setOrientation(LinearLayout.HORIZONTAL);
+        wpRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        final TextView wpPick = new TextView(this);
+        wpPick.setText("选择图片");
+        wpPick.setTextSize(12);
+        wpPick.setTextColor(getColor(R.color.blue));
+        wpPick.setPadding(0, Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 8));
+        wpPick.setOnClickListener(v -> wallpaperPicker.launch(new String[]{"image/*"}));
+
+        final TextView wpClear = new TextView(this);
+        wpClear.setText("清除");
+        wpClear.setTextSize(12);
+        wpClear.setTextColor(0xFFE5484D);
+        wpClear.setPadding(0, Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 8));
+        wpClear.setOnClickListener(v -> {
+            clearCustomWallpaper();
+            wpState.setText("当前：未设置（使用纯色背景）");
+            layoutWpState = wpState;
+        });
+
+        wpRow.addView(wpPick);
+        wpRow.addView(wpClear);
+        box.addView(wpTitle);
+        box.addView(wpState);
+        box.addView(wpRow);
+
+        // 壁纸自己的模糊度：0 完全清晰（默认），只影响这张壁纸，不动透明度/背景模糊那几条
+        final TextView wpBlurLabel = new TextView(this);
+        wpBlurLabel.setTextSize(11);
+        wpBlurLabel.setTextColor(getColor(R.color.text_secondary));
+        wpBlurLabel.setText("壁纸模糊度：" + wallpaperBlur + "%（0 为完全清晰）");
+        SeekBar wpBlurBar = new SeekBar(this);
+        wpBlurBar.setMax(100);
+        wpBlurBar.setProgress(wallpaperBlur);
+        wpBlurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                wpBlurLabel.setText("壁纸模糊度：" + p + "%（0 为完全清晰）");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+                wallpaperBlur = Math.max(0, Math.min(100, sb.getProgress()));
+                prefs().edit().putInt(lk(KEY_WALLPAPER_BLUR), wallpaperBlur).apply();
+                rebuildWallpaperDrawable();
+                applyWallpaperBackground();
+            }
+        });
+        box.addView(wpBlurLabel);
+        box.addView(wpBlurBar);
+
+        // 长按应用的选项框是否也换成壁纸底：取半屏那张图（含它的模糊度），半屏/全屏共用这一个开关
+        android.widget.CheckBox wpSheet = new android.widget.CheckBox(this);
+        wpSheet.setText("同步长按选项框");
+        wpSheet.setTextSize(12);
+        wpSheet.setTextColor(getColor(R.color.text_primary));
+        wpSheet.setChecked(prefs().getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false));
+        wpSheet.setOnCheckedChangeListener((b, on) ->
+                prefs().edit().putBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, on).apply());
+        box.addView(wpSheet);
 
         // 半屏上方「非面板区域」的遮罩强度：越小越透明（看得清背后页面），越大越模糊
         if (panelMode) {
@@ -4028,64 +4464,7 @@ public class FreezeListActivity extends BaseActivity {
                 doImport(input.getText().toString(), dialog));
     }
 
-    // ---------------- 旧版迁移 / 权限 ----------------
-
-    /** 首启迁移提示：只在检测到旧版、且当前名单为空时弹一次。 */
-    private void maybeOfferMigration() {
-        if (isFinishing() || isDestroyed()) {
-            return;
-        }
-        if (prefs().getBoolean("legacy_offer_done", false)) {
-            return;
-        }
-        if (!LegacyMigrate.installed(this) || !items.isEmpty()) {
-            return;
-        }
-        prefs().edit().putBoolean("legacy_offer_done", true).apply();
-        offerMigration(false);
-    }
-
-    private void offerMigration(boolean manual) {
-        if (!LegacyMigrate.installed(this)) {
-            if (manual) {
-                Toast.makeText(this, "没有检测到旧版「搞机助手」", Toast.LENGTH_SHORT).show();
-            }
-            return;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("从旧版导入")
-                .setMessage("检测到旧版「搞机助手」的冻结名单，可一次导入名单、标签与布局设置。\n\n"
-                        + "旧数据在对方私有目录，读取需要 root 或已授权的 Shizuku（root 模式）。")
-                .setPositiveButton("立即导入", (d, w) -> runMigration())
-                .setNegativeButton("稍后", null)
-                .show();
-    }
-
-    private void runMigration() {
-        Toast.makeText(this, "正在读取旧版数据…", Toast.LENGTH_SHORT).show();
-        IO.execute(() -> {
-            LegacyMigrate.Outcome outcome = LegacyMigrate.readAndImport(this);
-            main.post(() -> {
-                if (isFinishing() || isDestroyed()) {
-                    return;
-                }
-                if (outcome.error != null) {
-                    new AlertDialog.Builder(this)
-                            .setTitle("导入失败")
-                            .setMessage(outcome.error
-                                    + "\n\n也可以让旧版「搞机助手」导出备份，再用「恢复名单」粘贴导入。")
-                            .setPositiveButton("知道了", null)
-                            .show();
-                    return;
-                }
-                reload();
-                if (outcome.count > 0) {
-                    Toast.makeText(this, "已导入 " + outcome.count + " 个应用",
-                            Toast.LENGTH_SHORT).show();
-                }
-            });
-        });
-    }
+    // ---------------- 权限 ----------------
 
     /** 布局设置顶部的权限行：显示 root / Shizuku 状态，未授权时可点开授权。 */
     /** 标题整句：「布局（冻结权限：Root）」，括号内小一号、次要色、非加粗。 */

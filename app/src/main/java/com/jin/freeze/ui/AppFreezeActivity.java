@@ -55,6 +55,8 @@ public class AppFreezeActivity extends BaseActivity {
     public static final String EXTRA_PICKED = "picked";
     /** 每行图标数。 */
     private static final int COLUMNS = 4;
+    /** 显示方式：0 网格（默认）、1 一行一条；切换后记住，下次进入沿用。 */
+    private static final String KEY_LIST_VIEW = "app_list_view";
 
     private static final class App {
         String label;
@@ -83,7 +85,7 @@ public class AppFreezeActivity extends BaseActivity {
     private TextView filterSystem;
     private TextView sysHint;
     private TextView rootState;
-    private TextView batchBtn;
+    private TextView viewModeBtn;    private TextView batchBtn;
     private LinearLayout batchBar;
     private TextView freezeBtn;
     private TextView unfreezeBtn;
@@ -132,8 +134,15 @@ public class AppFreezeActivity extends BaseActivity {
         filterSystem.setOnClickListener(v -> switchFilter(true));
         switchFilter(false);
 
-        batchBtn.setText(pickMode ? "确定" : "批量");
-        batchBar.setVisibility(View.GONE);
+        viewModeBtn = findViewById(R.id.view_mode);
+        viewModeBtn.setText(listView() ? "网格" : "列表");
+        viewModeBtn.setOnClickListener(v -> {
+            prefs().edit().putBoolean(KEY_LIST_VIEW, !listView()).apply();
+            viewModeBtn.setText(listView() ? "网格" : "列表");
+            render(search.getText().toString().trim());
+        });
+
+        batchBtn.setText(pickMode ? "确定" : "批量");        batchBar.setVisibility(View.GONE);
         batchBtn.setOnClickListener(v -> {
             if (pickMode) {
                 finishWithPicked();
@@ -177,6 +186,10 @@ public class AppFreezeActivity extends BaseActivity {
 
     private SharedPreferences prefs() {
         return getSharedPreferences(PREFS, MODE_PRIVATE);
+    }
+
+    private boolean listView() {
+        return prefs().getBoolean(KEY_LIST_VIEW, false);
     }
 
     @Override
@@ -250,8 +263,10 @@ public class AppFreezeActivity extends BaseActivity {
                 apps.add(a);
             }
             // 选择模式：展示全部应用，已在名单里的也保留，长按可与半屏一样「移除列表并解冻」
-            Collections.sort(apps, (x, y) ->
-                    String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label));
+            Collections.sort(apps, (x, y) -> {
+                int cmp = String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
+                return cmp != 0 ? cmp : String.CASE_INSENSITIVE_ORDER.compare(x.pkg, y.pkg);
+            });
             final List<App> shownApps = apps;
 
             main.post(() -> {
@@ -315,13 +330,17 @@ public class AppFreezeActivity extends BaseActivity {
                     : "没有匹配的应用"));
             return;
         }
-        // 默认排序：已冻结在前、未冻结在后；组内按应用名升序
+        // 固定按名称排序：同名时再按包名定序，保证任何情况下顺序稳定、不随冻结状态跳动
         Collections.sort(shown, (x, y) -> {
-            if (x.frozen != y.frozen) {
-                return x.frozen ? -1 : 1;
-            }
-            return String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
+            int cmp = String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
+            return cmp != 0 ? cmp : String.CASE_INSENSITIVE_ORDER.compare(x.pkg, y.pkg);
         });
+        if (listView()) {
+            for (App a : shown) {
+                grid.addView(buildRow(a));
+            }
+            return;
+        }
         LinearLayout row = null;
         for (int i = 0; i < shown.size(); i++) {
             if (i % COLUMNS == 0) {
@@ -412,7 +431,65 @@ public class AppFreezeActivity extends BaseActivity {
         bindCell(a, cell);
 
         box.setContentDescription(a.label);
-        box.setOnClickListener(v -> {
+        bindActions(a, cell, box);
+        return wrap;
+    }
+
+    /** 一行一条：左图标 + 右名称，点击/长按行为与网格格子完全一致。 */
+    private View buildRow(App a) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(Ui.dp(this, 12), Ui.dp(this, 9), Ui.dp(this, 12), Ui.dp(this, 9));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.topMargin = Ui.dp(this, 6);
+        row.setLayoutParams(rlp);
+        row.setBackgroundResource(R.drawable.bg_card);
+        TypedValue tv = new TypedValue();
+        getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+        row.setForeground(getDrawable(tv.resourceId));
+        row.setClickable(true);
+        row.setLongClickable(true);
+
+        ImageView icon = new ImageView(this);
+        if (a.icon != null) {
+            icon.setImageDrawable(a.icon);
+        } else {
+            icon.setImageResource(R.drawable.ic_launcher);
+        }
+        int iconPx = Ui.dp(this, 36);
+        android.graphics.drawable.GradientDrawable round =
+                new android.graphics.drawable.GradientDrawable();
+        round.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        round.setColor(0x00000000);
+        round.setCornerRadius(Math.max(Ui.dp(this, 5), (int) (iconPx * 0.18f)));
+        icon.setBackground(round);
+        icon.setClipToOutline(true);
+        row.addView(icon, new LinearLayout.LayoutParams(iconPx, iconPx));
+
+        TextView name = Ui.text(this, a.label, 14, Ui.TEXT_PRIMARY, false);
+        name.setSingleLine(true);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        nameLp.leftMargin = Ui.dp(this, 12);
+        row.addView(name, nameLp);
+
+        Cell cell = new Cell();
+        cell.root = row;
+        cell.icon = icon;
+        cells.put(a.pkg, cell);
+        bindCell(a, cell);
+
+        row.setContentDescription(a.label);
+        bindActions(a, cell, row);
+        return row;
+    }
+
+    /** 网格/列表共用的点击与长按行为。 */
+    private void bindActions(App a, Cell cell, View target) {
+        target.setOnClickListener(v -> {
             if (pickMode || batchMode) {
                 if (selected.contains(a.pkg)) {
                     selected.remove(a.pkg);
@@ -430,7 +507,7 @@ public class AppFreezeActivity extends BaseActivity {
                 launch(a);
             }
         });
-        box.setOnLongClickListener(v -> {
+        target.setOnLongClickListener(v -> {
             if (pickMode) {
                 // 与半屏列表共用同一套操作单，不再单独维护一份「解冻确认」
                 showAppSheet(a);
@@ -442,7 +519,6 @@ public class AppFreezeActivity extends BaseActivity {
             toggle(a);
             return true;
         });
-        return wrap;
     }
 
     /** 底部操作单：选项与顺序由 AppActionSheet 统一，行为映射到本页已有逻辑。 */
