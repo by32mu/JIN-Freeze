@@ -312,7 +312,6 @@ public class FreezeListActivity extends BaseActivity {
     private android.app.Dialog privDialog;
     /** 布局设置标题里「冻结权限：X」的刷新入口，授权状态变化时直接重绘。 */
     private Runnable privTitleRefresh;
-    private static final String TAG_INTRO = "FW_INTRO";
     private final Runnable introReveal = this::startIntroReveal;
     private final Runnable introSafety = this::guardIntroStuck;
 
@@ -1081,7 +1080,6 @@ public class FreezeListActivity extends BaseActivity {
         // singleTask 复用时窗口不重建：这里补播过渡，保证第 N 次拉起和第 1 次是同一条节奏
         if (panelMode && intent != null && intent.getBooleanExtra(EXTRA_PLAY_INTRO, false)) {
             intent.removeExtra(EXTRA_PLAY_INTRO);
-            android.util.Log.d(TAG_INTRO, "onNewIntent replay");
             playIntro();
         }
         // 再次点桌面图标也算一次「打开 app」：复用同一套启动检查
@@ -1172,10 +1170,9 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         if (introPlaying) {
-            android.util.Log.d(TAG_INTRO, "start skipped: already playing");
             return;
         }
-        final int run = ++introRun;
+        ++introRun;
         introPlaying = true;
         introScrimView.animate().cancel();
         if (introStatusView != null) {
@@ -1198,7 +1195,6 @@ public class FreezeListActivity extends BaseActivity {
                     .setInterpolator(new DecelerateInterpolator())
                     .start();
         }
-        android.util.Log.d(TAG_INTRO, "start run=" + run + " " + reason);
         main.postDelayed(introReveal, INTRO_IN_MS + INTRO_HOLD_MS);
         main.postDelayed(introSafety, INTRO_IN_MS + INTRO_HOLD_MS + INTRO_OUT_MS + 400);
     }
@@ -1208,7 +1204,6 @@ public class FreezeListActivity extends BaseActivity {
         if (!introPlaying) {
             return;
         }
-        android.util.Log.d(TAG_INTRO, "safety run=" + introRun);
         if (introScrimView != null && introScrimView.getVisibility() == View.VISIBLE
                 && introScrimView.getAlpha() > 0.01f) {
             startIntroReveal();
@@ -1223,7 +1218,6 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         final int run = introRun;
-        android.util.Log.d(TAG_INTRO, "reveal run=" + run);
         introScrimView.animate().alpha(0f)
                 .setDuration(INTRO_OUT_MS)
                 .setInterpolator(new DecelerateInterpolator())
@@ -1248,7 +1242,6 @@ public class FreezeListActivity extends BaseActivity {
         }
         // 状态栏那条黑留在原位（半屏显示期间一直压黑，图标才始终看得清）
         applyPanelBarState();
-        android.util.Log.d(TAG_INTRO, "finish run=" + run);
     }
 
     /**
@@ -1613,8 +1606,6 @@ public class FreezeListActivity extends BaseActivity {
         }
         final int dir = dx < 0 ? 1 : -1;
         boolean canSwitch = Math.abs(dx) > Ui.dp(this, 56) && hasTabNeighbor(dir);
-        android.util.Log.d("FW_TAB", "swipe dx=" + Math.round(dx) + " dir=" + dir
-                + " switch=" + canSwitch);
         if (!canSwitch) {
             v.animate().translationX(0f)
                     .setDuration(180)
@@ -1770,7 +1761,6 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     public void onBackPressed() {
         if (panelMode) {
-            android.util.Log.d("FW_GESTURE", "onBackPressed -> remove task");
             closeWithIntro(() -> {
                 finishAndRemoveTask();
                 overridePendingTransition(0, 0);
@@ -1930,13 +1920,11 @@ public class FreezeListActivity extends BaseActivity {
     /** 回到默认标签（切换列表内容与标签条）；已在默认标签上则不动。 */
     private void resetToDefaultTab() {
         String id = defaultTabId();
-        android.util.Log.d("FW_TAB", "reset -> " + id + " (from " + currentTabId + ")");
         if (id.equals(currentTabId)) {
             return;
         }
         currentTabId = id;
         prefs().edit().putString(KEY_CURRENT_TAB, id).apply();
-        android.util.Log.d("FW_TAB", "select " + id);
         setSysHintVisible();
         renderTabBar();
         render();
