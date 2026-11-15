@@ -19,8 +19,11 @@
 -dontwarn de.robv.android.xposed.**
 -dontwarn org.lsposed.**
 -dontwarn android.content.pm.**
+-dontwarn dalvik.system.VMRuntime
 -keep class de.robv.android.xposed.** { *; }
 -keep class org.lsposed.** { *; }
+# HiddenApiBypass 内部靠反射访问 Helper 的字段，成员名不能裁
+-keepclassmembers class org.lsposed.hiddenapibypass.Helper$* { *; }
 
 # ---------- 清单里声明的组件（系统按类名反射实例化）----------
 -keep class com.jin.freeze.JinApp { *; }

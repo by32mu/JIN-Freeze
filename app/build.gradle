@@ -10,8 +10,8 @@ android {
         applicationId "com.jin.freeze"
         minSdk 24
         targetSdk 34
-        versionCode 26
-        versionName "2.0"
+        versionCode 27
+        versionName "2.0.1"
     }
 
     buildTypes {
@@ -36,6 +36,8 @@ dependencies {
     // 无 root 时通过 Shizuku 执行 pm 冻结/解冻（12.2.0 仍公开 newProcess）
     implementation 'dev.rikka.shizuku:api:12.2.0'
     implementation 'dev.rikka.shizuku:provider:12.2.0'
+    // 隐藏 API 豁免：SuspendDialogInfo 的 binder 通道要用 $Stub.TRANSACTION_* 常量（非 SDK 字段）
+    implementation fileTree(dir: 'libs', include: ['hiddenapibypass-6.1.jar'])
     // LSPosed 模块接口：只在 LSPosed 注入的 system_server 里加载，应用自身不引用（compileOnly 不打包）
     compileOnly fileTree(dir: 'libs', include: ['libxposed-api-102.jar', 'libxposed-interface-102.jar'])
 }

@@ -290,6 +290,42 @@ public final class Ui {
         panel.setClipToOutline(true);
     }
 
+    /**
+     * pm 失败原因归类：弹框/提示只给人话短句，完整原始输出只进日志，绝不贴栈。
+     * 两类 ROM 拦截（小米核心组件、系统应用）单独识别，其余统一短句。
+     * 单条、批量、快捷方式批处理共用这一份口径。
+     */
+    /** 停用与降级通道（pm suspend）都被本机拒绝时的一句兜底：只在这里出现，不贴原始输出。 */
+    public static final String NO_FREEZE_CHANNEL = "本机既不允许停用也不允许暂停，无法冻结";
+
+    public static String pmReason(com.jin.freeze.core.PrivShell.Result r, boolean freeze) {
+        String out = r == null || r.out == null ? "" : r.out.trim();
+        android.util.Log.w("JinPm", (freeze ? "freeze" : "unfreeze") + " failed: code="
+                + (r == null ? -1 : r.code) + " timeout=" + (r != null && r.timeout) + "\n" + out);
+        return pmReason(out, freeze);
+    }
+
+    /** 纯文本版本：批量脚本按包切出来的输出走这里。返回值是一句可直接拼到应用名后面的原因。 */
+    public static String pmReason(String out, boolean freeze) {
+        String low = out == null ? "" : out.toLowerCase(java.util.Locale.ROOT);
+        if (low.contains("cannot disable miui core packages")) {
+            return "属小米核心组件，系统禁止停用，无法冻结";
+        }
+        if (low.contains("cannot disable system packages")) {
+            return "本机系统不允许停用系统应用，无法冻结";
+        }
+        if (low.contains("securityexception") || low.contains("permission denial")) {
+            return freeze ? "系统拒绝停用（ROM 限制），无法冻结" : "系统拒绝启用（ROM 限制），无法解冻";
+        }
+        if (low.contains("timed out") || low.contains("timeout")) {
+            return "执行超时，请重试";
+        }
+        if (low.contains("unknown package") || low.contains("not found")) {
+            return "系统里找不到该应用";
+        }
+        return freeze ? "停用未生效，可能被系统限制" : "启用未生效，可能被系统限制";
+    }
+
     public static int color(Context c, int id) {
         return ContextCompat.getColor(c, id);
     }

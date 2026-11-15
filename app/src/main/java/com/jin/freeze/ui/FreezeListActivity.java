@@ -3,6 +3,7 @@ package com.jin.freeze.ui;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
@@ -46,6 +47,8 @@ import com.jin.freeze.JinApp;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.ShizukuGate;
+import com.jin.freeze.core.SuspendDialog;
+import com.jin.freeze.core.SuspendSupport;
 import com.jin.freeze.core.SwipeFreeze;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 
@@ -192,6 +195,8 @@ public class FreezeListActivity extends BaseActivity {
         Drawable icon;
         boolean system;
         boolean frozen;
+        /** 走降级通道（pm suspend）冻结：显示成冻结态，另在图标右下角加区分标识。 */
+        boolean suspended;
     }
 
     private static final class Cell {
@@ -200,11 +205,51 @@ public class FreezeListActivity extends BaseActivity {
         ImageView icon;
         TextView name;
         View badge;
+        /** 暂停标识：只在 pm suspend 降级冻结时显示，正常 disable-user 冻结不显示。 */
+        SuspendBadge suspendBadge;
         Item item;
         /** 图标自己的长按定时器：400ms 主动触发，不依赖系统默认的 500ms。 */
         Runnable longPress;
         float downX;
         float downY;
+    }
+
+    /**
+     * 暂停标识：图标右下角的小圆标，里面画两条白色竖杠。
+     * 自己画而不是用文字，避免部分 ROM 字体缺 U+23F8 之类的暂停符号；
+     * 主色实心 + 细白描边，深浅色主题下都看得清。
+     */
+    private static final class SuspendBadge extends View {
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.RectF bar = new android.graphics.RectF();
+
+        SuspendBadge(Context c) {
+            super(c);
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas canvas) {
+            float cx = getWidth() / 2f;
+            float cy = getHeight() / 2f;
+            float r = Math.min(getWidth(), getHeight()) / 2f;
+            float stroke = Math.max(1f, r * 0.16f);
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setColor(0xFF4E7CF6);
+            canvas.drawCircle(cx, cy, r, paint);
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(stroke);
+            paint.setColor(0xFFFFFFFF);
+            canvas.drawCircle(cx, cy, r - stroke / 2f, paint);
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            float barW = Math.max(1.2f, r * 0.26f);
+            float barH = r * 0.86f;
+            float gap = barW * 0.45f;
+            bar.set(cx - gap - barW, cy - barH / 2f, cx - gap, cy + barH / 2f);
+            canvas.drawRoundRect(bar, barW / 2f, barW / 2f, paint);
+            bar.set(cx + gap, cy - barH / 2f, cx + gap + barW, cy + barH / 2f);
+            canvas.drawRoundRect(bar, barW / 2f, barW / 2f, paint);
+        }
     }
 
     private static final class Tab {
@@ -2545,6 +2590,13 @@ public class FreezeListActivity extends BaseActivity {
                 // 真值没读到：下面按 PackageInfo.enabled 兜底，不能一律当成未冻结
                 disabled = new HashSet<>();
             }
+            // 降级通道（pm suspend）的包不会出现在 pm list packages -d 里：
+            // 只对「本机暂停过」的缓存集合做一次批量 dumpsys，不逐包查全量，刷新开销可控
+            Set<String> suspended = SuspendSupport.suspendedAmong(SuspendSupport.cached(this));
+            if (!suspended.isEmpty()) {
+                // 只在实际读到暂停项时回写缓存：一次读失败不把已暂停的清空
+                SuspendSupport.replace(this, suspended);
+            }
             PackageManager pm = getPackageManager();
             Map<String, Item> map = new HashMap<>();
             Set<String> kept = new HashSet<>();
@@ -2569,7 +2621,9 @@ public class FreezeListActivity extends BaseActivity {
                 } else {
                     it.label = pkg;
                 }
-                it.frozen = truthOk ? disabled.contains(pkg) : (ai != null && !ai.enabled);
+                it.suspended = suspended.contains(pkg);
+                it.frozen = truthOk ? (disabled.contains(pkg) || it.suspended)
+                        : (ai != null && !ai.enabled);
                 kept.add(pkg);
                 map.put(pkg, it);
             }
@@ -2856,6 +2910,17 @@ public class FreezeListActivity extends BaseActivity {
         bLp.gravity = Gravity.TOP | Gravity.END;
         badge.setLayoutParams(bLp);
         iconBox.addView(badge);
+
+        // 暂停标识固定在右下角，和右上角的移除减号各占一角，移动/选中态都不会互相压住
+        SuspendBadge suspendBadge = new SuspendBadge(this);
+        FrameLayout.LayoutParams sLp = new FrameLayout.LayoutParams(
+                Ui.dp(this, 14), Ui.dp(this, 14));
+        sLp.gravity = Gravity.BOTTOM | Gravity.END;
+        sLp.bottomMargin = Ui.dp(this, 1);
+        sLp.rightMargin = Ui.dp(this, 1);
+        suspendBadge.setLayoutParams(sLp);
+        suspendBadge.setVisibility(View.GONE);
+        iconBox.addView(suspendBadge);
         box.addView(iconBox);
 
         TextView name = Ui.text(this, "", 11, Ui.TEXT_PRIMARY, false);
@@ -2874,6 +2939,7 @@ public class FreezeListActivity extends BaseActivity {
         cell.icon = icon;
         cell.name = name;
         cell.badge = badge;
+        cell.suspendBadge = suspendBadge;
         // 监听器不绑定具体应用：拖拽换位后只重绑数据，点击/长按跟着当前数据走
         badge.setOnClickListener(v -> {
             if (cell.item == null) {
@@ -3157,6 +3223,8 @@ public class FreezeListActivity extends BaseActivity {
         // 编辑模式（全屏减号）或半屏勾选「快捷移除图标」时常驻红标；移动模式下让位给选中/拖动
         boolean showBadge = editMode || (panelMode && quickRemove && !moveMode);
         cell.badge.setVisibility(showBadge ? View.VISIBLE : View.GONE);
+        // 暂停标识只跟随状态：正常 disable-user 冻结的图标不加任何标识
+        cell.suspendBadge.setVisibility(it.suspended ? View.VISIBLE : View.GONE);
         if (it.frozen) {
             cell.icon.setColorFilter(GRAY);
             cell.icon.setAlpha(0.45f);
@@ -3422,17 +3490,38 @@ public class FreezeListActivity extends BaseActivity {
         IO.execute(() -> {
             PrivShell.Result r = execPm(it.pkg, true);
             boolean ok = applied(it.pkg, true, r);
+            // 系统应用被 ROM 拦住停用（两类固定文案）时，自动降级为 pm suspend 暂停
+            boolean blocked = !ok && SuspendSupport.romBlocked(r.out);
+            if (blocked) {
+                PrivShell.Result s = SuspendSupport.suspend(this, it.pkg, it.label);
+                if (suspendApplied(it.pkg, s)) {
+                    ok = true;
+                    SuspendSupport.remember(this, Collections.singleton(it.pkg));
+                } else {
+                    android.util.Log.w("JinPm", "suspend fallback failed: code=" + s.code
+                            + " timeout=" + s.timeout + "\n"
+                            + (s.out == null ? "" : s.out.trim()));
+                }
+            }
+            final boolean done = ok;
+            final boolean suspendedNow = blocked && ok;
             main.post(() -> {
                 stopFreezeSpin();
                 working = false;
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
-                if (!ok) {
-                    showPmError("冻结失败", it, pmText(r));
+                if (!done) {
+                    if (blocked) {
+                        // 停用、暂停两条通道都被拒：只给一句话，原始输出已进日志
+                        showPmError("冻结失败", it, Ui.NO_FREEZE_CHANNEL);
+                    } else {
+                        showPmError("冻结失败", it, r, true);
+                    }
                     return;
                 }
                 it.frozen = true;
+                it.suspended = suspendedNow;
                 rebindCells();
                 if (showFrozenTip) {
                     FrozenTip.show(this);
@@ -3459,20 +3548,26 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 if (!ok) {
-                    showPmError("解冻失败", it, pmText(r));
+                    showPmError("解冻失败", it, r, false);
                     return;
                 }
                 it.frozen = false;
+                it.suspended = false;
                 rebindCells();
                 reload();
             });
         });
     }
 
-    private void showPmError(String title, Item it, String out) {
+    /** 失败弹框只显示应用名 + 归类后的一句短原因，原始 pm 输出只进日志。 */
+    private void showPmError(String title, Item it, PrivShell.Result r, boolean freeze) {
+        showPmError(title, it, Ui.pmReason(r, freeze));
+    }
+
+    private void showPmError(String title, Item it, String reason) {
         AlertDialog err = new AlertDialog.Builder(this)
                 .setTitle(title)
-                .setMessage("「" + it.label + "」\n" + out)
+                .setMessage(it.label + "：" + reason)
                 .setPositiveButton("知道了", null)
                 .create();
         err.show();
@@ -3591,7 +3686,7 @@ public class FreezeListActivity extends BaseActivity {
                 if (!ok) {
                     AlertDialog failOne = new AlertDialog.Builder(this)
                             .setTitle("已移出名单，但解冻失败")
-                            .setMessage("「" + it.label + "」\n" + pmText(r))
+                            .setMessage(it.label + "：" + Ui.pmReason(r, false))
                             .setPositiveButton("知道了", null)
                             .create();
                     failOne.show();
@@ -6229,17 +6324,19 @@ public class FreezeListActivity extends BaseActivity {
         final String pkg = it.pkg;
         final String label = it.label;
         IO.execute(() -> {
-            PrivShell.Result r = PrivShell.exec("pm enable " + pkg, 20);
-            String out = r.out == null ? "" : r.out.trim();
-            boolean ok = out.contains("new state:");
+            // 解冻两个通道都收：先撤暂停（非暂停状态下为空操作），再补启用
+            PrivShell.Result r = execPm(pkg, false);
+            boolean ok = applied(pkg, false, r);
             if (!ok) {
+                android.util.Log.w("JinPm", "removeNow unfreeze failed:\n"
+                        + (r.out == null ? "" : r.out.trim()));
                 main.post(() -> {
                     if (isFinishing() || isDestroyed()) {
                         return;
                     }
                     AlertDialog failOne = new AlertDialog.Builder(this)
                             .setTitle("已移出名单，但解冻失败")
-                            .setMessage("「" + label + "」\n" + (out.isEmpty() ? "pm 未返回输出" : out))
+                            .setMessage(label + "：" + Ui.pmReason(r, false))
                             .setPositiveButton("知道了", null)
                             .create();
                     failOne.show();
@@ -6291,10 +6388,49 @@ public class FreezeListActivity extends BaseActivity {
             // 只开一次 su、一条脚本跑完全部包；处理完统一回读一次状态
             long startedAt = System.currentTimeMillis();
             Map<String, String> outputs = execPmBatch(targets, freeze);
+            Set<String> blocked = new HashSet<>();
+            if (freeze) {
+                // 只对被 ROM 拦住停用的包（两类固定文案）降级暂停，其余包行为不变
+                for (String pkg : targets) {
+                    if (SuspendSupport.romBlocked(outputs.get(pkg))) {
+                        blocked.add(pkg);
+                    }
+                }
+                if (!blocked.isEmpty()) {
+                    Map<String, String> suspendOut = execSuspendBatch(new ArrayList<>(blocked));
+                    for (String pkg : blocked) {
+                        String prev = outputs.get(pkg);
+                        String now = suspendOut.get(pkg);
+                        outputs.put(pkg, (prev == null ? "" : prev + "\n")
+                                + (now == null ? "" : now));
+                    }
+                }
+            }
             android.util.Log.i("FreezeBatch", (freeze ? "freeze " : "unfreeze ")
                     + targets.size() + " pkg took " + (System.currentTimeMillis() - startedAt) + " ms");
             // 批量只回读一次系统真值，逐包按「是否已在目标状态」判成败；读不到才退回文本判断
             Set<String> truth = disabledPackages();
+            // 降级通道真值同样只批量读一次：冻结时查「停用没成功的」，解冻时查本机暂停过的
+            Set<String> suspendCandidates = new HashSet<>();
+            if (freeze) {
+                for (String pkg : targets) {
+                    if (truth == null || !truth.contains(pkg)) {
+                        suspendCandidates.add(pkg);
+                    }
+                }
+            } else {
+                suspendCandidates.addAll(SuspendSupport.cached(this));
+                suspendCandidates.retainAll(targets);
+            }
+            Set<String> suspendedTruth = SuspendSupport.suspendedAmong(suspendCandidates);
+            if (freeze) {
+                SuspendSupport.remember(this, suspendedTruth);
+            } else {
+                Set<String> next = SuspendSupport.cached(this);
+                next.removeAll(targets);
+                next.addAll(suspendedTruth);
+                SuspendSupport.replace(this, next);
+            }
             int okCount = 0;
             List<String> fails = new ArrayList<>();
             for (String pkg : targets) {
@@ -6302,11 +6438,22 @@ public class FreezeListActivity extends BaseActivity {
                 if (out == null) {
                     out = "pm 未返回该包的结果";
                 }
-                boolean ok = truth != null ? truth.contains(pkg) == freeze : isPmOkText(out);
+                boolean ok;
+                if (truth != null) {
+                    boolean dis = truth.contains(pkg);
+                    // 暂停态与停用态等价：冻结命中任一即成功，解冻必须两者都退出
+                    ok = freeze ? (dis || suspendedTruth.contains(pkg))
+                            : (!dis && !suspendedTruth.contains(pkg));
+                } else {
+                    ok = isPmOkText(out);
+                }
                 if (ok) {
                     okCount++;
                 } else {
-                    fails.add(labelOf(pkg) + "（" + pkg + "）\n" + out);
+                    // 批量失败清单只列应用名 + 短原因，不贴 pm 栈；
+                    // 已降级仍失败的给「两条通道都被拒」那句，不再回放 disable 的原始报错
+                    fails.add(labelOf(pkg) + "：" + (blocked.contains(pkg)
+                            ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(out, freeze)));
                 }
             }
             final int okFinal = okCount;
@@ -6351,14 +6498,48 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 一条 su 脚本批量执行 pm：每包打一行标记，输出里按标记切分每个包的真实结果。 */
     private Map<String, String> execPmBatch(List<String> pkgs, boolean freeze) {
-        final String mark = "@@PKG@@";
         StringBuilder script = new StringBuilder();
         for (String pkg : pkgs) {
-            script.append("echo '").append(mark).append(pkg).append("'; ")
-                    .append(freeze ? "pm disable-user --user 0 " : "pm enable ")
-                    .append(pkg).append(" 2>&1; ");
+            script.append("echo '").append(MARK).append(pkg).append("'; ")
+                    .append(pmCommand(pkg, freeze))
+                    .append(" 2>&1; ");
         }
-        PrivShell.Result r = PrivShell.exec(script.toString(), Math.max(30, 10 + pkgs.size() * 5));
+        return splitMarked(PrivShell.exec(script.toString(),
+                Math.max(30, 10 + pkgs.size() * 5)), pkgs);
+    }
+
+    /**
+     * 降级通道的批量暂停：能走 SuspendDialogInfo 的逐包走它（标题/正文/按钮都可定制），
+     * 剩下的才拼成一条脚本执行，输出格式与 execPmBatch 一致。
+     */
+    private Map<String, String> execSuspendBatch(List<String> pkgs) {
+        Map<String, String> result = new HashMap<>();
+        List<String> pending = new ArrayList<>();
+        for (String pkg : pkgs) {
+            if (SuspendDialog.suspend(this, pkg, labelOf(pkg))) {
+                result.put(pkg, "");
+            } else {
+                pending.add(pkg);
+            }
+        }
+        if (pending.isEmpty()) {
+            return result;
+        }
+        StringBuilder script = new StringBuilder();
+        for (String pkg : pending) {
+            script.append("echo '").append(MARK).append(pkg).append("'; ")
+                    .append(SuspendSupport.suspendCommand(pkg, labelOf(pkg))).append(" 2>&1; ");
+        }
+        result.putAll(splitMarked(PrivShell.exec(script.toString(),
+                Math.max(30, 10 + pending.size() * 5)), pending));
+        return result;
+    }
+
+    private static final String MARK = "@@PKG@@";
+
+    /** 按 @@PKG@@ 标记把一条脚本的输出切成「包名 → 该包的真实输出」。 */
+    private Map<String, String> splitMarked(PrivShell.Result r, List<String> pkgs) {
+        final String mark = MARK;
         Map<String, String> result = new HashMap<>();
         String current = null;
         StringBuilder buf = null;
@@ -6398,7 +6579,10 @@ public class FreezeListActivity extends BaseActivity {
         return pkg;
     }
 
-    /** 冻结的应用点击后先解冻再打开；失败给出 pm 的真实报错。成功路径完全静默。 */
+    /**
+     * 冻结（含暂停）的应用点击后一步到位：撤销暂停 + 启用（需要时）后直接打开，
+     * 不弹任何二次确认。成功路径完全静默，失败只给一句短原因。
+     */
     private void unfreezeAndOpen(Item it) {
         if (working) {
             return;
@@ -6407,6 +6591,10 @@ public class FreezeListActivity extends BaseActivity {
         IO.execute(() -> {
             PrivShell.Result r = execPm(it.pkg, false);
             boolean ok = applied(it.pkg, false, r);
+            // 撤销暂停失败时单独给一句，不落到通用的「启用未生效」
+            final String failReason = !ok && SuspendSupport.cached(this).contains(it.pkg)
+                    && Boolean.TRUE.equals(SuspendSupport.suspendedOne(it.pkg))
+                    ? "本机不允许取消暂停，无法打开" : null;
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) {
@@ -6415,7 +6603,8 @@ public class FreezeListActivity extends BaseActivity {
                 if (!ok) {
                     AlertDialog failOpen = new AlertDialog.Builder(this)
                             .setTitle("解冻失败，无法打开")
-                            .setMessage(it.pkg + "\n\n" + pmText(r))
+                            .setMessage(it.label + "：" + (failReason != null
+                                    ? failReason : Ui.pmReason(r, false)))
                             .setPositiveButton("知道了", null)
                             .create();
                     failOpen.show();
@@ -6424,6 +6613,7 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 it.frozen = false;
+                it.suspended = false;
                 rebindCells();
                 launch(it);
                 reload();
@@ -6448,29 +6638,59 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 执行 pm，返回完整结果（含退出码与是否超时），成败不在这里判。 */
     private PrivShell.Result execPm(String pkg, boolean freeze) {
-        String cmd = freeze ? "pm disable-user --user 0 " + pkg : "pm enable " + pkg;
-        return PrivShell.exec(cmd, 30);
+        return PrivShell.exec(pmCommand(pkg, freeze), 30);
     }
 
     /**
-     * 以 pm list packages -d 的真值判定这一步是否已生效：
-     * 冻结 = 包出现在禁用列表里，解冻 = 不在。真值读不到才退回退出码 + 报错文本。
+     * 冻结只走 disable-user；解冻先撤暂停再补启用，两条通道都收（都在 --user 0 下）。
+     * 正常未暂停的包执行 unsuspend 是无操作，不会影响原有行为。
+     */
+    private static String pmCommand(String pkg, boolean freeze) {
+        return freeze
+                ? "pm disable-user --user 0 " + pkg
+                : "pm unsuspend --user 0 " + pkg + "; pm enable --user 0 " + pkg;
+    }
+
+    /**
+     * 以系统真值判定这一步是否已生效：
+     * 冻结 = 在禁用列表里，或（降级通道）处于暂停态；
+     * 解冻 = 既不在禁用列表，也确实退出了暂停。
+     * 禁用真值读不到才退回退出码 + 报错文本。
      */
     private boolean applied(String pkg, boolean freeze, PrivShell.Result r) {
         Set<String> truth = disabledPackages();
-        if (truth != null) {
-            return truth.contains(pkg) == freeze;
+        if (truth == null) {
+            return isPmOk(r);
         }
-        return isPmOk(r);
+        if (freeze) {
+            if (truth.contains(pkg)) {
+                return true;
+            }
+            return Boolean.TRUE.equals(SuspendSupport.suspendedOne(pkg));
+        }
+        if (truth.contains(pkg)) {
+            return false;
+        }
+        // 只对本机暂停过的包额外确认一次「确实退出暂停」；没暂停过的包不额外查
+        if (SuspendSupport.cached(this).contains(pkg)) {
+            Boolean s = SuspendSupport.suspendedOne(pkg);
+            if (Boolean.TRUE.equals(s)) {
+                return false;
+            }
+            if (s == null && !isPmOk(r)) {
+                return false;
+            }
+            SuspendSupport.forget(this, pkg);
+        }
+        return true;
     }
 
-    /** 失败对话框里展示的原始输出，保留退出码便于定位。 */
-    private String pmText(PrivShell.Result r) {
-        String out = r.out == null ? "" : r.out.trim();
-        if (out.isEmpty()) {
-            out = "pm 无输出（退出码 " + r.code + (r.timeout ? "，已超时" : "") + "）";
+    /** 降级执行 pm suspend 后确认暂停确实生效：优先 dumpsys 真值，读不到才看命令结果。 */
+    private boolean suspendApplied(String pkg, PrivShell.Result r) {
+        if (Boolean.TRUE.equals(SuspendSupport.suspendedOne(pkg))) {
+            return true;
         }
-        return out;
+        return isPmOk(r) && !SuspendSupport.romBlocked(r == null ? null : r.out);
     }
 
     /** 真值读不到时的兜底：退出码为 0 且输出里没有报错关键字才算成功。 */
