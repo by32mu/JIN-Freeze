@@ -141,7 +141,7 @@ public final class PrivShell {
             case SHIZUKU:
                 return "Shizuku";
             default:
-                return "未授权";
+                return "未激活";
         }
     }
 

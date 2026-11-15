@@ -93,8 +93,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final int COLUMNS = 5;
     /** 半屏内容区默认高度（dp，不含把手）：按当前版本实测值固化，新装/恢复默认都用它。 */
     private static final int PANEL_CONTENT_DEFAULT_DP = 544;
-    /** 布局设置弹窗默认高度（dp）：同样取当前版本实测值。 */
-    private static final int LAYOUT_DIALOG_DEFAULT_DP = 218;
+    /** 布局设置弹窗默认高度（dp）：新装/重置取 520dp，手动调过的沿用记忆值。 */
+    private static final int LAYOUT_DIALOG_DEFAULT_DP = 520;
     /** 自定义布局：列数 + 图标大小，间距由列宽自动均分。 */
     private static final String KEY_COLUMNS = "grid_columns";
     private static final String KEY_ICON_DP = "grid_icon_dp";
@@ -5705,9 +5705,9 @@ public class FreezeListActivity extends BaseActivity {
         return clampInt(prefs().getInt(key, LAYOUT_DIALOG_DEFAULT_DP), 0, LAYOUT_OPEN_MAX_DP);
     }
 
-    /** 「展开高度」记忆值（dp）。 */
+    /** 「展开高度」记忆值（dp）：新装/重置默认 666dp，手动调过的沿用记忆值。 */
     private int expandDialogDp() {
-        return clampInt(prefs().getInt(lk(KEY_LAYOUT_EXPAND_H), LAYOUT_DIALOG_DEFAULT_DP),
+        return clampInt(prefs().getInt(lk(KEY_LAYOUT_EXPAND_H), LAYOUT_EXPAND_MAX_DP),
                 0, LAYOUT_EXPAND_MAX_DP);
     }
 
@@ -5885,9 +5885,10 @@ public class FreezeListActivity extends BaseActivity {
     /** 只认这一套格式；旧的纯文本名单不再解析。 */
     private static final String BACKUP_FORMAT = "fwbackup";
     private static final int BACKUP_VERSION = 1;
-    private static final String BACKUP_TEXT_PREFIX = "FWB1:";
+    private static final String BACKUP_TEXT_PREFIX = "JIN:";
     private static final String BACKUP_DIR = "backup";
-    private static final String BACKUP_FILE_PREFIX = "fwbk-";
+    /** 备份文件名前缀：JIN-yyyyMMdd-HHmmss.json，与文本前缀同一口径。 */
+    private static final String BACKUP_FILE_PREFIX = "JIN-";
     private static final int RESTORE_SETTINGS = 1;
     private static final int RESTORE_FREEZE = 2;
     private static final int RESTORE_BOTH = 3;
@@ -5922,40 +5923,59 @@ public class FreezeListActivity extends BaseActivity {
     private void showBackup() {
         final String json = buildBackupJson();
         if (json == null) {
-            Toast.makeText(this, "备份生成失败", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "备份内容生成失败", Toast.LENGTH_SHORT).show();
             return;
         }
-        final AlertDialog[] card = new AlertDialog[1];
-        LinearLayout box = backupBox("冻结列表 " + items.size() + " 个、设置 " + backupSettingCount() + " 项");
-        box.addView(backupRow("存成文件",
-                "写入 " + backupDir().getAbsolutePath() + "，可离线保存或拷到别的设备", v -> {
-                    dismiss(card);
-                    saveBackupFile(json);
-                }));
-        box.addView(backupRow("生成文本", "压缩编码成一串文本，可直接复制粘贴", v -> {
-            dismiss(card);
-            showBackupText(json);
-        }));
-        card[0] = backupCard("备份", box);
+        final int listCount = items.size();
+        final int settingCount = backupSettingCount();
+        final AlertDialog[] ref = new AlertDialog[1];
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout optFile = optionRowCompact("存成文件",
+                "写入 " + backupDir().getAbsolutePath() + "（" + BACKUP_FILE_PREFIX
+                        + "时间.json），恢复时从文件列表选择");
+        optFile.setOnClickListener(v -> {
+            dismiss(ref);
+            saveBackupFile(json, listCount, settingCount);
+        });
+        content.addView(optFile);
+        LinearLayout optText = optionRowCompact("生成文本",
+                "生成一串压缩后的短文本（自动复制），可存到备忘录 / 聊天里；恢复时粘回来即可");
+        optText.setOnClickListener(v -> {
+            dismiss(ref);
+            showBackupText(json, listCount, settingCount);
+        });
+        content.addView(optText, topMargin(6));
+        ref[0] = compactCard("备份",
+                "冻结列表 " + listCount + " 个、设置 " + settingCount + " 项，会写进同一份备份",
+                content, new String[]{"取消"}, new Runnable[]{null});
     }
 
-    /** 恢复入口：先选来源，再选恢复范围。 */
+    /** 恢复入口：先选来源（文件 / 文本），再决定恢复哪一部分。 */
     private void showRestore() {
-        final AlertDialog[] card = new AlertDialog[1];
-        LinearLayout box = backupBox("只认新格式（FWB1: 文本或 fwbk-*.json 文件）");
-        box.addView(backupRow("从文件恢复", "读取 " + backupDir().getAbsolutePath() + " 里的备份", v -> {
-            dismiss(card);
+        final AlertDialog[] ref = new AlertDialog[1];
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout optFile = optionRowCompact("选择备份文件",
+                "从本机保存的备份文件恢复（" + backupDir().getAbsolutePath() + "）");
+        optFile.setOnClickListener(v -> {
+            dismiss(ref);
             showRestoreFiles();
-        }));
-        box.addView(backupRow("粘贴文本恢复", "粘贴以 FWB1: 开头的备份文本", v -> {
-            dismiss(card);
+        });
+        content.addView(optFile);
+        LinearLayout optText = optionRowCompact("粘贴备份文本",
+                "粘贴之前复制的备份串（" + BACKUP_TEXT_PREFIX + " 开头）");
+        optText.setOnClickListener(v -> {
+            dismiss(ref);
             showRestorePaste();
-        }));
-        card[0] = backupCard("恢复", box);
+        });
+        content.addView(optText, topMargin(6));
+        ref[0] = compactCard("恢复", "先选备份来源，再决定恢复配置还是冻结列表",
+                content, new String[]{"取消"}, new Runnable[]{null});
     }
 
-    /** 文本备份：UTF-8 → Deflate(9) → Base64，无换行，整串可复制。 */
-    private void showBackupText(String json) {
+    /** 文本备份：压缩 + Base64 成尽量短的一串，进剪贴板并展示出来。 */
+    private void showBackupText(String json, int listCount, int settingCount) {
         final String text = encodeBackupText(json);
         if (text == null) {
             Toast.makeText(this, "备份文本生成失败", Toast.LENGTH_SHORT).show();
@@ -5964,66 +5984,114 @@ public class FreezeListActivity extends BaseActivity {
         final android.content.ClipboardManager cm = (android.content.ClipboardManager)
                 getSystemService(CLIPBOARD_SERVICE);
         cm.setPrimaryClip(ClipData.newPlainText("凚备份", text));
+        TextView view = Ui.text(this, text, 11, Ui.TEXT_SECONDARY, false);
+        view.setTextIsSelectable(true);
+        view.setTypeface(android.graphics.Typeface.MONOSPACE);
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.addView(view);
+        sv.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 160)));
         int raw = json.length();
         int pct = raw == 0 ? 100 : Math.round(text.length() * 100f / raw);
-        LinearLayout box = backupBox("冻结列表 " + items.size() + " 个、设置 " + backupSettingCount()
-                + " 项\n" + text.length() + " 字符（原始 " + raw + " 字符，约 " + pct + "%）");
-        TextView tv = Ui.text(this, text, 10, Ui.TEXT_SECONDARY, false);
-        tv.setTextIsSelectable(true);
-        tv.setTypeface(android.graphics.Typeface.MONOSPACE);
-        box.addView(tv);
-        final AlertDialog[] card = new AlertDialog[1];
-        card[0] = backupCard("备份文本（已复制）", box);
-        card[0].setOnDismissListener(d -> { });
+        compactCard("备份文本（已复制）",
+                "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项\n"
+                        + text.length() + " 字符（原始 " + raw + " 字符，约 " + pct + "%）",
+                sv, new String[]{"关闭", "再复制一次"}, new Runnable[]{null, () -> {
+                    cm.setPrimaryClip(ClipData.newPlainText("凚备份", text));
+                    Toast.makeText(this, "备份文本已复制", Toast.LENGTH_SHORT).show();
+                }});
     }
 
-    /** 文件备份：写进应用自己的外部私有目录，不需要存储权限。 */
-    private void saveBackupFile(final String json) {
-        final File dir = backupDir();
-        final String name = BACKUP_FILE_PREFIX
-                + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".json";
+    /** 文件备份：内容与文本备份完全一致（JIN: 开头的压缩串），文件名沿用同一标识。 */
+    private void saveBackupFile(final String json, final int listCount, final int settingCount) {
+        final String text = encodeBackupText(json);
+        if (text == null) {
+            Toast.makeText(this, "备份内容生成失败", Toast.LENGTH_SHORT).show();
+            return;
+        }
         JinApp.IO.execute(() -> {
-            final File f = new File(dir, name);
+            File out = null;
+            String err = null;
             try {
+                File dir = backupDir();
                 if (!dir.exists() && !dir.mkdirs()) {
                     throw new java.io.IOException("无法创建目录 " + dir);
                 }
-                FileOutputStream out = new FileOutputStream(f);
-                out.write(json.getBytes("UTF-8"));
-                out.close();
-                main.post(() -> backupCard("备份已保存", backupBox(
-                        "文件 " + f.getName() + "\n" + f.length() + " 字节\n" + f.getAbsolutePath())));
+                String name = BACKUP_FILE_PREFIX
+                        + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".json";
+                out = new File(dir, name);
+                FileOutputStream fos = new FileOutputStream(out);
+                fos.write(text.getBytes("UTF-8"));
+                fos.close();
             } catch (Exception e) {
-                main.post(() -> Toast.makeText(this, "保存失败：" + e.getMessage(),
-                        Toast.LENGTH_LONG).show());
+                err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             }
+            final File f = out;
+            final String msg = err;
+            main.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (f == null || msg != null) {
+                    compactCard("备份失败", "写入备份文件失败：" + msg, null,
+                            new String[]{"知道了"}, new Runnable[]{null});
+                    return;
+                }
+                final String path = f.getAbsolutePath();
+                compactCard("备份完成",
+                        "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项\n" + path,
+                        null, new String[]{"关闭", "复制路径"}, new Runnable[]{null, () -> {
+                            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                                    getSystemService(CLIPBOARD_SERVICE);
+                            cm.setPrimaryClip(ClipData.newPlainText("备份文件路径", path));
+                            Toast.makeText(this, "路径已复制", Toast.LENGTH_SHORT).show();
+                        }});
+            });
         });
     }
 
+    /** 文件来源：按修改时间从新到旧列出备份文件。 */
     private void showRestoreFiles() {
-        File[] found = backupDir().listFiles((d, n) ->
+        File[] arr = backupDir().listFiles((d, n) ->
                 n.startsWith(BACKUP_FILE_PREFIX) && n.endsWith(".json"));
-        if (found == null || found.length == 0) {
-            Toast.makeText(this, "备份目录里还没有 " + BACKUP_FILE_PREFIX + "*.json",
-                    Toast.LENGTH_SHORT).show();
+        List<File> files = new ArrayList<>();
+        if (arr != null) {
+            Collections.addAll(files, arr);
+        }
+        files.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        if (files.isEmpty()) {
+            compactCard("还没有备份文件",
+                    "可以先做一次备份，或者用「粘贴备份文本」恢复之前复制的备份串",
+                    null, new String[]{"知道了"}, new Runnable[]{null});
             return;
         }
-        Arrays.sort(found, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-        final AlertDialog[] card = new AlertDialog[1];
-        LinearLayout box = backupBox(found.length + " 份备份，按时间倒序");
+        final AlertDialog[] ref = new AlertDialog[1];
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
         SimpleDateFormat fmt = new SimpleDateFormat("MM-dd HH:mm", Locale.getDefault());
-        for (File f : found) {
-            box.addView(backupRow(f.getName(), fmt.format(new Date(f.lastModified()))
-                    + " · " + Math.max(1, f.length() / 1024) + " KB", v -> {
-                dismiss(card);
+        for (int i = 0; i < files.size(); i++) {
+            final File f = files.get(i);
+            LinearLayout row = optionRowCompact(
+                    fmt.format(new Date(f.lastModified())) + "  ·  "
+                            + Math.max(1, f.length() / 1024) + " KB", f.getName());
+            row.setOnClickListener(v -> {
+                dismiss(ref);
                 readBackupFile(f);
-            }));
+            });
+            list.addView(row, topMargin(i == 0 ? 0 : 6));
         }
-        card[0] = backupCard("选择备份文件", box);
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.addView(list);
+        sv.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 260)));
+        ref[0] = compactCard("选择备份文件", "共 " + files.size() + " 份，按时间从新到旧",
+                sv, new String[]{"取消"}, new Runnable[]{null});
     }
 
     private void readBackupFile(final File f) {
         JinApp.IO.execute(() -> {
+            String text = null;
+            String err = null;
             try {
                 FileInputStream in = new FileInputStream(f);
                 ByteArrayOutputStream bo = new ByteArrayOutputStream();
@@ -6033,55 +6101,80 @@ public class FreezeListActivity extends BaseActivity {
                     bo.write(buf, 0, n);
                 }
                 in.close();
-                final String text = new String(bo.toByteArray(), "UTF-8");
-                main.post(() -> startRestore(text, f.getName()));
+                text = new String(bo.toByteArray(), "UTF-8");
             } catch (Exception e) {
-                main.post(() -> Toast.makeText(this, "读取失败：" + e.getMessage(),
-                        Toast.LENGTH_LONG).show());
+                err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             }
+            final String raw = text;
+            final String msg = err;
+            main.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (raw == null) {
+                    compactCard("读取失败", "这个备份文件读不出来：" + msg, null,
+                            new String[]{"知道了"}, new Runnable[]{null});
+                    return;
+                }
+                if (parseBackup(decodeIfText(raw)) == null) {
+                    compactCard("无法恢复",
+                            "这个文件不是凚的备份（缺少 " + BACKUP_TEXT_PREFIX
+                                    + " 标识或内容已损坏），未改动任何配置",
+                            null, new String[]{"知道了"}, new Runnable[]{null});
+                    return;
+                }
+                startRestore(raw, f.getName());
+            });
         });
     }
 
+    /** 文本来源：只认新备份串，不符合格式直接提示，不做旧版兼容。 */
     private void showRestorePaste() {
         EditText input = new EditText(this);
-        input.setHint("粘贴以 FWB1: 开头的备份文本");
+        input.setHint("粘贴 " + BACKUP_TEXT_PREFIX + " 开头的备份文本（备份文件内容也可直接粘进来）");
         input.setTextSize(12);
         input.setTypeface(android.graphics.Typeface.MONOSPACE);
         input.setGravity(Gravity.TOP | Gravity.START);
-        input.setMinLines(5);
-        input.setMaxLines(10);
-        input.setPadding(Ui.dp(this, 18), Ui.dp(this, 10), Ui.dp(this, 18), Ui.dp(this, 10));
+        input.setMinLines(6);
+        input.setMaxLines(12);
+        input.setBackground(null);
+        input.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 4));
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
         sv.addView(input);
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("粘贴备份文本")
-                .setView(sv)
-                .setPositiveButton("下一步", null)
-                .setNegativeButton("取消", null)
-                .create();
-        dialog.show();
-        Ui.roundAlertDialog(dialog);
-        // 手动接管：格式不对时提示并保留弹窗，方便继续修改
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            String raw = input.getText().toString().trim();
-            if (raw.isEmpty()) {
-                Toast.makeText(this, "先粘贴备份文本", Toast.LENGTH_SHORT).show();
-                return;
+        sv.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 200)));
+        compactCard("粘贴备份", "整串粘贴，内容不会被改动", sv,
+                new String[]{"取消", "解析"}, new Runnable[]{null, () -> {
+                    String raw = input.getText().toString().trim();
+                    if (raw.isEmpty()) {
+                        Toast.makeText(this, "请先粘贴备份内容", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    if (parseBackup(decodeIfText(raw)) == null) {
+                        compactCard("无法恢复",
+                                "这段内容不是凚的备份（缺少 format 标识或内容已损坏），未改动任何配置",
+                                null, new String[]{"知道了"}, new Runnable[]{null});
+                        return;
+                    }
+                    startRestore(raw, "粘贴的文本");
+                }});
+        // 打开面板即聚焦输入框并拉起输入法
+        input.requestFocus();
+        input.postDelayed(() -> {
+            android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
             }
-            if (parseBackup(decodeIfText(raw)) == null) {
-                Toast.makeText(this, "不是凚的新格式备份", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            dialog.dismiss();
-            startRestore(raw, "粘贴文本");
-        });
+        }, 150);
     }
 
     /** 解析成功后按范围三选一。 */
     private void startRestore(String raw, String source) {
         JSONObject data = parseBackup(decodeIfText(raw));
         if (data == null) {
-            Toast.makeText(this, "不是凚的新格式备份", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "格式不对：需要 " + BACKUP_TEXT_PREFIX + " 开头的备份文本",
+                    Toast.LENGTH_SHORT).show();
             return;
         }
         JSONObject freeze = data.optJSONObject("freeze");
@@ -6092,22 +6185,41 @@ public class FreezeListActivity extends BaseActivity {
             listCount = arr == null ? freeze.optInt("count", 0) : arr.length();
         }
         int setCount = settings == null ? 0 : settings.length();
-        final AlertDialog[] card = new AlertDialog[1];
-        LinearLayout box = backupBox("来源：" + source + "\n列表 " + listCount + " 个、配置 "
-                + setCount + " 项");
-        box.addView(backupRow("只恢复配置", "写入 " + setCount + " 项设置，不动冻结列表", v -> {
-            dismiss(card);
+        StringBuilder desc = new StringBuilder("来源：").append(source);
+        String created = data.optString("createdAt", "");
+        String ver = data.optString("appVersion", "");
+        if (!created.isEmpty()) {
+            desc.append("\n备份时间：").append(created);
+        }
+        if (!ver.isEmpty()) {
+            desc.append("  ·  版本 ").append(ver);
+        }
+        final AlertDialog[] ref = new AlertDialog[1];
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout onlySettings = optionRowCompact("只恢复配置",
+                setCount + " 项设置（布局、列数、图标大小、透明度、开关等），冻结列表不动");
+        onlySettings.setOnClickListener(v -> {
+            dismiss(ref);
             applyRestore(data, RESTORE_SETTINGS);
-        }));
-        box.addView(backupRow("只恢复冻结列表", "覆盖为备份里的 " + listCount + " 个应用，不动设置", v -> {
-            dismiss(card);
+        });
+        content.addView(onlySettings);
+        LinearLayout onlyList = optionRowCompact("只恢复冻结列表",
+                listCount + " 个应用（含顺序与标签归属），覆盖当前名单，设置不动");
+        onlyList.setOnClickListener(v -> {
+            dismiss(ref);
             applyRestore(data, RESTORE_FREEZE);
-        }));
-        box.addView(backupRow("两者一起恢复", "配置与冻结列表都按备份覆盖", v -> {
-            dismiss(card);
+        });
+        content.addView(onlyList, topMargin(6));
+        LinearLayout both = optionRowCompact("两者一起恢复",
+                "配置 " + setCount + " 项 + 冻结列表 " + listCount + " 个");
+        both.setOnClickListener(v -> {
+            dismiss(ref);
             applyRestore(data, RESTORE_BOTH);
-        }));
-        card[0] = backupCard("选择恢复内容", box);
+        });
+        content.addView(both, topMargin(6));
+        ref[0] = compactCard("选择恢复内容", desc, content,
+                new String[]{"取消"}, new Runnable[]{null});
     }
 
     /**
@@ -6140,20 +6252,14 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         final boolean settingsApplied = mode != RESTORE_FREEZE;
-        AlertDialog done = new AlertDialog.Builder(this)
-                .setTitle("恢复完成")
-                .setMessage(msg.toString())
-                .setPositiveButton("完成", (d, w) -> {
-                    if (settingsApplied) {
-                        // 布局参数在 onCreate 读取，重建一次让恢复的设置立即生效
-                        recreate();
-                    } else {
-                        reload();
-                    }
-                })
-                .create();
-        done.show();
-        Ui.roundAlertDialog(done);
+        compactCard("恢复完成", msg.toString(), null, new String[]{"完成"}, new Runnable[]{() -> {
+            if (settingsApplied) {
+                // 布局参数在 onCreate 读取，重建一次让恢复的设置立即生效
+                recreate();
+            } else {
+                reload();
+            }
+        }});
     }
 
     /** 备份 JSON：与搞机助手同一套字段，freeze 段 + settings 段。 */
@@ -6276,7 +6382,7 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 文本解码：只认 FWB1: 前缀，解压后交给 parseBackup 校验。 */
+    /** 文本解码：只认 JIN: 前缀（旧 FWB1: 不兼容），解压后交给 parseBackup 校验。 */
     private String decodeBackupText(String raw) {
         if (raw == null || !raw.startsWith(BACKUP_TEXT_PREFIX)) {
             return null;
@@ -6435,43 +6541,97 @@ public class FreezeListActivity extends BaseActivity {
         return new File(base, BACKUP_DIR);
     }
 
-    private LinearLayout backupBox(String summary) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = Ui.dp(this, 18);
-        box.setPadding(pad, Ui.dp(this, 4), pad, Ui.dp(this, 4));
-        if (summary != null && !summary.isEmpty()) {
-            TextView t = Ui.text(this, summary, 11, Ui.TEXT_SECONDARY, false);
-            t.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 6));
-            box.addView(t);
+    /** 紧凑卡片弹窗：宽度 76%、内边距与字号整体收一档，与搞机助手备份/恢复弹框同一档。 */
+    private AlertDialog compactCard(String title, CharSequence desc, View content,
+            String[] labels, final Runnable[] actions) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackgroundResource(R.drawable.bg_dialog);
+        int pad = Ui.dp(this, 16);
+        card.setPadding(pad, Ui.dp(this, 14), pad, Ui.dp(this, 8));
+        card.addView(Ui.text(this, title, 15, Ui.TEXT_PRIMARY, true));
+        if (desc != null && desc.length() > 0) {
+            card.addView(Ui.text(this, desc, 11, Ui.TEXT_SECONDARY, false), topMargin(6));
         }
-        return box;
+        if (content != null) {
+            LinearLayout.LayoutParams clp =
+                    content.getLayoutParams() instanceof LinearLayout.LayoutParams
+                            ? (LinearLayout.LayoutParams) content.getLayoutParams()
+                            : new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clp.topMargin = Ui.dp(this, 10);
+            card.addView(content, clp);
+        }
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        card.addView(row, topMargin(8));
+        final AlertDialog dialog = new AlertDialog.Builder(this).setView(card).create();
+        for (int i = 0; i < labels.length; i++) {
+            TextView b = cardButton(labels[i]);
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(this, 30));
+            if (i > 0) {
+                blp.leftMargin = Ui.dp(this, 4);
+            }
+            row.addView(b, blp);
+            final Runnable act = actions[i];
+            b.setOnClickListener(v -> {
+                dialog.dismiss();
+                if (act != null) {
+                    act.run();
+                }
+            });
+        }
+        dialog.show();
+        android.view.Window w = dialog.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawableResource(android.R.color.transparent);
+            int width = (int) (getResources().getDisplayMetrics().widthPixels * 0.76f);
+            w.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+        return dialog;
     }
 
-    private LinearLayout backupRow(String title, String desc, View.OnClickListener click) {
+    /** 卡片底部按钮：30dp 高、无最小宽度、透明底（保留水波纹）。 */
+    private TextView cardButton(String label) {
+        TextView b = Ui.text(this, label, 12, Ui.BLUE, true);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        android.util.TypedValue bg = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, bg, true)) {
+            b.setBackgroundResource(bg.resourceId);
+        }
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0);
+        return b;
+    }
+
+    /** 备份 / 恢复选项行：标题 13sp + 说明 10sp，行内边距收一档。 */
+    private LinearLayout optionRowCompact(String title, String desc) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
-        int pad = Ui.dp(this, 12);
-        row.setPadding(pad, pad, pad, pad);
-        row.addView(Ui.text(this, title, 14, Ui.TEXT_PRIMARY, true));
-        TextView d = Ui.text(this, desc, 11, Ui.TEXT_SECONDARY, false);
-        d.setPadding(0, Ui.dp(this, 2), 0, 0);
-        row.addView(d);
-        row.setOnClickListener(click);
+        android.util.TypedValue bg = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, bg, true)) {
+            row.setBackgroundResource(bg.resourceId);
+        }
+        int v = Ui.dp(this, 8);
+        row.setPadding(Ui.dp(this, 4), v, Ui.dp(this, 4), v);
+        row.addView(Ui.text(this, title, 13, Ui.TEXT_PRIMARY, true));
+        if (desc != null && !desc.isEmpty()) {
+            row.addView(Ui.text(this, desc, 10, Ui.TEXT_SECONDARY, false), topMargin(2));
+        }
         return row;
     }
 
-    private AlertDialog backupCard(String title, View content) {
-        android.widget.ScrollView sv = new android.widget.ScrollView(this);
-        sv.addView(content);
-        AlertDialog d = new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setView(sv)
-                .setNegativeButton("关闭", null)
-                .create();
-        d.show();
-        Ui.roundAlertDialog(d);
-        return d;
+    private LinearLayout.LayoutParams topMargin(int topDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = Ui.dp(this, topDp);
+        return lp;
     }
 
     private static void dismiss(AlertDialog[] holder) {
@@ -6524,7 +6684,7 @@ public class FreezeListActivity extends BaseActivity {
         if (mode == PrivShell.Mode.SHIZUKU) {
             return "Shizuku";
         }
-        return "未授权";
+        return "未激活";
     }
 
     private void handlePrivilegeClick(Runnable refresh) {
@@ -6578,8 +6738,7 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView message = new TextView(this);
-        message.setText("安装并启动 Shizuku 后回到凚点击授权即可；\n\n"
-                + "若有 root，请授权，并强制停止凚后再启动。");
+        message.setText("请在Shizuku或root授权凚后，强制停止凚，再打开凚，即可激活，如未激活成功，请再次检查授权状态。");
         message.setTextSize(11);
         message.setLineSpacing(Ui.dp(this, 2), 1f);
         message.setTextColor(getColor(R.color.text_secondary));
@@ -6611,7 +6770,7 @@ public class FreezeListActivity extends BaseActivity {
                 retry.setEnabled(true);
                 retry.setText("重新检测");
                 if (!isFinishing() && privDialog != null && privDialog.isShowing()) {
-                    Toast.makeText(this, "仍未授权：" + PrivShell.failureHint(),
+                    Toast.makeText(this, "仍未激活：" + PrivShell.failureHint(),
                             Toast.LENGTH_SHORT).show();
                 }
             });
