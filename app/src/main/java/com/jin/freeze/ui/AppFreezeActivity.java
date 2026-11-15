@@ -277,17 +277,9 @@ public class AppFreezeActivity extends BaseActivity {
                     || PrivShell.mode() != PrivShell.Mode.NONE;
 
             // pm list packages -d 是系统侧的冻结状态，比 PackageInfo 的 enabled 更准
-            Set<String> disabled = new HashSet<>();
-            if (hasPriv) {
-                PrivShell.Result d = PrivShell.exec("pm list packages -d --user 0", 30);
-                if (d.out != null) {
-                    for (String line : d.out.split("\n")) {
-                        String t = line.trim();
-                        if (t.startsWith("package:")) {
-                            disabled.add(t.substring("package:".length()).trim());
-                        }
-                    }
-                }
+            Set<String> disabled = hasPriv ? disabledPackages() : null;
+            if (disabled == null) {
+                disabled = new HashSet<>();
             }
 
             List<App> apps = new ArrayList<>();
@@ -303,10 +295,6 @@ public class AppFreezeActivity extends BaseActivity {
                 a.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
                         | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
                 a.frozen = disabled.contains(a.pkg) || !ai.enabled;
-                // 核心系统应用不进入任何选择/浏览列表
-                if (com.jin.freeze.core.CoreProtect.isProtected(this, a.pkg, a.label)) {
-                    continue;
-                }
                 try {
                     a.icon = ai.loadIcon(pm);
                 } catch (Exception ignored) {
@@ -804,7 +792,7 @@ public class AppFreezeActivity extends BaseActivity {
             Toast.makeText(this, "只有一个标签，先在布局设置里新建标签", Toast.LENGTH_SHORT).show();
             return;
         }
-        new AlertDialog.Builder(this)
+        AlertDialog moveDlg = new AlertDialog.Builder(this)
                 .setTitle("移动「" + a.label + "」到…")
                 .setItems(targetNames.toArray(new String[0]), (d, w) -> {
                     try {
@@ -817,7 +805,9 @@ public class AppFreezeActivity extends BaseActivity {
                     }
                 })
                 .setNegativeButton("取消", null)
-                .show();
+                .create();
+        moveDlg.show();
+        Ui.roundAlertDialog(moveDlg);
     }
 
     private void openAppSettings(String pkg) {
@@ -860,8 +850,8 @@ public class AppFreezeActivity extends BaseActivity {
     /** 添加页内解冻：成功静默恢复彩色，失败展示 pm 真实输出。 */
     private void doPickUnfreeze(App a, Cell cell) {
         IO.execute(() -> {
-            String out = execPm(a.pkg, false);
-            boolean ok = isPmOk(out);
+            PrivShell.Result r = execPm(a.pkg, false);
+            boolean ok = applied(a.pkg, false, r);
             main.post(() -> {
                 if (isFinishing() || isDestroyed()) {
                     return;
@@ -870,12 +860,13 @@ public class AppFreezeActivity extends BaseActivity {
                     a.frozen = false;
                     bindCell(a, cell);
                 } else {
-                    new AlertDialog.Builder(this)
+                    AlertDialog failDlg = new AlertDialog.Builder(this)
                             .setTitle("解冻失败")
-                            .setMessage(out == null || out.trim().isEmpty()
-                                    ? "pm 未返回输出" : out.trim())
+                            .setMessage(pmText(r))
                             .setPositiveButton("知道了", null)
-                            .show();
+                            .create();
+                    failDlg.show();
+                    Ui.roundAlertDialog(failDlg);
                 }
             });
         });
@@ -896,17 +887,8 @@ public class AppFreezeActivity extends BaseActivity {
         }
         refreshing = true;
         IO.execute(() -> {
-            PrivShell.Result d = PrivShell.exec("pm list packages -d --user 0", 30);
-            Set<String> disabled = new HashSet<>();
-            boolean ok = d.out != null && d.out.contains("package:");
-            if (ok) {
-                for (String line : d.out.split("\n")) {
-                    String t = line.trim();
-                    if (t.startsWith("package:")) {
-                        disabled.add(t.substring("package:".length()).trim());
-                    }
-                }
-            }
+            Set<String> disabled = disabledPackages();
+            boolean ok = disabled != null;
             main.post(() -> {
                 refreshing = false;
                 if (isFinishing() || isDestroyed() || !ok) {
@@ -956,11 +938,6 @@ public class AppFreezeActivity extends BaseActivity {
             return;
         }
         boolean toFreeze = !a.frozen;
-        if (toFreeze && com.jin.freeze.core.CoreProtect.isProtected(this, a.pkg, a.label)) {
-            Toast.makeText(this, "「" + a.label + "」是核心系统应用，已保护，不能冻结",
-                    Toast.LENGTH_SHORT).show();
-            return;
-        }
         if (prefs().getBoolean(KEY_SKIP_CONFIRM, false)) {
             runToggle(a);
             return;
@@ -972,7 +949,7 @@ public class AppFreezeActivity extends BaseActivity {
         never.setTextSize(12);
         never.setTextColor(Ui.secondary(this));
         box.addView(never);
-        new AlertDialog.Builder(this)
+        AlertDialog confirmDlg = new AlertDialog.Builder(this)
                 .setTitle((toFreeze ? "冻结 " : "解冻 ") + a.label)
                 .setMessage(a.pkg + (toFreeze
                         ? "\n\n冻结后应用将无法运行，桌面入口也会消失。"
@@ -985,7 +962,9 @@ public class AppFreezeActivity extends BaseActivity {
                     runToggle(a);
                 })
                 .setNegativeButton("取消", null)
-                .show();
+                .create();
+        confirmDlg.show();
+        Ui.roundAlertDialog(confirmDlg);
     }
 
     /** 单条切换：成功后原地更新该格状态，失败把 pm 的真实输出原样展示。 */
@@ -993,19 +972,21 @@ public class AppFreezeActivity extends BaseActivity {
         final boolean toFreeze = !a.frozen;
         working = true;
         IO.execute(() -> {
-            String out = execPm(a.pkg, toFreeze);
-            boolean ok = isPmOk(out);
+            PrivShell.Result r = execPm(a.pkg, toFreeze);
+            boolean ok = applied(a.pkg, toFreeze, r);
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
                 if (!ok) {
-                    new AlertDialog.Builder(this)
+                    AlertDialog failDlg = new AlertDialog.Builder(this)
                             .setTitle(toFreeze ? "冻结失败" : "解冻失败")
-                            .setMessage(a.pkg + "\n\n" + out)
+                            .setMessage(a.pkg + "\n\n" + pmText(r))
                             .setPositiveButton("知道了", null)
-                            .show();
+                            .create();
+                    failDlg.show();
+                    Ui.roundAlertDialog(failDlg);
                     return;
                 }
                 a.frozen = toFreeze;
@@ -1029,19 +1010,21 @@ public class AppFreezeActivity extends BaseActivity {
         }
         working = true;
         IO.execute(() -> {
-            String out = execPm(a.pkg, false);
-            boolean ok = isPmOk(out);
+            PrivShell.Result r = execPm(a.pkg, false);
+            boolean ok = applied(a.pkg, false, r);
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
                 if (!ok) {
-                    new AlertDialog.Builder(this)
+                    AlertDialog failDlg = new AlertDialog.Builder(this)
                             .setTitle("解冻失败，无法打开")
-                            .setMessage(a.pkg + "\n\n" + out)
+                            .setMessage(a.pkg + "\n\n" + pmText(r))
                             .setPositiveButton("知道了", null)
-                            .show();
+                            .create();
+                    failDlg.show();
+                    Ui.roundAlertDialog(failDlg);
                     refreshFrozen();
                     return;
                 }
@@ -1055,34 +1038,30 @@ public class AppFreezeActivity extends BaseActivity {
 
     /** 批量冻结/解冻选中的应用：逐条执行并汇总成功/失败，失败项带 pm 原始报错。 */
     private void runBatch(boolean freeze) {
-        // 执行层兜底：核心应用即使被选中也直接跳过，不执行 pm disable-user
-        final List<String> targets = new ArrayList<>();
-        int protectedCount = 0;
-        for (String pkg : selected) {
-            if (freeze && com.jin.freeze.core.CoreProtect.isProtected(this, pkg, labelOf(pkg))) {
-                protectedCount++;
-            } else {
-                targets.add(pkg);
-            }
-        }
+        final List<String> targets = new ArrayList<>(selected);
         if (targets.isEmpty()) {
-            Toast.makeText(this, protectedCount + " 个应用受核心保护，已跳过", Toast.LENGTH_SHORT).show();
             return;
         }
-        final int protectedFinal = protectedCount;
         working = true;
         updateBatchBar();
         freezeBtn.setText(freeze ? "冻结中…" : "一键冻结");
         unfreezeBtn.setText(freeze ? "一键解冻" : "解冻中…");
         IO.execute(() -> {
+            Map<String, PrivShell.Result> results = new HashMap<>();
+            for (String pkg : targets) {
+                results.put(pkg, execPm(pkg, freeze));
+            }
+            // 批量只回读一次真值，逐包按「是否已在目标状态」判成败
+            Set<String> truth = disabledPackages();
             int okCount = 0;
             List<String> fails = new ArrayList<>();
             for (String pkg : targets) {
-                String out = execPm(pkg, freeze);
-                if (isPmOk(out)) {
+                PrivShell.Result r = results.get(pkg);
+                boolean ok = truth != null ? truth.contains(pkg) == freeze : isPmOk(r);
+                if (ok) {
                     okCount++;
                 } else {
-                    fails.add(labelOf(pkg) + "（" + pkg + "）\n" + out);
+                    fails.add(labelOf(pkg) + "（" + pkg + "）\n" + pmText(r));
                 }
             }
             final int okFinal = okCount;
@@ -1099,38 +1078,79 @@ public class AppFreezeActivity extends BaseActivity {
                 StringBuilder sb = new StringBuilder();
                 sb.append("成功 ").append(okFinal).append(" 个，失败 ")
                         .append(fails.size()).append(" 个");
-                if (protectedFinal > 0) {
-                    sb.append("，受保护跳过 ").append(protectedFinal).append(" 个");
-                }
                 for (String f : fails) {
                     sb.append("\n\n").append(f);
                 }
-                new AlertDialog.Builder(this)
+                AlertDialog doneDlg = new AlertDialog.Builder(this)
                         .setTitle(freeze ? "批量冻结完成" : "批量解冻完成")
                         .setMessage(sb.toString())
                         .setPositiveButton("知道了", null)
-                        .show();
+                        .create();
+                doneDlg.show();
+                Ui.roundAlertDialog(doneDlg);
             });
         });
     }
 
-    /** 执行 pm 命令，返回合并后的真实输出（失败时用于展示）。 */
-    private String execPm(String pkg, boolean freeze) {
+    /** 执行 pm，返回完整结果（含退出码与是否超时），成败不在这里判。 */
+    private PrivShell.Result execPm(String pkg, boolean freeze) {
         String cmd = freeze ? "pm disable-user --user 0 " + pkg : "pm enable " + pkg;
-        PrivShell.Result r = PrivShell.exec(cmd, 30);
+        return PrivShell.exec(cmd, 30);
+    }
+
+    /**
+     * 系统真值：pm list packages -d。
+     * null = 没读到（超时 / 命令失败）；空集合 = 读到且确实没有冻结项，
+     * 两者必须分开，否则「一个都没冻结」会被当成读取失败。
+     */
+    private Set<String> disabledPackages() {
+        PrivShell.Result r = PrivShell.exec("pm list packages -d --user 0", 30);
+        if (r.timeout) {
+            return null;
+        }
+        Set<String> set = new HashSet<>();
+        boolean any = false;
+        if (r.out != null) {
+            for (String line : r.out.split("\n")) {
+                String t = line.trim();
+                if (t.startsWith("package:")) {
+                    set.add(t.substring("package:".length()).trim());
+                    any = true;
+                }
+            }
+        }
+        if (!any && r.code != 0) {
+            return null;
+        }
+        return set;
+    }
+
+    /** 以 pm list packages -d 的真值判定这一步是否已生效；读不到才退回退出码 + 报错文本。 */
+    private boolean applied(String pkg, boolean freeze, PrivShell.Result r) {
+        Set<String> truth = disabledPackages();
+        if (truth != null) {
+            return truth.contains(pkg) == freeze;
+        }
+        return isPmOk(r);
+    }
+
+    /** 失败对话框里展示的原始输出，保留退出码便于定位。 */
+    private String pmText(PrivShell.Result r) {
         String out = r.out == null ? "" : r.out.trim();
         if (out.isEmpty()) {
-            out = "pm 无输出（退出码 " + r.code + "）";
+            out = "pm 无输出（退出码 " + r.code + (r.timeout ? "，已超时" : "") + "）";
         }
         return out;
     }
 
-    private boolean isPmOk(String out) {
-        String low = out.toLowerCase(Locale.ROOT);
-        return out.contains("new state:")
-                || (!low.contains("error") && !low.contains("exception")
-                && !low.contains("failure") && !low.contains("denied")
-                && !low.contains("无输出"));
+    /** 真值读不到时的兜底：退出码为 0 且输出里没有报错关键字才算成功。 */
+    private boolean isPmOk(PrivShell.Result r) {
+        if (r == null || r.timeout || r.code != 0) {
+            return false;
+        }
+        String low = r.out == null ? "" : r.out.toLowerCase(Locale.ROOT);
+        return !low.contains("error") && !low.contains("exception")
+                && !low.contains("failure") && !low.contains("denied");
     }
 
     private String labelOf(String pkg) {

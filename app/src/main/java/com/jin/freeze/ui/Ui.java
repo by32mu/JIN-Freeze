@@ -251,6 +251,45 @@ public final class Ui {
         w.setLayout(width, heightPx);
     }
 
+    /**
+     * 标准 AlertDialog 的圆角兜底：系统内容面板自带一张不透明方角底，会把主题里
+     * bg_dialog 的圆角盖住。这里把窗口底清空，内容面板换成同一张 bg_dialog，并按
+     * 同一个圆角裁切，内部按钮的底与触感也一起收进圆角。
+     * 需在 {@link Dialog#show()} 之后调用。
+     */
+    public static void roundAlertDialog(Dialog dialog) {
+        Window w = dialog.getWindow();
+        if (w == null) {
+            return;
+        }
+        w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        View decor = w.getDecorView();
+        if (decor == null) {
+            return;
+        }
+        View content = decor.findViewById(android.R.id.content);
+        View panel = content;
+        if (content instanceof ViewGroup && ((ViewGroup) content).getChildCount() > 0) {
+            panel = ((ViewGroup) content).getChildAt(0);
+        } else if (panel == null && decor instanceof ViewGroup
+                && ((ViewGroup) decor).getChildCount() > 0) {
+            // 个别 ROM 的对话框没有 android.R.id.content，退一格用 decor 的第一个子 View
+            panel = ((ViewGroup) decor).getChildAt(0);
+        }
+        if (panel == null) {
+            return;
+        }
+        panel.setBackgroundResource(R.drawable.bg_dialog);
+        final int radius = promptRadius(panel.getContext());
+        panel.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(View view, Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
+            }
+        });
+        panel.setClipToOutline(true);
+    }
+
     public static int color(Context c, int id) {
         return ContextCompat.getColor(c, id);
     }

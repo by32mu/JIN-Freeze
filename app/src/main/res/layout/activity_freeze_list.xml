@@ -5,7 +5,8 @@
     android:layout_height="match_parent"
     android:background="@color/page_bg">
 
-    <!-- 背景只由 page_root 这一层承担：全屏背景滑块按档位改它的 alpha，内层不再叠第二层底色 -->
+    <!-- 背景只由 page_root 这一层承担：全屏背景滑块按档位换它的背景 drawable（applyWindowBackdrop），
+         图标/文字/标签绘制在它之上，绝不参与这一档 alpha；内层不再叠第二层底色 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -134,7 +135,7 @@
                     android:paddingTop="7dp"
                     android:paddingEnd="4dp"
                     android:paddingBottom="7dp"
-                    android:text="布局"
+                    android:text="设置"
                     android:textColor="@color/text_secondary"
                     android:textSize="13sp" />
 

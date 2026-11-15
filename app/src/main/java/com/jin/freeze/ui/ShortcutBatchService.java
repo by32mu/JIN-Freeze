@@ -9,7 +9,6 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.widget.Toast;
 
-import com.jin.freeze.core.CoreProtect;
 import com.jin.freeze.core.PrivShell;
 
 import java.util.ArrayList;
@@ -51,9 +50,6 @@ public class ShortcutBatchService extends Service {
         PackageManager pm = getPackageManager();
         List<String> todo = new ArrayList<>();
         for (String pkg : pkgs) {
-            if (freeze && CoreProtect.isProtected(this, pkg, labelOf(pm, pkg))) {
-                continue;
-            }
             // 已经是目标状态的不再执行 pm：重复整批调用是原来耗时的主要来源之一
             Boolean enabled = enabledOf(pm, pkg);
             if (enabled != null && enabled != freeze) {

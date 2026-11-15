@@ -39,7 +39,13 @@ public class BaseActivity extends AppCompatActivity {
             // 键盘弹出时按 ime 高度让位，页面内输入框不会被遮挡
             Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
             int bottom = Math.max(bars.bottom, ime.bottom);
-            v.setPadding(bars.left, bars.top, bars.right, bottom);
+            // 默认把系统栏高度让给 content；全屏页会改成让给内层内容，
+            // 这样页面背景可以一直铺到状态栏/导航栏底下
+            View target = statusBarInsetTarget();
+            if (target == null) {
+                target = v;
+            }
+            target.setPadding(bars.left, bars.top, bars.right, bottom);
             return insets;
         });
         applyBarIconAppearance(window);
@@ -55,6 +61,15 @@ public class BaseActivity extends AppCompatActivity {
     /** 过渡期间子类会临时把状态栏图标切成白色，此时不要再被上面的补挂覆盖。 */
     protected boolean isBarIconAppearanceForced() {
         return false;
+    }
+
+    /**
+     * 系统栏留白加在哪个 View 上。
+     * 全屏冻结页会让 page_root 的背景铺满整块窗口，只把留白加到内层内容上；
+     * 其它页面保持默认（留白加在 content 上）。
+     */
+    protected View statusBarInsetTarget() {
+        return findViewById(android.R.id.content);
     }
 
     private void applyBarIconAppearance(Window window) {

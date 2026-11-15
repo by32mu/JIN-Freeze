@@ -216,6 +216,31 @@ public final class PrivShell {
         }
     }
 
+    /**
+     * 等进程退出。不能用 Process#waitFor(long, TimeUnit)：Shizuku 的远程进程把该方法
+     * 的服务端异常映射成了 IllegalArgumentException（进程还活着时 exitValue 抛的
+     * IllegalThreadStateException 经 Binder 变成 IAE），父类默认实现的 catch 抓不到，
+     * 会直接冒泡成「执行失败」，但命令其实已经成功。
+     * 这里自己轮询 exitValue()，IAE 与 ITSE 都当成「还没退出」。
+     */
+    private static boolean awaitExit(Process p, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while (true) {
+            try {
+                p.exitValue();
+                return true;
+            } catch (IllegalArgumentException stillRunning) {
+                // IllegalThreadStateException 是它的子类，统一按「进程还活着」处理
+            } catch (Throwable t) {
+                return false;
+            }
+            if (SystemClock.elapsedRealtime() >= deadline) {
+                return false;
+            }
+            SystemClock.sleep(50);
+        }
+    }
+
     private static Result runShizuku(String cmd, int timeoutSeconds) {
         Process p = null;
         try {
@@ -242,7 +267,7 @@ public final class PrivShell {
                     sb.append(line).append('\n');
                 }
             }
-            if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+            if (!awaitExit(p, timeoutSeconds * 1000L)) {
                 p.destroy();
                 return new Result(-1, sb.toString(), true);
             }
