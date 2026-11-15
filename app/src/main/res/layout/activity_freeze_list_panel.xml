@@ -58,23 +58,15 @@
             android:layout_height="0dp"
             android:layout_weight="1">
 
-            <ScrollView
-                android:id="@+id/scroll"
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/grid"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:fillViewport="true"
-                android:scrollbars="none">
-
-                <LinearLayout
-                    android:id="@+id/grid"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:paddingStart="14dp"
-                    android:paddingTop="4dp"
-                    android:paddingEnd="14dp"
-                    android:paddingBottom="96dp" />
-            </ScrollView>
+                android:paddingStart="14dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="96dp"
+                android:scrollbars="none" />
 
             <!-- 空态：名单为空时给添加与迁移两个入口 -->
             <LinearLayout

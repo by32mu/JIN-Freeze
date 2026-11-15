@@ -184,24 +184,16 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
-        <ScrollView
-            android:id="@+id/scroll"
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/grid"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:fillViewport="true"
-            android:scrollbars="none">
-
-            <LinearLayout
-                android:id="@+id/grid"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingStart="14dp"
-                android:paddingTop="8dp"
-                android:paddingEnd="14dp"
-                android:paddingBottom="100dp" />
-        </ScrollView>
+            android:paddingStart="14dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="100dp"
+            android:scrollbars="none" />
     </LinearLayout>
 
     <!-- 一键冻结：悬浮按钮，位置由布局设置里的两个滑块控制，滚动时保持可见 -->

@@ -33,8 +33,11 @@ public final class AppActionSheet {
 
         void pinHome();
 
-        /** 是否在冻结名单里：决定「移除列表并解冻」是否出现。 */
+        /** 是否在冻结名单里：决定「从列表移除 / 移除列表并解冻」是否出现。 */
         boolean inList();
+
+        /** 仅从名单移除：不解冻、不卸载，应用本身保持原样。 */
+        void removeFromList();
 
         void removeAndUnfreeze();
     }
@@ -87,7 +90,7 @@ public final class AppActionSheet {
         }
         cardBg.setAlpha(bgAlpha);
         content.setBackground(cardBg);
-        final int radius = Ui.dp(c, 16);
+        final int radius = Ui.promptRadius(c);
         content.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override
             public void getOutline(View view, android.graphics.Outline outline) {
@@ -128,6 +131,8 @@ public final class AppActionSheet {
         addItem(c, content, sheet, R.drawable.ic_settings, "在其他应用中配置", actions::appSettings, fg, iconFg);
         addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
         if (actions.inList()) {
+            addItem(c, content, sheet, R.drawable.ic_minus, "从列表移除",
+                    actions::removeFromList, fg, iconFg);
             divider(c, content, 18, lineColor);
             addItem(c, content, sheet, R.drawable.ic_minus, "移除列表并解冻",
                     actions::removeAndUnfreeze, fg, iconFg);

@@ -217,8 +217,13 @@ public final class Ui {
         }, 200);
     }
 
+    /** 提示类弹窗的统一圆角（dp），与 bg_dialog 共用同一个 dimen。 */
+    public static int promptRadius(Context c) {
+        return c.getResources().getDimensionPixelSize(R.dimen.prompt_radius);
+    }
+
     /**
-     * 自定义内容弹窗做真圆角：窗口底透明、内容铺 bg_dialog 并按 16dp 裁切、宽度收窄不贴屏边。
+     * 自定义内容弹窗做真圆角：窗口底透明、内容铺 bg_dialog 并按统一圆角裁切、宽度收窄不贴屏边。
      * 需在 {@link Dialog#show()} 之后（onShow 回调里）调用。
      */
     public static void roundDialog(Dialog dialog, View root, int widthInsetDp) {
@@ -233,7 +238,7 @@ public final class Ui {
         }
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         root.setBackgroundResource(R.drawable.bg_dialog);
-        final int radius = dp(root.getContext(), 16);
+        final int radius = promptRadius(root.getContext());
         root.setOutlineProvider(new ViewOutlineProvider() {
             @Override
             public void getOutline(View view, Outline outline) {

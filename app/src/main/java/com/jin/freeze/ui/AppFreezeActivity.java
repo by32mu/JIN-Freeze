@@ -26,6 +26,7 @@ import android.widget.Toast;
 
 import com.jin.freeze.R;
 import com.jin.freeze.core.PrivShell;
+import com.jin.freeze.core.SwipeFreeze;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -53,6 +54,8 @@ public class AppFreezeActivity extends BaseActivity {
     /** 选择模式：作为「冻结列表」的选应用页，勾选后回传包名，不执行冻结操作。 */
     public static final String EXTRA_PICK = "pick_mode";
     public static final String EXTRA_PICKED = "picked";
+    /** 选择页默认停在哪个标签：false=用户应用、true=系统应用，跟发起页当前标签一致。 */
+    public static final String EXTRA_PICK_SYSTEM = "pick_system";
     /** 每行图标数。 */
     private static final int COLUMNS = 4;
     /** 显示方式：0 网格（默认）、1 一行一条；切换后记住，下次进入沿用。 */
@@ -84,6 +87,11 @@ public class AppFreezeActivity extends BaseActivity {
     private EditText search;
     private TextView filterUser;
     private TextView filterSystem;
+    private TextView stateAll;
+    private TextView stateFrozen;
+    private TextView stateUnfrozen;
+    /** 冻结状态筛选：0=全部、1=已冻结、2=未冻结；只在本次页面内有效，重进回到全部。 */
+    private int stateFilter;
     private TextView sysHint;
     private TextView rootState;
     private TextView viewModeBtn;    private TextView batchBtn;
@@ -94,6 +102,11 @@ public class AppFreezeActivity extends BaseActivity {
     private boolean showSystem;
     private boolean root;
     private boolean loaded;
+    private boolean loading;
+    /** 上一次没读到完整应用列表（多半是「获取应用列表」还没放行）：回前台时补拉。 */
+    private boolean permissionRetry;
+    /** 首屏加载完成后只自动补拉一次，避免权限被拒时反复空转。 */
+    private boolean autoRetried;
     private boolean batchMode;
     private boolean working;
     private boolean refreshing;
@@ -124,6 +137,9 @@ public class AppFreezeActivity extends BaseActivity {
         search = findViewById(R.id.search);
         filterUser = findViewById(R.id.filter_user);
         filterSystem = findViewById(R.id.filter_system);
+        stateAll = findViewById(R.id.state_all);
+        stateFrozen = findViewById(R.id.state_frozen);
+        stateUnfrozen = findViewById(R.id.state_unfrozen);
         sysHint = findViewById(R.id.sys_hint);
         rootState = findViewById(R.id.root_state);
         batchBtn = findViewById(R.id.batch);
@@ -133,7 +149,12 @@ public class AppFreezeActivity extends BaseActivity {
 
         filterUser.setOnClickListener(v -> switchFilter(false));
         filterSystem.setOnClickListener(v -> switchFilter(true));
-        switchFilter(false);
+        // 选择页跟着发起时的标签走：从「系统应用」点添加就停在系统应用
+        switchFilter(pickMode && getIntent().getBooleanExtra(EXTRA_PICK_SYSTEM, false));
+        stateAll.setOnClickListener(v -> switchStateFilter(0));
+        stateFrozen.setOnClickListener(v -> switchStateFilter(1));
+        stateUnfrozen.setOnClickListener(v -> switchStateFilter(2));
+        applyStateFilterStyle();
 
         viewModeBtn = findViewById(R.id.view_mode);
         viewModeBtn.setText(listView() ? "网格" : "列表");
@@ -220,7 +241,36 @@ public class AppFreezeActivity extends BaseActivity {
         return false;
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 首次授权同意、被拒后重新授权、从系统设置授权返回都会回到这里：
+        // 只要上次没读全，就主动补拉一次，不必退出页面再进来
+        if (loaded && !loading && permissionRetry) {
+            loadApps();
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // 部分 ROM 的「获取应用列表」弹窗是悬浮窗，不会触发 onResume，用焦点恢复兜底
+        if (hasFocus && loaded && !loading && permissionRetry) {
+            main.postDelayed(() -> {
+                if (!isFinishing() && !isDestroyed() && loaded && !loading && permissionRetry) {
+                    loadApps();
+                }
+            }, 300);
+        }
+    }
+
     private void loadApps() {
+        if (loading) {
+            return;
+        }
+        loading = true;
+        // 首次进来先给「正在读取」；补拉时保留现有列表，只有空列表才回到加载态
+        render(search.getText().toString().trim());
         IO.execute(() -> {
             PrivShell.Result id = PrivShell.exec("id", 15);
             final boolean hasPriv = id.out != null && id.out.contains("uid=0")
@@ -271,6 +321,7 @@ public class AppFreezeActivity extends BaseActivity {
             final List<App> shownApps = apps;
 
             main.post(() -> {
+                loading = false;
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
@@ -283,7 +334,19 @@ public class AppFreezeActivity extends BaseActivity {
                 all.clear();
                 all.addAll(shownApps);
                 loaded = true;
+                // 只剩自己或完全为空，基本可判定系统还没允许读取应用列表，留待回前台再补
+                permissionRetry = shownApps.size() <= 1;
                 render(search.getText().toString().trim());
+                // 用户可能在这次读取还没结束时就点了同意：此时 onResume 已经错过，
+                // 只要窗口已重新拿到焦点，就再补一次（只补一次，防权限被拒时空转）
+                if (permissionRetry && !autoRetried && hasWindowFocus()) {
+                    autoRetried = true;
+                    main.postDelayed(() -> {
+                        if (!isFinishing() && !isDestroyed() && loaded && !loading && permissionRetry) {
+                            loadApps();
+                        }
+                    }, 300);
+                }
             });
         });
     }
@@ -301,14 +364,31 @@ public class AppFreezeActivity extends BaseActivity {
         refreshFrozen();
     }
 
-    /** 搜索与「用户应用 / 系统应用」取交集；每次重建都从 App.frozen 读状态，不会因过滤丢状态。 */
+    /** 冻结状态分段选择：只重排当前内存里的列表，不重新拉全量数据。 */
+    private void switchStateFilter(int filter) {
+        stateFilter = filter;
+        applyStateFilterStyle();
+        render(search.getText().toString().trim());
+    }
+
+    private void applyStateFilterStyle() {
+        TextView[] views = {stateAll, stateFrozen, stateUnfrozen};
+        for (int i = 0; i < views.length; i++) {
+            boolean on = i == stateFilter;
+            views[i].setBackgroundResource(on ? R.drawable.bg_btn_blue : R.drawable.bg_btn_white);
+            views[i].setTextColor(on ? 0xFFFFFFFF : getColor(R.color.blue));
+        }
+    }
+
+
+    /** 搜索、标签（用户/系统）与冻结状态三者取交集；状态一律从 App.frozen 读，不另记一份。 */
     private void render(String query) {
         if (grid == null) {
             return;
         }
         grid.removeAllViews();
         cells.clear();
-        if (!loaded) {
+        if (!loaded || (loading && all.isEmpty())) {
             grid.addView(emptyText("正在读取应用列表…"));
             return;
         }
@@ -316,6 +396,13 @@ public class AppFreezeActivity extends BaseActivity {
         List<App> shown = new ArrayList<>();
         for (App a : all) {
             if (a.system != showSystem) {
+                continue;
+            }
+            // 冻结状态筛选与当前标签叠加：全部=当前标签下的全部，不跨标签合并
+            if (stateFilter == 1 && !a.frozen) {
+                continue;
+            }
+            if (stateFilter == 2 && a.frozen) {
                 continue;
             }
             if (!q.isEmpty()
@@ -326,9 +413,19 @@ public class AppFreezeActivity extends BaseActivity {
             shown.add(a);
         }
         if (shown.isEmpty()) {
-            grid.addView(emptyText(pickMode && q.isEmpty() && !showSystem
-                    ? "名单里的应用也会显示，长按可移除列表并解冻"
-                    : "没有匹配的应用"));
+            if (all.isEmpty()) {
+                grid.addView(emptyText("没有读取到应用：请允许「获取应用列表」权限，返回后会自动刷新"));
+            } else if (!q.isEmpty()) {
+                grid.addView(emptyText("没有匹配的应用"));
+            } else if (stateFilter == 1) {
+                grid.addView(emptyText("当前标签下没有已冻结的应用"));
+            } else if (stateFilter == 2) {
+                grid.addView(emptyText("当前标签下没有未冻结的应用"));
+            } else {
+                grid.addView(emptyText(pickMode && !showSystem
+                        ? "名单里的应用也会显示，长按可移除列表并解冻"
+                        : "没有匹配的应用"));
+            }
             return;
         }
         // 固定按名称排序：同名时再按包名定序，保证任何情况下顺序稳定、不随冻结状态跳动
@@ -336,6 +433,13 @@ public class AppFreezeActivity extends BaseActivity {
             int cmp = String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
             return cmp != 0 ? cmp : String.CASE_INSENSITIVE_ORDER.compare(x.pkg, y.pkg);
         });
+        // 勾选只保留当前可见的项：切标签/筛选/搜索后，批量与「确定」不会带上看不见的应用
+        Set<String> shownPkgs = new HashSet<>();
+        for (App a : shown) {
+            shownPkgs.add(a.pkg);
+        }
+        selected.retainAll(shownPkgs);
+        updateBatchBar();
         if (listView()) {
             for (App a : shown) {
                 grid.addView(buildRow(a));
@@ -564,8 +668,13 @@ public class AppFreezeActivity extends BaseActivity {
             }
 
             @Override
+            public void removeFromList() {
+                removeOnlyFromList(a);
+            }
+
+            @Override
             public void removeAndUnfreeze() {
-                removeFromList(a);
+                AppFreezeActivity.this.removeFromList(a);
             }
         });
     }
@@ -579,6 +688,42 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     /** 与「冻结列表」里的移除入口同一语义：先摘名单与标签归属，再解冻；解冻失败单独报错。 */
+    /** 仅从名单移除：不解冻、不卸载；标签归属与自定义顺序里的这一项一并清掉。 */
+    private void removeOnlyFromList(App a) {
+        SharedPreferences fp = listPrefs();
+        Set<String> cur = new HashSet<>(fp.getStringSet("pkgs", new HashSet<>()));
+        if (!cur.remove(a.pkg)) {
+            return;
+        }
+        SharedPreferences.Editor ed = fp.edit().putStringSet("pkgs", cur);
+        String raw = fp.getString("order", "");
+        if (!raw.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            for (String line : raw.split("\n")) {
+                String p = line.trim();
+                if (p.isEmpty() || p.equals(a.pkg)) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append('\n');
+                }
+                sb.append(p);
+            }
+            ed.putString("order", sb.toString());
+        }
+        try {
+            JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
+            if (o.has(a.pkg)) {
+                o.remove(a.pkg);
+                ed.putString("app_tabs", o.toString());
+            }
+        } catch (Exception ignored) {
+        }
+        ed.apply();
+        SwipeFreeze.syncAsync(this);
+        Toast.makeText(this, "已从列表移除", Toast.LENGTH_SHORT).show();
+    }
+
     private void removeFromList(App a) {
         SharedPreferences fp = listPrefs();
         Set<String> cur = new HashSet<>(fp.getStringSet("pkgs", new HashSet<>()));

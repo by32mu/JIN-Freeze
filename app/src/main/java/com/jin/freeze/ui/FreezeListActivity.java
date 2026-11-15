@@ -21,7 +21,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.Settings;
-import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -95,6 +94,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final int FAB_SIZE_DEFAULT = 40;
     private static final int FAB_SIZE_MIN = 32;
     private static final int FAB_SIZE_MAX = 64;
+    /** 半屏形态的一键冻结按钮出厂值：直径 38dp、离底 5dp、底板不透明度 60%。 */
+    private static final int PANEL_FAB_SIZE_DEFAULT = 38;
+    private static final int PANEL_FAB_DY_DEFAULT = 5;
+    private static final int PANEL_FAB_SURFACE_DEFAULT = 60;
     /** 标签：内置「用户应用 / 系统应用」+ 自定义；顺序、显隐、名称与每个应用的归属都落盘。 */
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
@@ -185,6 +188,7 @@ public class FreezeListActivity extends BaseActivity {
 
     private static final class Cell {
         LinearLayout root;
+        FrameLayout iconBox;
         ImageView icon;
         TextView name;
         View badge;
@@ -207,9 +211,6 @@ public class FreezeListActivity extends BaseActivity {
     private final ExecutorService IO = com.jin.freeze.JinApp.IO;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Item> items = new ArrayList<>();
-    private final Map<String, Cell> cells = new HashMap<>();
-    /** 与屏幕上的格子一一对应，拖拽换位时只重绑数据、不重建视图，保证手势连续。 */
-    private final List<Cell> cellOrder = new ArrayList<>();
     private final List<Tab> tabs = new ArrayList<>();
     /** 应用 → 标签；没有映射（或映射到已删除标签）时按 FLAG_SYSTEM 落回内置标签。 */
     private final Map<String, String> appTabs = new HashMap<>();
@@ -219,7 +220,11 @@ public class FreezeListActivity extends BaseActivity {
     private View freezeBtn;
     private View unfreezeBtn;
     private android.widget.ImageButton editBtn;
-    private LinearLayout grid;
+    private androidx.recyclerview.widget.RecyclerView grid;
+    private GridAdapter gridAdapter;
+    private androidx.recyclerview.widget.ItemTouchHelper itemTouchHelper;
+    private final Handler searchHandler = new Handler(Looper.getMainLooper());
+    private final Runnable searchRunnable = this::render;
     private LinearLayout fabGroup;
     /** 长按冻结按钮浮出的一键解冻小图标。 */
     private View unfreezeFab;
@@ -228,7 +233,7 @@ public class FreezeListActivity extends BaseActivity {
     private android.animation.ObjectAnimator freezeSpin;
     private final Handler fabHandler = new Handler(Looper.getMainLooper());
     private final Runnable fabCollapseRunnable = this::collapseUnfreezeFab;
-    private android.widget.ScrollView scrollView;
+    private View scrollView;
     private EditText search;
     private LinearLayout tabBar;
     private TextView sysHint;
@@ -244,14 +249,14 @@ public class FreezeListActivity extends BaseActivity {
     private boolean panelMode;
     /** 快捷方式带进来的待执行动作，数据就绪后消费一次。 */
     private String pendingAction;
+    /** 选应用回传后的第一个新包名：刷新完成后切到它所属的标签并滚过去。 */
+    private String pendingRevealPkg;
     /** 移动模式：点一下选中（高亮），再点目标项即插到它前面并立即落盘。 */
     private boolean moveMode;
     /** 当前被选中的包名；null 表示没有选中。 */
     private String selectedPkg;
     /** 移动模式下长按拖动：正在被拖的包名，非空时格子保持半透明观感。 */
     private String draggingPkg;
-    /** 拖动过程中最近停留的目标，避免同一格重复换位。 */
-    private String lastHoverPkg;
     /** 拖动是否真的换过位：换过才在松手时落盘。 */
     private boolean dragMoved;
     /** 最近一次长按触发时间：用于吞掉紧接着的松手点击。 */
@@ -344,6 +349,13 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 Set<String> cur = new HashSet<>(pkgs());
+                // 记住第一个真正新增的包名，刷新完成后定位到它真正所属的标签
+                for (String p : picked) {
+                    if (!cur.contains(p)) {
+                        pendingRevealPkg = p;
+                        break;
+                    }
+                }
                 cur.addAll(picked);
                 prefs().edit().putStringSet(KEY_PKGS, cur).apply();
                 SwipeFreeze.syncAsync(this);
@@ -428,7 +440,7 @@ public class FreezeListActivity extends BaseActivity {
         unfreezeBtn = findViewById(R.id.btn_unfreeze);
         editBtn = findViewById(R.id.edit);
         grid = findViewById(R.id.grid);
-        scrollView = findViewById(R.id.scroll);
+        scrollView = grid;
         fabGroup = findViewById(R.id.fab_group);
         search = findViewById(R.id.search);
         tabBar = findViewById(R.id.tab_bar);
@@ -460,6 +472,7 @@ public class FreezeListActivity extends BaseActivity {
             emptyAdd.setOnClickListener(v -> openPicker());
         }
         ensurePanelLayoutInit();
+        migrateUpdatedDefaults();
         gridColumns = prefs().getInt(lk(KEY_COLUMNS), COLUMNS);
         if (gridColumns < 4 || gridColumns > 6) {
             // 旧数据（2/3 列）按 4 列处理并修正落盘
@@ -470,18 +483,21 @@ public class FreezeListActivity extends BaseActivity {
         iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL), false);
         showName = prefs().getBoolean(lk(KEY_SHOW_NAME), true);
         moveMode = prefs().getBoolean(lk(KEY_MOVE_MODE), false);
-        showFrozenTip = prefs().getBoolean(lk(KEY_SHOW_FROZEN_TIP), false);
+        showFrozenTip = prefs().getBoolean(lk(KEY_SHOW_FROZEN_TIP), true);
         tabSwipeEnabled = prefs().getBoolean(lk(KEY_TAB_SWIPE), true);
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
-        fabDy = prefs().getInt(lk(KEY_FAB_DY), 0);
-        fabSizeDp = prefs().getInt(lk(KEY_FAB_SIZE), FAB_SIZE_DEFAULT);
+        fabDy = prefs().getInt(lk(KEY_FAB_DY), panelMode ? PANEL_FAB_DY_DEFAULT : 0);
+        fabSizeDp = prefs().getInt(lk(KEY_FAB_SIZE),
+                panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT);
         if (fabSizeDp < FAB_SIZE_MIN || fabSizeDp > FAB_SIZE_MAX) {
-            fabSizeDp = FAB_SIZE_DEFAULT;
+            fabSizeDp = panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT;
             prefs().edit().putInt(lk(KEY_FAB_SIZE), fabSizeDp).apply();
         }
+        // 列数等布局参数读完之后再挂适配器，首帧就是正确的 spanCount
+        setupGrid();
         applyFabSize();
         setupUnfreezeFab();
-        panelDismissAfterFreeze = prefs().getBoolean(lk(KEY_PANEL_DISMISS), false);
+        panelDismissAfterFreeze = prefs().getBoolean(lk(KEY_PANEL_DISMISS), true);
         panelHideRecents = prefs().getBoolean(lk(KEY_PANEL_HIDE_RECENTS), false);
         if (panelMode) {
             panelHandleEnabled = prefs().getBoolean(KEY_PANEL_HANDLE, true);
@@ -521,7 +537,9 @@ public class FreezeListActivity extends BaseActivity {
 
                 @Override
                 public void afterTextChanged(android.text.Editable s) {
-                    render();
+                    // 输入防抖：逐字输入只在停下来 150ms 后刷新一次，避免每敲一下就重绑整屏
+                    searchHandler.removeCallbacks(searchRunnable);
+                    searchHandler.postDelayed(searchRunnable, 150);
                 }
             });
         }
@@ -612,7 +630,8 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 底部雪花按钮底板：与面板同一套档位，值单独记忆；点按/长按行为不变。 */
     private void applyFabSurface() {
-        int pct = prefs().getInt(lk(KEY_FAB_SURFACE), SURFACE_SOLID);
+        int pct = prefs().getInt(lk(KEY_FAB_SURFACE),
+                panelMode ? PANEL_FAB_SURFACE_DEFAULT : SURFACE_SOLID);
         applySurface(fabGroup, pct);
         applySurface(unfreezeFab, pct);
     }
@@ -886,18 +905,7 @@ public class FreezeListActivity extends BaseActivity {
     private void applyFullscreenSurfaces(int pct) {
         // page_root 的底板已经交给窗口背景（applyWindowBackdrop），这里不再给它上第二层 alpha
         applySurface(findViewById(R.id.page_header), pct);
-        if (grid != null) {
-            for (int r = 0; r < grid.getChildCount(); r++) {
-                View row = grid.getChildAt(r);
-                if (!(row instanceof ViewGroup)) {
-                    continue;
-                }
-                ViewGroup cellsOfRow = (ViewGroup) row;
-                for (int c = 0; c < cellsOfRow.getChildCount(); c++) {
-                    applySurface(cellsOfRow.getChildAt(c), pct);
-                }
-            }
-        }
+        // 格子自身没有底板（图标直接落在页面背景上），不需要遍历列表子 View
         // 搜索框颜色归自己的档位单独管，上面这轮铺完再盖回自己的 alpha
         applySearchSurface();
     }
@@ -1511,6 +1519,8 @@ public class FreezeListActivity extends BaseActivity {
         pickerOpen = true;
         Intent i = new Intent(this, AppFreezeActivity.class);
         i.putExtra(AppFreezeActivity.EXTRA_PICK, true);
+        // 选择页默认停在发起时所在的标签（用户应用/系统应用），选完回到这里
+        i.putExtra(AppFreezeActivity.EXTRA_PICK_SYSTEM, TAB_SYSTEM.equals(currentTabId));
         picker.launch(i);
     }
 
@@ -1794,16 +1804,48 @@ public class FreezeListActivity extends BaseActivity {
                 .putBoolean("panel_" + KEY_SHOW_NAME, prefs().getBoolean(KEY_SHOW_NAME, true))
                 .putBoolean("panel_" + KEY_MOVE_MODE, prefs().getBoolean(KEY_MOVE_MODE, false))
                 .putBoolean("panel_" + KEY_SHOW_FROZEN_TIP,
-                        prefs().getBoolean(KEY_SHOW_FROZEN_TIP, false))
+                        prefs().getBoolean(KEY_SHOW_FROZEN_TIP, true))
                 .putBoolean("panel_" + KEY_PANEL_HIDE_RECENTS,
                         prefs().getBoolean(KEY_PANEL_HIDE_RECENTS, false))
                 .putBoolean("panel_" + KEY_PANEL_DISMISS,
-                        prefs().getBoolean(KEY_PANEL_DISMISS, false))
+                        prefs().getBoolean(KEY_PANEL_DISMISS, true))
                 .putInt("panel_" + KEY_FAB_DX, prefs().getInt(KEY_FAB_DX, 0))
-                .putInt("panel_" + KEY_FAB_DY, prefs().getInt(KEY_FAB_DY, 0))
-                .putInt("panel_" + KEY_FAB_SIZE, prefs().getInt(KEY_FAB_SIZE, FAB_SIZE_DEFAULT))
+                .putInt("panel_" + KEY_FAB_DY,
+                        prefs().getInt(KEY_FAB_DY, PANEL_FAB_DY_DEFAULT))
+                .putInt("panel_" + KEY_FAB_SIZE,
+                        prefs().getInt(KEY_FAB_SIZE, PANEL_FAB_SIZE_DEFAULT))
                 .putBoolean("panel_layout_init", true)
                 .apply();
+    }
+
+    /**
+     * 一次性迁移到本版新默认：只把仍等于老出厂值的项改掉，用户改过的值原样保留。
+     * 新装设备没有这些键，直接按新默认读取，不经过这里。
+     */
+    private void migrateUpdatedDefaults() {
+        if (prefs().getBoolean("defaults_migrated_115", false)) {
+            return;
+        }
+        SharedPreferences.Editor e = prefs().edit();
+        // 老默认 40dp / 贴底 0dp，由「半屏初始化」从全屏设置抄过来的也算没动过
+        if (prefs().getInt("panel_fab_size", -1) == FAB_SIZE_DEFAULT) {
+            e.putInt("panel_fab_size", PANEL_FAB_SIZE_DEFAULT);
+        }
+        if (prefs().getInt("panel_fab_dy", -1) == 0) {
+            e.putInt("panel_fab_dy", PANEL_FAB_DY_DEFAULT);
+        }
+        // 「显示已冻结提示」「冻结后收起列表」老默认是关，改为开
+        for (String k : new String[]{"show_frozen_toast", "panel_show_frozen_toast"}) {
+            if (!prefs().getBoolean(k, true)) {
+                e.putBoolean(k, true);
+            }
+        }
+        for (String k : new String[]{"dismiss_after_freeze", "panel_dismiss_after_freeze"}) {
+            if (!prefs().getBoolean(k, true)) {
+                e.putBoolean(k, true);
+            }
+        }
+        e.putBoolean("defaults_migrated_115", true).apply();
     }
 
     private Set<String> pkgs() {
@@ -1917,6 +1959,13 @@ public class FreezeListActivity extends BaseActivity {
         return firstVisibleTabId();
     }
 
+    /** 标签被删除或改名后清掉默认键，出厂状态是「没有任何标签被设为默认」。 */
+    private void clearDefaultTabIf(String tabId) {
+        if (tabId != null && tabId.equals(prefs().getString(KEY_DEFAULT_TAB, ""))) {
+            prefs().edit().remove(KEY_DEFAULT_TAB).apply();
+        }
+    }
+
     /** 回到默认标签（切换列表内容与标签条）；已在默认标签上则不动。 */
     private void resetToDefaultTab() {
         String id = defaultTabId();
@@ -1928,10 +1977,7 @@ public class FreezeListActivity extends BaseActivity {
         setSysHintVisible();
         renderTabBar();
         render();
-        if (scrollView != null) {
-            scrollView.setTranslationX(0f);
-            scrollView.scrollTo(0, 0);
-        }
+        scrollToTop();
     }
 
     private void saveTabs() {
@@ -2072,10 +2118,7 @@ public class FreezeListActivity extends BaseActivity {
         setSysHintVisible();
         renderTabBar();
         render();
-        if (scrollView != null) {
-            scrollView.setTranslationX(0f);
-            scrollView.scrollTo(0, 0);
-        }
+        scrollToTop();
     }
 
     /** 新建 / 重命名标签；名称不能为空也不能与其它标签重名。 */
@@ -2134,6 +2177,8 @@ public class FreezeListActivity extends BaseActivity {
                 tabs.add(t);
             } else {
                 tab.name = name;
+                // 改名后默认设置失效，回到「没有默认标签」的出厂状态
+                clearDefaultTabIf(tab.id);
             }
             saveTabs();
             renderTabBar();
@@ -2176,6 +2221,8 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     saveAppTabs();
                     tabs.remove(tab);
+                    // 删掉的标签若是默认，键一并清掉，不能留下指向不存在标签的默认值
+                    clearDefaultTabIf(tab.id);
                     // 只剩被删标签可见时，兜底把「用户应用」显示出来
                     if (visibleTabCount() == 0) {
                         Tab user = findTab(TAB_USER);
@@ -2291,6 +2338,11 @@ public class FreezeListActivity extends BaseActivity {
                 items.addAll(list);
                 loadedOnce = true;
                 render();
+                if (pendingRevealPkg != null) {
+                    String pkg = pendingRevealPkg;
+                    pendingRevealPkg = null;
+                    revealAdded(pkg);
+                }
                 // 冻结设置成「后收起」时，等这一轮状态刷新落地再关面板，回到进入前的应用
                 if (dismissAfterReload) {
                     dismissAfterReload = false;
@@ -2345,35 +2397,112 @@ public class FreezeListActivity extends BaseActivity {
         return shown;
     }
 
+    /** 网格初始化：列数跟着 gridColumns 走，视图由 RecyclerView 复用。 */
+    private void setupGrid() {
+        if (grid == null) {
+            return;
+        }
+        grid.setLayoutManager(new androidx.recyclerview.widget.GridLayoutManager(
+                this, Math.max(2, gridColumns)));
+        gridAdapter = new GridAdapter();
+        grid.setAdapter(gridAdapter);
+        itemTouchHelper = new androidx.recyclerview.widget.ItemTouchHelper(new DragCallback());
+        itemTouchHelper.attachToRecyclerView(grid);
+    }
+
+    /** 列数变化只改 spanCount，不重建行。 */
+    private void syncSpanCount() {
+        if (grid == null || gridAdapter == null) {
+            return;
+        }
+        if (!(grid.getLayoutManager() instanceof androidx.recyclerview.widget.GridLayoutManager)) {
+            return;
+        }
+        androidx.recyclerview.widget.GridLayoutManager lm =
+                (androidx.recyclerview.widget.GridLayoutManager) grid.getLayoutManager();
+        int span = Math.max(2, gridColumns);
+        if (lm.getSpanCount() != span) {
+            lm.setSpanCount(span);
+            gridAdapter.notifyDataSetChanged();
+        }
+    }
+
+    /** 切标签/回默认标签后回到顶部：RecyclerView 不会自然回顶，必须显式滚动。 */
+    private void scrollToTop() {
+        if (grid != null) {
+            grid.scrollToPosition(0);
+        }
+    }
+
+    /**
+     * 添加应用回来后定位新项：按应用实际类型落到对应标签，
+     * 当前标签或搜索词挡住它时切到能看见的状态并滚过去，避免误以为没加上。
+     */
+    private void revealAdded(String pkg) {
+        Item added = null;
+        for (Item it : items) {
+            if (it.pkg.equals(pkg)) {
+                added = it;
+                break;
+            }
+        }
+        if (added == null) {
+            return;
+        }
+        String tabId = tabIdOf(added);
+        Tab tab = findTab(tabId);
+        if (tab == null || !tab.visible) {
+            Toast.makeText(this, "已加入名单，但所在标签已隐藏", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!tabId.equals(currentTabId)) {
+            // 实际类型与发起标签不一致：切到新项真正所属的标签，并说明去了哪
+            currentTabId = tabId;
+            prefs().edit().putString(KEY_CURRENT_TAB, tabId).apply();
+            renderTabBar();
+            setSysHintVisible();
+            render();
+            Toast.makeText(this, "已加入「" + tab.name + "」", Toast.LENGTH_SHORT).show();
+        }
+        String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
+        if (!q.isEmpty()
+                && !added.label.toLowerCase(Locale.ROOT).contains(q)
+                && !added.pkg.toLowerCase(Locale.ROOT).contains(q)) {
+            search.setText("");
+            render();
+        }
+        int idx = filtered().indexOf(added);
+        if (idx >= 0 && grid != null) {
+            grid.scrollToPosition(idx);
+        }
+    }
+
+    /** 列表刷新只换数据，视图由 RecyclerView 就近复用。 */
     private void render() {
         if (grid == null) {
             return;
         }
-        grid.removeAllViews();
-        cells.clear();
-        cellOrder.clear();
         List<Item> shown = filtered();
+        // 选中项被切标签 / 搜索 / 刷新筛掉后立刻取消选中，避免下次点击被当成「第二次点击」
+        if (selectedPkg != null) {
+            boolean stillVisible = false;
+            for (Item it : shown) {
+                if (it.pkg.equals(selectedPkg)) {
+                    stillVisible = true;
+                    break;
+                }
+            }
+            if (!stillVisible) {
+                selectedPkg = null;
+            }
+        }
         updateCount(shown);
         if (emptyState != null) {
             emptyState.setVisibility(loadedOnce && shown.isEmpty() ? View.VISIBLE : View.GONE);
         }
-        if (shown.isEmpty()) {
-            reapplyFullscreenSurfaces();
-            return;
-        }
-        LinearLayout row = null;
-        for (int i = 0; i < shown.size(); i++) {
-            if (i % gridColumns == 0) {
-                row = new LinearLayout(this);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setGravity(Gravity.START);
-                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                rlp.topMargin = Ui.dp(this, 12);
-                row.setLayoutParams(rlp);
-                grid.addView(row);
-            }
-            row.addView(buildCell(shown.get(i)));
+        syncSpanCount();
+        if (gridAdapter != null) {
+            gridAdapter.submit(shown);
         }
         reapplyFullscreenSurfaces();
     }
@@ -2403,7 +2532,8 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    private View buildCell(Item it) {
+    /** 搭一个格子并接好交互；显示内容由 bindCellTo 在复用时刷新。 */
+    private Cell buildCellView() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
@@ -2414,8 +2544,9 @@ public class FreezeListActivity extends BaseActivity {
         box.setForeground(getDrawable(tv.resourceId));
         box.setClickable(true);
         box.setLongClickable(true);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                computedCellPx(), ViewGroup.LayoutParams.WRAP_CONTENT);
+        androidx.recyclerview.widget.RecyclerView.LayoutParams lp =
+                new androidx.recyclerview.widget.RecyclerView.LayoutParams(
+                        computedCellPx(), ViewGroup.LayoutParams.WRAP_CONTENT);
         box.setLayoutParams(lp);
 
         FrameLayout iconBox = new FrameLayout(this);
@@ -2458,6 +2589,7 @@ public class FreezeListActivity extends BaseActivity {
 
         final Cell cell = new Cell();
         cell.root = box;
+        cell.iconBox = iconBox;
         cell.icon = icon;
         cell.name = name;
         cell.badge = badge;
@@ -2507,11 +2639,8 @@ public class FreezeListActivity extends BaseActivity {
                 case android.view.MotionEvent.ACTION_DOWN:
                     cell.downX = e.getRawX();
                     cell.downY = e.getRawY();
-                    // 按下就先从父容器（ScrollView / 半屏容器）手里把事件要过来，
-                    // 否则轻微滑动就被当成列表滚动，长按计时被 CANCEL 掉
-                    if (v.getParent() != null) {
-                        v.getParent().requestDisallowInterceptTouchEvent(true);
-                    }
+                    // 不抢父容器的事件：RecyclerView 需要正常收到滑动才能滚动列表；
+                    // 手指移动超过阈值时下面会取消长按计时，避免误弹菜单
                     v.postDelayed(cell.longPress, LONG_PRESS_MS);
                     break;
                 case android.view.MotionEvent.ACTION_MOVE: {
@@ -2526,9 +2655,6 @@ public class FreezeListActivity extends BaseActivity {
                 case android.view.MotionEvent.ACTION_UP:
                 case android.view.MotionEvent.ACTION_CANCEL:
                     v.removeCallbacks(cell.longPress);
-                    if (v.getParent() != null) {
-                        v.getParent().requestDisallowInterceptTouchEvent(false);
-                    }
                     break;
                 default:
                     break;
@@ -2536,17 +2662,203 @@ public class FreezeListActivity extends BaseActivity {
             // 不消费事件：点击、列表滚动仍按原逻辑走
             return false;
         });
-        // 移动模式下长按拖动：接住拖拽事件做换位；普通模式直接忽略
-        box.setOnDragListener((v, event) -> onDrag(event, cell));
-        cellOrder.add(cell);
-        bindCellTo(cell, it);
-        return box;
+        // 移动模式下长按拖动：由自定义 400ms 长按交给 ItemTouchHelper；普通模式长按弹操作单
+        return cell;
+    }
+
+    /**
+     * 网格适配器：屏幕外的格子不再创建，滚出屏幕的格子回收复用。
+     * 数据源始终是 filtered() 的结果，位置即「可见顺序」。
+     */
+    private final class GridAdapter extends
+            androidx.recyclerview.widget.RecyclerView.Adapter<GridAdapter.VH> {
+
+        private final List<Item> shown = new ArrayList<>();
+
+        final class VH extends androidx.recyclerview.widget.RecyclerView.ViewHolder {
+            final Cell cell;
+
+            VH(LinearLayout root, Cell cell) {
+                super(root);
+                this.cell = cell;
+            }
+        }
+
+        void submit(List<Item> data) {
+            shown.clear();
+            shown.addAll(data);
+            notifyDataSetChanged();
+        }
+
+        /** 当前可见顺序的快照：计数文案与按项刷新都以它为准。 */
+        List<Item> shown() {
+            return new ArrayList<>(shown);
+        }
+
+        /**
+         * 按项刷新：只重绑当前挂在屏幕上的格子，不 notifyDataSetChanged，
+         * 因此不会重建视图、不会跳滚动位置（冻结/解冻后的状态更新走这里）。
+         */
+        void refreshBound() {
+            if (grid == null) {
+                return;
+            }
+            for (int i = 0; i < grid.getChildCount(); i++) {
+                androidx.recyclerview.widget.RecyclerView.ViewHolder vh =
+                        grid.getChildViewHolder(grid.getChildAt(i));
+                if (!(vh instanceof VH)) {
+                    continue;
+                }
+                int pos = vh.getBindingAdapterPosition();
+                if (pos >= 0 && pos < shown.size()) {
+                    bindCellTo(((VH) vh).cell, shown.get(pos));
+                }
+            }
+        }
+
+        int positionOf(String pkg) {
+            for (int i = 0; i < shown.size(); i++) {
+                if (shown.get(i).pkg.equals(pkg)) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /**
+         * 拖拽换位：先换可见顺序，再把新顺序回写到 items 里这些可见项占的槽位，
+         * 隐藏项保持原槽位不动，落盘顺序与屏幕上看到的一致。
+         */
+        void moveRow(int from, int to) {
+            if (from < 0 || to < 0 || from >= shown.size() || to >= shown.size() || from == to) {
+                return;
+            }
+            Item moving = shown.remove(from);
+            shown.add(to, moving);
+            Set<Item> visible = new HashSet<>(shown);
+            int k = 0;
+            for (int i = 0; i < items.size(); i++) {
+                if (visible.contains(items.get(i))) {
+                    items.set(i, shown.get(k++));
+                }
+            }
+            notifyItemMoved(from, to);
+        }
+
+        @Override
+        public int getItemCount() {
+            return shown.size();
+        }
+
+        @Override
+        public VH onCreateViewHolder(ViewGroup parent, int viewType) {
+            Cell cell = buildCellView();
+            return new VH(cell.root, cell);
+        }
+
+        @Override
+        public void onBindViewHolder(VH holder, int position) {
+            bindCellTo(holder.cell, shown.get(position));
+        }
+    }
+
+    /** 移动模式的长按拖动：由格子自己的 400ms 长按触发，松手时落盘自定义顺序。 */
+    private final class DragCallback extends androidx.recyclerview.widget.ItemTouchHelper.Callback {
+
+        @Override
+        public int getMovementFlags(androidx.recyclerview.widget.RecyclerView rv,
+                                    androidx.recyclerview.widget.RecyclerView.ViewHolder vh) {
+            if (!moveMode || editMode) {
+                return makeMovementFlags(0, 0);
+            }
+            return makeMovementFlags(
+                    androidx.recyclerview.widget.ItemTouchHelper.UP
+                            | androidx.recyclerview.widget.ItemTouchHelper.DOWN
+                            | androidx.recyclerview.widget.ItemTouchHelper.LEFT
+                            | androidx.recyclerview.widget.ItemTouchHelper.RIGHT, 0);
+        }
+
+        @Override
+        public boolean isLongPressDragEnabled() {
+            // 系统长按是 500ms；统一走格子自己的 400ms 计时，避免两套长按打架
+            return false;
+        }
+
+        @Override
+        public boolean canDropOver(androidx.recyclerview.widget.RecyclerView rv,
+                                   androidx.recyclerview.widget.RecyclerView.ViewHolder current,
+                                   androidx.recyclerview.widget.RecyclerView.ViewHolder target) {
+            return target instanceof GridAdapter.VH;
+        }
+
+        @Override
+        public boolean onMove(androidx.recyclerview.widget.RecyclerView rv,
+                              androidx.recyclerview.widget.RecyclerView.ViewHolder vh,
+                              androidx.recyclerview.widget.RecyclerView.ViewHolder target) {
+            int from = vh.getAdapterPosition();
+            int to = target.getAdapterPosition();
+            if (from == androidx.recyclerview.widget.RecyclerView.NO_POSITION
+                    || to == androidx.recyclerview.widget.RecyclerView.NO_POSITION) {
+                return false;
+            }
+            if (gridAdapter != null) {
+                gridAdapter.moveRow(from, to);
+            }
+            dragMoved = true;
+            return true;
+        }
+
+        @Override
+        public void onSwiped(androidx.recyclerview.widget.RecyclerView.ViewHolder vh, int direction) {
+            // 只做拖拽换位，不做滑动删除
+        }
+
+        @Override
+        public void onSelectedChanged(androidx.recyclerview.widget.RecyclerView.ViewHolder vh,
+                                      int actionState) {
+            super.onSelectedChanged(vh, actionState);
+            if (actionState == androidx.recyclerview.widget.ItemTouchHelper.ACTION_STATE_DRAG
+                    && vh instanceof GridAdapter.VH) {
+                Item it = ((GridAdapter.VH) vh).cell.item;
+                draggingPkg = it == null ? null : it.pkg;
+                // 开始拖拽就丢掉选中态：先把原来那格的选中框就地擦掉（拖拽中不能整表 notify）
+                if (selectedPkg != null && grid != null) {
+                    for (int i = 0; i < grid.getChildCount(); i++) {
+                        androidx.recyclerview.widget.RecyclerView.ViewHolder h =
+                                grid.getChildViewHolder(grid.getChildAt(i));
+                        if (h instanceof GridAdapter.VH) {
+                            Cell c = ((GridAdapter.VH) h).cell;
+                            if (c.item != null && selectedPkg.equals(c.item.pkg)) {
+                                h.itemView.setBackground(null);
+                            }
+                        }
+                    }
+                }
+                selectedPkg = null;
+                vh.itemView.setAlpha(0.35f);
+            }
+        }
+
+        @Override
+        public void clearView(androidx.recyclerview.widget.RecyclerView rv,
+                              androidx.recyclerview.widget.RecyclerView.ViewHolder vh) {
+            super.clearView(rv, vh);
+            vh.itemView.setAlpha(1f);
+            draggingPkg = null;
+            if (dragMoved) {
+                persistOrder();
+                // 顺序落盘后补一次计数文案（「自定义顺序」标记要立刻出现）
+                updateCount(gridAdapter == null ? filtered() : gridAdapter.shown());
+            }
+            dragMoved = false;
+        }
     }
 
     /** 把一个格子的显示内容换成指定应用（含冻结灰度、移除角标、移动模式选中态）。 */
     private void bindCellTo(Cell cell, Item it) {
+        // 复用前先撤掉上一轮的长按计时，避免滑出屏幕的格子把定时器带进新数据
+        cell.root.removeCallbacks(cell.longPress);
         cell.item = it;
-        cells.put(it.pkg, cell);
         if (it.icon != null) {
             cell.icon.setImageDrawable(it.icon);
         } else {
@@ -2564,22 +2876,54 @@ public class FreezeListActivity extends BaseActivity {
         }
         cell.root.setBackground(moveMode && it.pkg.equals(selectedPkg) ? selectedBackground() : null);
         cell.root.setAlpha(moveMode && it.pkg.equals(draggingPkg) ? 0.35f : 1f);
+        // 布局参数在绑定里同步：列数 / 图标大小 / 名称显隐改了以后，复用中的格子也能立刻跟上
+        ViewGroup.LayoutParams rootLp = cell.root.getLayoutParams();
+        if (rootLp != null && rootLp.width != computedCellPx()) {
+            rootLp.width = computedCellPx();
+            cell.root.setLayoutParams(rootLp);
+        }
+        int iconPx = computedIconPx();
+        ViewGroup.LayoutParams boxLp = cell.iconBox.getLayoutParams();
+        if (boxLp != null && (boxLp.width != iconPx || boxLp.height != iconPx)) {
+            boxLp.width = iconPx;
+            boxLp.height = iconPx;
+            cell.iconBox.setLayoutParams(boxLp);
+            ViewGroup.LayoutParams iconLp = cell.icon.getLayoutParams();
+            if (iconLp != null) {
+                iconLp.width = iconPx;
+                iconLp.height = iconPx;
+                cell.icon.setLayoutParams(iconLp);
+            }
+            android.graphics.drawable.Drawable round = cell.icon.getBackground();
+            if (round instanceof android.graphics.drawable.GradientDrawable) {
+                ((android.graphics.drawable.GradientDrawable) round)
+                        .setCornerRadius(Math.max(Ui.dp(this, 6), (int) (iconPx * 0.18f)));
+            }
+        }
+        cell.name.setVisibility(showName ? View.VISIBLE : View.GONE);
     }
 
+    /** 按项刷新：只让可见格子重绑数据，不重建视图、不动滚动位置。 */
     private void rebindCells() {
-        List<Item> shown = filtered();
-        for (int i = 0; i < cellOrder.size() && i < shown.size(); i++) {
-            bindCellTo(cellOrder.get(i), shown.get(i));
+        if (gridAdapter == null) {
+            return;
         }
-        updateCount(shown);
+        updateCount(gridAdapter.shown());
+        gridAdapter.refreshBound();
         reapplyFullscreenSurfaces();
     }
 
     // ---------------- 点击移动图标（移动模式） ----------------
 
-    /** 全屏列表选中项不再画高亮框：直接跟页面背景同色（保持点击行为不变）。 */
+    /** 移动模式选中框：沿用主色蓝做浅底 + 细边，和页面现有的蓝色按钮同一套观感。 */
     private android.graphics.drawable.Drawable selectedBackground() {
-        return null;
+        android.graphics.drawable.GradientDrawable g =
+                new android.graphics.drawable.GradientDrawable();
+        g.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        g.setColor(0x1F4E7CF6);
+        g.setCornerRadius(Ui.dp(this, 14));
+        g.setStroke(Math.max(1, Ui.dp(this, 2)), getColor(R.color.blue));
+        return g;
     }
 
     /** 移动模式：第一次点击选中并高亮，第二次点目标项即插到目标前面并实时落盘。 */
@@ -2645,67 +2989,24 @@ public class FreezeListActivity extends BaseActivity {
 
     // ---------------- 长按拖动换位（移动模式） ----------------
 
+    /** 400ms 长按触发：把当前格子交给 ItemTouchHelper 接管拖拽，松手时由 clearView 落盘。 */
     private void startDrag(View cell, Item it) {
+        if (grid == null || gridAdapter == null || it == null) {
+            return;
+        }
+        int pos = gridAdapter.positionOf(it.pkg);
+        androidx.recyclerview.widget.RecyclerView.ViewHolder vh =
+                pos >= 0 ? grid.findViewHolderForAdapterPosition(pos) : null;
+        if (vh == null) {
+            return;
+        }
         draggingPkg = it.pkg;
-        lastHoverPkg = it.pkg;
         dragMoved = false;
         selectedPkg = null;
         cell.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
                 android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
-        ClipData data = ClipData.newPlainText("pkg", it.pkg);
-        View.DragShadowBuilder shadow = new View.DragShadowBuilder(cell);
-        // 本地拖拽：不申请全局权限
-        cell.startDragAndDrop(data, shadow, null, 0);
-        rebindCells();
+        itemTouchHelper.startDrag(vh);
     }
-
-    private boolean onDrag(DragEvent event, Cell cell) {
-        if (!moveMode || draggingPkg == null) {
-            return false;
-        }
-        switch (event.getAction()) {
-            case DragEvent.ACTION_DRAG_STARTED:
-                // 不接这个事件，后续 ENTERED/LOCATION 不会派发到格子上
-                return true;
-            case DragEvent.ACTION_DRAG_ENTERED:
-            case DragEvent.ACTION_DRAG_LOCATION: {
-                Item hovered = cell.item;
-                if (hovered == null) {
-                    return true;
-                }
-                if (!hovered.pkg.equals(draggingPkg) && !hovered.pkg.equals(lastHoverPkg)) {
-                    Item moved = itemOf(draggingPkg);
-                    if (moved != null && moveItemBefore(moved, hovered)) {
-                        lastHoverPkg = hovered.pkg;
-                        dragMoved = true;
-                        // 只重绑数据，不重建视图，保证拖拽手势连续
-                        rebindCells();
-                    }
-                }
-                return true;
-            }
-            case DragEvent.ACTION_DRAG_ENDED:
-                finishDrag();
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    private void finishDrag() {
-        if (draggingPkg == null) {
-            return;
-        }
-        boolean moved = dragMoved;
-        draggingPkg = null;
-        lastHoverPkg = null;
-        dragMoved = false;
-        if (moved) {
-            persistOrder();
-        }
-        render();
-    }
-
 
     private Item itemOf(String pkg) {
         for (Item it : items) {
@@ -2785,6 +3086,11 @@ public class FreezeListActivity extends BaseActivity {
             @Override
             public boolean inList() {
                 return true;
+            }
+
+            @Override
+            public void removeFromList() {
+                FreezeListActivity.this.removeFromList(it);
             }
 
             @Override
@@ -2917,6 +3223,42 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
+     * 仅从名单移除：不解冻、不卸载，应用本身的冻结状态保持原样。
+     * 连带清掉标签归属与自定义顺序里的这一项，并同步给划卡冻结的名单文件。
+     */
+    private void removeFromList(Item it) {
+        if (working) {
+            return;
+        }
+        Set<String> cur = pkgs();
+        cur.remove(it.pkg);
+        prefs().edit().putStringSet(KEY_PKGS, cur).apply();
+        appTabs.remove(it.pkg);
+        saveAppTabs();
+        List<String> order = savedOrder();
+        if (order.remove(it.pkg)) {
+            StringBuilder sb = new StringBuilder();
+            for (String p : order) {
+                if (sb.length() > 0) {
+                    sb.append('\n');
+                }
+                sb.append(p);
+            }
+            prefs().edit().putString(KEY_ORDER, sb.toString()).apply();
+        }
+        items.remove(it);
+        if (it.pkg.equals(selectedPkg)) {
+            selectedPkg = null;
+        }
+        if (it.pkg.equals(draggingPkg)) {
+            draggingPkg = null;
+        }
+        SwipeFreeze.syncAsync(this);
+        render();
+        Toast.makeText(this, "已从列表移除", Toast.LENGTH_SHORT).show();
+    }
+
+    /**
      * 移除列表并解冻：先把应用移出名单（含标签归属与顺序），再真正解冻。
      * 解冻失败要单独报 pm 的真实原因，不能把「已移出」当成整体成功。
      */
@@ -2942,7 +3284,6 @@ public class FreezeListActivity extends BaseActivity {
             prefs().edit().putString(KEY_ORDER, sb.toString()).apply();
         }
         items.remove(it);
-        cells.remove(it.pkg);
         if (!it.frozen) {
             Toast.makeText(this, "已移出名单", Toast.LENGTH_SHORT).show();
             render();
@@ -3235,6 +3576,7 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     protected void onDestroy() {
         fabHandler.removeCallbacks(fabCollapseRunnable);
+        searchHandler.removeCallbacks(searchRunnable);
         main.removeCallbacks(introReveal);
         main.removeCallbacks(introSafety);
         if (introScrimView != null) {
@@ -3376,23 +3718,23 @@ public class FreezeListActivity extends BaseActivity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int padH = Ui.dp(this, 18);
-        root.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 8));
+        int padH = Ui.dp(this, 15);
+        root.setPadding(padH, Ui.dp(this, 13), padH, Ui.dp(this, 6));
 
         TextView title = new TextView(this);
         title.setText("按标签冻结");
-        title.setTextSize(15);
+        title.setTextSize(14);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         title.setTextColor(getColor(R.color.text_primary));
         root.addView(title);
 
         TextView hint = new TextView(this);
         hint.setText("应用的标签与勾选项有交集才冻结；一个都不勾则不冻结。");
-        hint.setTextSize(11);
+        hint.setTextSize(10);
         hint.setTextColor(getColor(R.color.text_secondary));
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hlp.topMargin = Ui.dp(this, 6);
+        hlp.topMargin = Ui.dp(this, 5);
         root.addView(hint, hlp);
 
         // 标签按稳定 id 存取，改名不会让已勾选的过滤失效
@@ -3409,8 +3751,8 @@ public class FreezeListActivity extends BaseActivity {
             }
             CheckBox tagBox = new CheckBox(this);
             tagBox.setText(tag.name);
-            tagBox.setTextSize(12);
-            tagBox.setMinimumHeight(Ui.dp(this, 36));
+            tagBox.setTextSize(11);
+            tagBox.setMinimumHeight(Ui.dp(this, 34));
             tagBox.setTag(tag.id);
             tagBox.setChecked(on);
             tagBox.setOnCheckedChangeListener((btn, isChecked) -> {
@@ -3438,26 +3780,26 @@ public class FreezeListActivity extends BaseActivity {
         scroller.addView(tagList);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                tags.size() > 8 ? Ui.dp(this, 320) : ViewGroup.LayoutParams.WRAP_CONTENT);
-        slp.topMargin = Ui.dp(this, 6);
+                tags.size() > 8 ? Ui.dp(this, 300) : ViewGroup.LayoutParams.WRAP_CONTENT);
+        slp.topMargin = Ui.dp(this, 5);
         root.addView(scroller, slp);
 
         TextView done = new TextView(this);
         done.setText("完成");
-        done.setTextSize(13);
+        done.setTextSize(12);
         done.setTypeface(null, android.graphics.Typeface.BOLD);
         done.setTextColor(getColor(R.color.blue));
         done.setGravity(Gravity.CENTER);
-        done.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
+        done.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 8));
         done.setOnClickListener(v -> dialog.dismiss());
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.topMargin = Ui.dp(this, 4);
+        dlp.topMargin = Ui.dp(this, 3);
         root.addView(done, dlp);
 
         dialog.setContentView(root);
-        Ui.roundDialog(dialog, root, 88);
-        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, 88));
+        Ui.roundDialog(dialog, root, 96);
+        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, 96));
         dialog.setOnDismissListener(d -> summary.setText(tagSummaryText()));
         android.view.Window w = dialog.getWindow();
         if (w != null) {
@@ -3475,12 +3817,12 @@ public class FreezeListActivity extends BaseActivity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int padH = Ui.dp(this, 18);
-        root.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 8));
+        int padH = Ui.dp(this, 15);
+        root.setPadding(padH, Ui.dp(this, 13), padH, Ui.dp(this, 6));
 
         TextView title = new TextView(this);
         title.setText("划卡冻结需激活 LSPosed 并重启");
-        title.setTextSize(15);
+        title.setTextSize(14);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         title.setTextColor(getColor(R.color.text_primary));
         root.addView(title);
@@ -3490,12 +3832,12 @@ public class FreezeListActivity extends BaseActivity {
                 + "1. 在 LSPosed 里启用凚（作用域已预置，不用手动勾选）；\n"
                 + "2. 重启手机；\n"
                 + "3. 重启后划卡才会真正冻结。");
-        message.setTextSize(12);
+        message.setTextSize(11);
         message.setLineSpacing(Ui.dp(this, 2), 1f);
         message.setTextColor(getColor(R.color.text_secondary));
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mlp.topMargin = Ui.dp(this, 8);
+        mlp.topMargin = Ui.dp(this, 7);
         root.addView(message, mlp);
 
         LinearLayout actions = new LinearLayout(this);
@@ -3503,19 +3845,19 @@ public class FreezeListActivity extends BaseActivity {
 
         TextView close = new TextView(this);
         close.setText("知道了");
-        close.setTextSize(13);
+        close.setTextSize(12);
         close.setTextColor(getColor(R.color.text_primary));
         close.setGravity(Gravity.CENTER);
-        close.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
+        close.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 8));
         close.setOnClickListener(v -> dialog.dismiss());
 
         TextView go = new TextView(this);
         go.setText("前往 LSPosed");
-        go.setTextSize(13);
+        go.setTextSize(12);
         go.setTypeface(null, android.graphics.Typeface.BOLD);
         go.setTextColor(getColor(R.color.blue));
         go.setGravity(Gravity.CENTER);
-        go.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
+        go.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 8));
         go.setOnClickListener(v -> {
             dialog.dismiss();
             SwipeFreeze.openLsposed(this);
@@ -3527,12 +3869,12 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        alp.topMargin = Ui.dp(this, 4);
+        alp.topMargin = Ui.dp(this, 3);
         root.addView(actions, alp);
 
         dialog.setContentView(root);
-        Ui.roundDialog(dialog, root, 88);
-        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, 88));
+        Ui.roundDialog(dialog, root, 96);
+        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, 96));
         android.view.Window w = dialog.getWindow();
         if (w != null) {
             w.setDimAmount(0.4f);
@@ -3825,12 +4167,12 @@ public class FreezeListActivity extends BaseActivity {
         fabReset.setPadding(0, Ui.dp(this, 8), 0, 0);
         fabReset.setOnClickListener(v -> {
             fabDx = 0;
-            fabDy = 0;
-            fabSizeDp = FAB_SIZE_DEFAULT;
-            prefs().edit().putInt(lk(KEY_FAB_DX), 0).putInt(lk(KEY_FAB_DY), 0)
+            fabDy = panelMode ? PANEL_FAB_DY_DEFAULT : 0;
+            fabSizeDp = panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT;
+            prefs().edit().putInt(lk(KEY_FAB_DX), 0).putInt(lk(KEY_FAB_DY), fabDy)
                     .putInt(lk(KEY_FAB_SIZE), fabSizeDp).apply();
             xBar.setProgress(-xMinDp);
-            yBar.setProgress(0);
+            yBar.setProgress(Math.max(0, Math.min(maxLiftDp, fabDy)));
             fabSizeBar.setProgress(fabSizeDp - FAB_SIZE_MIN);
             sizeValue.setText("按钮大小：" + fabSizeDp + "dp");
             refreshFabLabels.run();
@@ -4234,7 +4576,8 @@ public class FreezeListActivity extends BaseActivity {
             final SeekBar fabAlphaBar = new SeekBar(this);
             fabAlphaBar.setMax(100);
             int fabAlphaPct = Math.max(0, Math.min(100,
-                    prefs().getInt(lk(KEY_FAB_SURFACE), SURFACE_SOLID)));
+                    prefs().getInt(lk(KEY_FAB_SURFACE),
+                            panelMode ? PANEL_FAB_SURFACE_DEFAULT : SURFACE_SOLID)));
             fabAlphaBar.setProgress(fabAlphaPct);
             fabAlphaLabel.setText("雪花按钮：" + fabAlphaPct + "%（0 全透明 · 50 模糊 · 100 实心）");
             fabAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -5100,12 +5443,12 @@ public class FreezeListActivity extends BaseActivity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int padH = Ui.dp(this, 18);
-        root.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 4));
+        int padH = Ui.dp(this, 15);
+        root.setPadding(padH, Ui.dp(this, 13), padH, Ui.dp(this, 4));
 
         TextView title = new TextView(this);
         title.setText("您未授权于凚");
-        title.setTextSize(15);
+        title.setTextSize(14);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         title.setTextColor(getColor(R.color.text_primary));
         root.addView(title, new LinearLayout.LayoutParams(
@@ -5114,30 +5457,30 @@ public class FreezeListActivity extends BaseActivity {
         TextView message = new TextView(this);
         message.setText("安装并启动 Shizuku 后回到凚点击授权即可；\n\n"
                 + "若有 root，请授权，并强制停止凚后再启动。");
-        message.setTextSize(12);
+        message.setTextSize(11);
         message.setLineSpacing(Ui.dp(this, 2), 1f);
         message.setTextColor(getColor(R.color.text_secondary));
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mlp.topMargin = Ui.dp(this, 8);
+        mlp.topMargin = Ui.dp(this, 7);
         root.addView(message, mlp);
 
         TextView ok = new TextView(this);
         ok.setText("知道了");
-        ok.setTextSize(13);
+        ok.setTextSize(12);
         ok.setTypeface(null, android.graphics.Typeface.BOLD);
         ok.setTextColor(getColor(R.color.text_secondary));
         ok.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        ok.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), 0, Ui.dp(this, 8));
+        ok.setPadding(Ui.dp(this, 12), Ui.dp(this, 9), 0, Ui.dp(this, 7));
         ok.setOnClickListener(v -> dialog.dismiss());
 
         final TextView retry = new TextView(this);
         retry.setText("重新检测");
-        retry.setTextSize(13);
+        retry.setTextSize(12);
         retry.setTypeface(null, android.graphics.Typeface.BOLD);
         retry.setTextColor(getColor(R.color.blue));
         retry.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        retry.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), Ui.dp(this, 12), Ui.dp(this, 8));
+        retry.setPadding(Ui.dp(this, 12), Ui.dp(this, 9), Ui.dp(this, 12), Ui.dp(this, 7));
         retry.setOnClickListener(v -> {
             retry.setEnabled(false);
             retry.setText("检测中…");
@@ -5163,7 +5506,7 @@ public class FreezeListActivity extends BaseActivity {
 
         dialog.setContentView(root);
         // 首帧就按圆角收窄落位，onShow 再兜一次，避免先出大块默认底再跳
-        int insetDp = 92;
+        int insetDp = 98;
         Ui.roundDialog(dialog, root, insetDp);
         dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, insetDp));
         android.view.Window w = dialog.getWindow();

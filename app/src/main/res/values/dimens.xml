@@ -7,4 +7,6 @@
     <dimen name="page_header_action_padding">10dp</dimen>
     <dimen name="page_header_title_size">18sp</dimen>
     <dimen name="page_header_action_size">13sp</dimen>
+    <!-- 提示类弹窗统一圆角：dialog 底板与自绘弹层都从这里取，只改这一处 -->
+    <dimen name="prompt_radius">16dp</dimen>
 </resources>
