@@ -65,7 +65,7 @@
                 android:paddingStart="14dp"
                 android:paddingTop="4dp"
                 android:paddingEnd="14dp"
-                android:paddingBottom="96dp"
+                android:paddingBottom="4dp"
                 android:scrollbars="none" />
 
             <!-- 空态：名单为空时给添加与迁移两个入口 -->

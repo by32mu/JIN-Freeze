@@ -141,13 +141,17 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_LAYOUT_H_LEGACY = "layout_dialog_h";
     /** 两条高度滑块的量程（dp）。 */
     private static final int LAYOUT_OPEN_MAX_DP = 520;
-    private static final int LAYOUT_EXPAND_MAX_DP = 666;
+    private static final int LAYOUT_EXPAND_MAX_DP = 888;
     /** 半屏顶部小白条开关：关掉后隐藏把手、高度沿用记住的值。 */
     private static final String KEY_PANEL_HANDLE = "panel_handle_enabled";
     /** 冻结成功后是否自动收起列表（全屏/半屏各自记忆，回到进入前的应用）。 */
     private static final String KEY_PANEL_DISMISS = "dismiss_after_freeze";
     /** 「隐藏后台」：勾选后离开列表时把任务从最近任务移除；全屏/半屏各自记忆。 */
     private static final String KEY_PANEL_HIDE_RECENTS = "hide_recents";
+    /** 「冻结后保留桌面图标」：勾选后冻结改走 pm suspend，桌面图标不消失；两种形态共用。 */
+    private static final String KEY_KEEP_LAUNCHER_ICON = "keep_launcher_icon";
+    /** 「长按冻结按钮触发解冻图标」：取消后长按无反应也不震动；两种形态共用，默认勾选。 */
+    private static final String KEY_FAB_LONG_PRESS_UNFREEZE = "fab_long_press_unfreeze";
 
     /** 「半屏打开时隐藏状态栏」：只作用于半屏面板，不影响全屏页。 */
     private static final String KEY_PANEL_HIDE_STATUS_BAR = "panel_hide_status_bar";
@@ -225,6 +229,9 @@ public class FreezeListActivity extends BaseActivity {
         Runnable longPress;
         float downX;
         float downY;
+        /** 最新触点：长按触发前再核一次是否仍在抖动范围内，滑动过就不算长按。 */
+        float lastX;
+        float lastY;
     }
 
     /**
@@ -308,6 +315,8 @@ public class FreezeListActivity extends BaseActivity {
     private boolean loadedOnce;
     /** 打开选应用页期间不让「隐藏半屏后台」把面板收掉，否则回传结果没人接。 */
     private boolean pickerOpen;
+    /** 「隐藏后台」已把本次任务从最近任务摘掉，避免 onPause 反复 finish。 */
+    private boolean taskHidden;
 
     private boolean working;
     private boolean editMode;
@@ -338,6 +347,8 @@ public class FreezeListActivity extends BaseActivity {
     private boolean panelDismissAfterFreeze;
     /** 「隐藏半屏后台」开关：默认不勾选，保持半屏任务照常出现在最近任务里。 */
     protected boolean panelHideRecents;
+    /** 「冻结后保留桌面图标」开关：勾选后冻结走 suspend 通道，图标保留并置灰。 */
+    private boolean keepLauncherIcon;
     /** 半屏打开时是否隐藏状态栏（布局设置开关，默认不隐藏）。 */
     private boolean panelHideStatusBar;
     /** 当前是否已把状态栏隐藏掉；隐藏期间不再做图标反色。 */
@@ -580,6 +591,7 @@ public class FreezeListActivity extends BaseActivity {
         setupUnfreezeFab();
         panelDismissAfterFreeze = prefs().getBoolean(lk(KEY_PANEL_DISMISS), true);
         panelHideRecents = prefs().getBoolean(lk(KEY_PANEL_HIDE_RECENTS), false);
+        keepLauncherIcon = prefs().getBoolean(KEY_KEEP_LAUNCHER_ICON, false);
         if (panelMode) {
             panelHandleEnabled = prefs().getBoolean(KEY_PANEL_HANDLE, true);
             panelHideStatusBar = prefs().getBoolean(KEY_PANEL_HIDE_STATUS_BAR, false);
@@ -1862,6 +1874,7 @@ public class FreezeListActivity extends BaseActivity {
         if (panelMode && !introPlaying) {
             schedulePanelStatusTone();
         }
+        syncRecentsExclusion();
     }
 
     @Override
@@ -1891,8 +1904,68 @@ public class FreezeListActivity extends BaseActivity {
         }
         // 勾选「隐藏后台」时，离开列表就把自身任务从最近任务摘掉；全屏与半屏都生效。
         // 用 finishAndRemoveTask 而不是 finish()，避免只关页面留下空任务卡片。
-        if (panelHideRecents && !pickerOpen) {
-            finishAndRemoveTask();
+        hideTaskIfNeeded();
+    }
+
+    /**
+     * 「隐藏后台」：越早摘掉任务越好，否则 HyperOS 的最近任务（com.miui.home 画）
+     * 会先截一张图，等 onPause 再移除就留下残影卡片。
+     * 先让本任务彻底不进最近任务（excludeFromRecents + 关闭快照），再 finishAndRemoveTask。
+     */
+    private void hideTaskIfNeeded() {
+        if (!panelHideRecents || pickerOpen || taskHidden || isFinishing()) {
+            return;
+        }
+        taskHidden = true;
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                // 关掉最近任务里的实时快照，避免移除前已经被画出来
+                setRecentsScreenshotEnabled(false);
+            }
+            android.app.ActivityManager am =
+                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (am != null) {
+                for (android.app.ActivityManager.AppTask t : am.getAppTasks()) {
+                    if (t.getTaskInfo().id == getTaskId()) {
+                        t.setExcludeFromRecents(true);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // 个别 ROM 不给改任务属性，仍按 finishAndRemoveTask 兜底
+        }
+        finishAndRemoveTask();
+        overridePendingTransition(0, 0);
+    }
+
+    /** 用户按 Home / 最近任务键离开：比 onPause 更早，先在这里把卡片摘掉。 */
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        hideTaskIfNeeded();
+    }
+
+    /**
+     * 开关打开时让本任务从一开始就不进最近任务；关掉时恢复，保证还能正常留在后台。
+     * 每次 onResume 与拨动开关都同步一次。
+     */
+    private void syncRecentsExclusion() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                setRecentsScreenshotEnabled(!panelHideRecents);
+            }
+            android.app.ActivityManager am =
+                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (am == null) {
+                return;
+            }
+            for (android.app.ActivityManager.AppTask t : am.getAppTasks()) {
+                if (t.getTaskInfo().id == getTaskId()) {
+                    t.setExcludeFromRecents(panelHideRecents);
+                }
+            }
+        } catch (Throwable ignored) {
+            // 任务属性改不了就只靠离开时的移除兜底
         }
     }
 
@@ -2885,11 +2958,8 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        // 不再铺白色卡片底：图标直接落在页面背景上，只保留点击水波纹
+        // 纯图标格子：按下/长按都不要水波纹、阴影或任何背景变化，外观全程不变
         box.setPadding(Ui.dp(this, 4), Ui.dp(this, 8), Ui.dp(this, 4), Ui.dp(this, 6));
-        android.util.TypedValue tv = new android.util.TypedValue();
-        getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, tv, true);
-        box.setForeground(getDrawable(tv.resourceId));
         box.setClickable(true);
         box.setLongClickable(true);
         androidx.recyclerview.widget.RecyclerView.LayoutParams lp =
@@ -2992,6 +3062,13 @@ public class FreezeListActivity extends BaseActivity {
             if (editMode || cell.item == null) {
                 return;
             }
+            // 按下后只要发生可见滑动就不再算长按，宁可不出菜单也不误触
+            float dx = cell.lastX - cell.downX;
+            float dy = cell.lastY - cell.downY;
+            int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+            if (dx * dx + dy * dy > (float) slop * slop) {
+                return;
+            }
             lastLongPressAt = android.os.SystemClock.uptimeMillis();
             if (moveMode) {
                 startDrag(box, cell.item);
@@ -3006,15 +3083,20 @@ public class FreezeListActivity extends BaseActivity {
                 case android.view.MotionEvent.ACTION_DOWN:
                     cell.downX = e.getRawX();
                     cell.downY = e.getRawY();
+                    cell.lastX = cell.downX;
+                    cell.lastY = cell.downY;
                     // 不抢父容器的事件：RecyclerView 需要正常收到滑动才能滚动列表；
-                    // 手指移动超过阈值时下面会取消长按计时，避免误弹菜单
+                    // 手指移动超过系统触摸抖动阈值时下面会取消长按计时，避免误弹菜单
                     v.postDelayed(cell.longPress, LONG_PRESS_MS);
                     break;
                 case android.view.MotionEvent.ACTION_MOVE: {
-                    float dx = e.getRawX() - cell.downX;
-                    float dy = e.getRawY() - cell.downY;
-                    // 手指明显移动（≥18dp）就取消长按计时，避免滑动列表时误弹菜单
-                    if (dx * dx + dy * dy > (float) dragSlop() * dragSlop()) {
+                    cell.lastX = e.getRawX();
+                    cell.lastY = e.getRawY();
+                    float dx = cell.lastX - cell.downX;
+                    float dy = cell.lastY - cell.downY;
+                    // 阈值取系统 slop（约 8dp）：一旦发生可见滑动就取消长按，只走列表滚动
+                    int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+                    if (dx * dx + dy * dy > (float) slop * slop) {
                         v.removeCallbacks(cell.longPress);
                     }
                     break;
@@ -3501,23 +3583,46 @@ public class FreezeListActivity extends BaseActivity {
         working = true;
         startFreezeSpin();
         IO.execute(() -> {
-            PrivShell.Result r = execPm(it.pkg, true);
-            boolean ok = applied(it.pkg, true, r);
-            // 系统应用被 ROM 拦住停用（两类固定文案）时，自动降级为 pm suspend 暂停
-            boolean blocked = !ok && SuspendSupport.romBlocked(r.out);
-            if (blocked) {
-                PrivShell.Result s = SuspendSupport.suspend(this, it.pkg, it.label);
-                if (suspendApplied(it.pkg, s)) {
-                    ok = true;
+            PrivShell.Result r;
+            boolean ok;
+            // 勾选「保留桌面图标」时直接走暂停通道：停用会让桌面图标消失，暂停不会
+            boolean keep = keepLauncherIcon;
+            boolean blocked = false;
+            boolean suspendedNow = false;
+            if (keep) {
+                r = SuspendSupport.suspend(this, it.pkg, it.label);
+                ok = suspendApplied(it.pkg, r);
+                if (ok) {
+                    suspendedNow = true;
                     SuspendSupport.remember(this, Collections.singleton(it.pkg));
+                    // 暂停不结束已有进程，补一次 force-stop 让冻结立即生效
+                    PrivShell.exec("am force-stop " + it.pkg, 10);
                 } else {
-                    android.util.Log.w("JinPm", "suspend fallback failed: code=" + s.code
-                            + " timeout=" + s.timeout + "\n"
-                            + (s.out == null ? "" : s.out.trim()));
+                    android.util.Log.w("JinPm", "suspend failed: code=" + r.code
+                            + " timeout=" + r.timeout + "\n"
+                            + (r.out == null ? "" : r.out.trim()));
+                }
+            } else {
+                r = execPm(it.pkg, true);
+                ok = applied(it.pkg, true, r);
+                // 系统应用被 ROM 拦住停用（两类固定文案）时，自动降级为 pm suspend 暂停
+                blocked = !ok && SuspendSupport.romBlocked(r.out);
+                if (blocked) {
+                    PrivShell.Result s = SuspendSupport.suspend(this, it.pkg, it.label);
+                    if (suspendApplied(it.pkg, s)) {
+                        ok = true;
+                        suspendedNow = true;
+                        SuspendSupport.remember(this, Collections.singleton(it.pkg));
+                    } else {
+                        android.util.Log.w("JinPm", "suspend fallback failed: code=" + s.code
+                                + " timeout=" + s.timeout + "\n"
+                                + (s.out == null ? "" : s.out.trim()));
+                    }
                 }
             }
             final boolean done = ok;
-            final boolean suspendedNow = blocked && ok;
+            final boolean suspendedFinal = suspendedNow;
+            final boolean blockedFinal = blocked;
             main.post(() -> {
                 stopFreezeSpin();
                 working = false;
@@ -3525,7 +3630,7 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 if (!done) {
-                    if (blocked) {
+                    if (blockedFinal) {
                         // 停用、暂停两条通道都被拒：只给一句话，原始输出已进日志
                         showPmError("冻结失败", it, Ui.NO_FREEZE_CHANNEL);
                     } else {
@@ -3534,7 +3639,7 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 it.frozen = true;
-                it.suspended = suspendedNow;
+                it.suspended = suspendedFinal;
                 rebindCells();
                 if (showFrozenTip) {
                     FrozenTip.show(this);
@@ -3567,6 +3672,132 @@ public class FreezeListActivity extends BaseActivity {
                 it.frozen = false;
                 it.suspended = false;
                 rebindCells();
+                reload();
+            });
+        });
+    }
+
+    /**
+     * 勾选「留桌面图标」时，把名单里已停用（桌面图标已消失）的应用逐个迁到暂停态：
+     * 先暂停，确认 suspended= 生效后再 pm enable 把图标放回桌面；暂停失败时保持原停用态，
+     * 不会把应用误放出来。
+     */
+    private void migrateFrozenToSuspend() {
+        if (working) {
+            return;
+        }
+        final List<String> candidates = new ArrayList<>();
+        for (Item it : items) {
+            if (it.frozen && !it.suspended) {
+                candidates.add(it.pkg);
+            }
+        }
+        if (candidates.isEmpty()) {
+            return;
+        }
+        working = true;
+        Toast.makeText(this, "正在把 " + candidates.size() + " 个已冻结应用切到暂停…",
+                Toast.LENGTH_SHORT).show();
+        IO.execute(() -> {
+            execSuspendBatch(candidates);
+            Set<String> suspended = SuspendSupport.suspendedAmong(candidates);
+            SuspendSupport.remember(this, suspended);
+            if (!suspended.isEmpty()) {
+                StringBuilder script = new StringBuilder();
+                for (String pkg : suspended) {
+                    script.append("pm enable --user 0 ").append(pkg).append(" 2>&1; ");
+                }
+                PrivShell.exec(script.toString(), Math.max(30, 10 + suspended.size() * 5));
+                // enable 只恢复图标，不改暂停态；再回读一次，只有仍是暂停的才算切换成功
+                suspended.retainAll(SuspendSupport.suspendedAmong(suspended));
+                SuspendSupport.remember(this, suspended);
+            }
+            final int done = suspended.size();
+            final int failed = candidates.size() - done;
+            main.post(() -> {
+                working = false;
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                Toast.makeText(this, failed == 0
+                                ? "已切换 " + done + " 个应用：图标保留并变灰"
+                                : "已切换 " + done + " 个，" + failed + " 个失败（仍保持停用）",
+                        Toast.LENGTH_LONG).show();
+                reload();
+            });
+        });
+    }
+
+    /**
+     * 取消「留桌面图标」：把当前处于暂停态的已冻结应用立刻转回默认冻结（disable-user）。
+     * 先 pm unsuspend 清掉暂停标志再 disable-user，避免 suspended= 残留；
+     * 用 pm list packages -d 批量回读判成败，转失败的保持暂停态，不会把应用放出来。
+     */
+    private void migrateSuspendedToDisabled() {
+        if (working) {
+            Toast.makeText(this, "正在执行其他操作，请稍后再试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final Set<String> pool = new HashSet<>();
+        for (Item it : items) {
+            if (it.frozen) {
+                pool.add(it.pkg);
+            }
+        }
+        pool.addAll(SuspendSupport.cached(this));
+        if (pool.isEmpty()) {
+            return;
+        }
+        working = true;
+        IO.execute(() -> {
+            Set<String> suspended = SuspendSupport.suspendedAmong(pool);
+            if (suspended.isEmpty()) {
+                main.post(() -> {
+                    working = false;
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    reload();
+                });
+                return;
+            }
+            StringBuilder script = new StringBuilder();
+            for (String pkg : suspended) {
+                script.append("pm unsuspend --user 0 ").append(pkg)
+                        .append(" >/dev/null 2>&1; pm disable-user --user 0 ").append(pkg)
+                        .append(" >/dev/null 2>&1; ");
+            }
+            PrivShell.exec(script.toString(), Math.max(30, 15 + suspended.size() * 6));
+            // 回读真值：仍在暂停集合里的算失败；disable 列表里有的才算转换成功
+            Set<String> stillSuspended = SuspendSupport.suspendedAmong(suspended);
+            Set<String> disabled = new HashSet<>();
+            PrivShell.Result d = PrivShell.exec("pm list packages -d", 30);
+            if (d.out != null) {
+                for (String line : d.out.split("\n")) {
+                    String t = line.trim();
+                    if (t.startsWith("package:")) {
+                        disabled.add(t.substring(8).trim());
+                    }
+                }
+            }
+            int done = 0;
+            for (String pkg : suspended) {
+                if (disabled.contains(pkg) && !stillSuspended.contains(pkg)) {
+                    done++;
+                    SuspendSupport.forget(this, pkg);
+                }
+            }
+            final int ok = done;
+            final int failed = suspended.size() - done;
+            main.post(() -> {
+                working = false;
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                Toast.makeText(this, failed == 0
+                                ? "已切回默认冻结 " + ok + " 个应用：图标已隐藏"
+                                : "已切回 " + ok + " 个，" + failed + " 个失败（仍保持暂停）",
+                        Toast.LENGTH_LONG).show();
                 reload();
             });
         });
@@ -3881,6 +4112,39 @@ public class FreezeListActivity extends BaseActivity {
         render();
     }
 
+    /**
+     * 长按震动走 Vibrator 直出，并用 ALARM 用途提交通道：
+     * 不指定用途时系统按 TOUCH 计，本机「触感」强度为 OFF 会直接忽略（IGNORED_FOR_SETTINGS）；
+     * ALARM 用途不受触感开关/强度影响，保证长按一定震。
+     */
+    private void forceVibrate() {
+        android.os.Vibrator vib;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            android.os.VibratorManager vm =
+                    (android.os.VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE);
+            vib = vm == null ? null : vm.getDefaultVibrator();
+        } else {
+            vib = (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
+        }
+        if (vib == null || !vib.hasVibrator()) {
+            android.util.Log.w("JinPm", "long-press vibrate skipped: no vibrator");
+            return;
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            android.os.VibrationEffect effect = android.os.VibrationEffect.createOneShot(
+                    30, android.os.VibrationEffect.DEFAULT_AMPLITUDE);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                vib.vibrate(effect, android.os.VibrationAttributes.createForUsage(
+                        android.os.VibrationAttributes.USAGE_ALARM));
+            } else {
+                vib.vibrate(effect, new android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_ALARM).build());
+            }
+        } else {
+            vib.vibrate(30);
+        }
+    }
+
     /** 长按冻结按钮展开一键解冻；3 秒无操作或点空白处收回。 */
     private void setupUnfreezeFab() {
         unfreezeFab = findViewById(R.id.btn_unfreeze_fab);
@@ -3902,7 +4166,14 @@ public class FreezeListActivity extends BaseActivity {
             return false;
         });
         if (freezeBtn != null) {
+            // 震动只由开关决定：关掉系统的长按默认震动，避免取消勾选后仍震一下
+            freezeBtn.setHapticFeedbackEnabled(false);
             freezeBtn.setOnLongClickListener(v -> {
+                if (!prefs().getBoolean(KEY_FAB_LONG_PRESS_UNFREEZE, true)) {
+                    // 取消勾选：长按吞掉，不弹解冻图标、不震动
+                    return true;
+                }
+                forceVibrate();
                 expandUnfreezeFab();
                 return true;
             });
@@ -4398,6 +4669,33 @@ public class FreezeListActivity extends BaseActivity {
             prefs().edit().putBoolean(lk(KEY_SHOW_FROZEN_TIP), on).apply();
         });
 
+        // 冻结后保留桌面图标：勾选后冻结改走 suspend 通道，图标保留、置灰并带暂停标识
+        CheckBox keepIconBox = new CheckBox(this);
+        keepIconBox.setText("留桌面图标（转暂停模式）");
+        keepIconBox.setTextSize(12);
+        keepIconBox.setMinimumHeight(Ui.dp(this, 32));
+        keepIconBox.setChecked(keepLauncherIcon);
+        keepIconBox.setOnCheckedChangeListener((btn, on) -> {
+            keepLauncherIcon = on;
+            prefs().edit().putBoolean(KEY_KEEP_LAUNCHER_ICON, on).apply();
+            if (on) {
+                // 已有停用态的应用逐个迁到暂停态，否则图标仍缺失
+                migrateFrozenToSuspend();
+            } else {
+                // 取消勾选：暂停态应用立刻转回默认冻结，图标随之消失
+                migrateSuspendedToDisabled();
+            }
+        });
+
+        // 长按冻结按钮：默认勾选，保持现有「弹出解冻图标」并震动；取消后长按无反应
+        CheckBox longPressBox = new CheckBox(this);
+        longPressBox.setText("长按冻结按钮触发解冻图标");
+        longPressBox.setTextSize(12);
+        longPressBox.setMinimumHeight(Ui.dp(this, 32));
+        longPressBox.setChecked(prefs().getBoolean(KEY_FAB_LONG_PRESS_UNFREEZE, true));
+        longPressBox.setOnCheckedChangeListener((btn, on) ->
+                prefs().edit().putBoolean(KEY_FAB_LONG_PRESS_UNFREEZE, on).apply());
+
         // 半屏专属：顶部小白条是否允许拖动改高度（开关与高度值分开存）
         CheckBox handleBox = null;
         CheckBox hideStatusBarBox = null;
@@ -4420,6 +4718,9 @@ public class FreezeListActivity extends BaseActivity {
         hideRecentsBox.setOnCheckedChangeListener((btn, on) -> {
             panelHideRecents = on;
             prefs().edit().putBoolean(lk(KEY_PANEL_HIDE_RECENTS), on).apply();
+            // 开关一变就同步任务属性：开着时任务从一开始就不进最近任务，关掉时恢复
+            taskHidden = false;
+            syncRecentsExclusion();
         });
 
         if (panelMode) {
@@ -4522,8 +4823,8 @@ public class FreezeListActivity extends BaseActivity {
         yValue.setTextColor(getColor(R.color.text_secondary));
 
         final Runnable refreshFabLabels = () -> {
-            xValue.setText("左右偏移：" + (fabDx > 0 ? "+" : "") + fabDx + "dp（左滑往左，右滑往右）");
-            yValue.setText("距底部：" + fabDy + "dp（左滑往下，右滑往上）");
+            xValue.setText("左右偏移：" + (fabDx > 0 ? "+" : "") + fabDx + "dp");
+            yValue.setText("距底部：" + fabDy + "dp");
         };
 
         SeekBar xBar = new SeekBar(this);
@@ -4712,6 +5013,8 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(nameBox);
         box.addView(moveBox);
         box.addView(tipBox);
+        box.addView(keepIconBox);
+        box.addView(longPressBox);
 
         // 全屏打开模式：只决定桌面图标进来时的形态，两种形态各用各的布局参数
         CheckBox fullBox = new CheckBox(this);
@@ -4782,7 +5085,7 @@ public class FreezeListActivity extends BaseActivity {
                 prefs().getInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE,
                         panelMode ? PANEL_FAB_SURFACE_DEFAULT : SURFACE_SOLID)));
         fabAlphaBar.setProgress(fabAlphaPct);
-        fabAlphaLabel.setText("透明度：" + fabAlphaPct + "%（左滑透明，右滑模糊）");
+        fabAlphaLabel.setText("透明度：" + fabAlphaPct + "%");
         fabAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -4792,7 +5095,7 @@ public class FreezeListActivity extends BaseActivity {
                 prefs().edit()
                         .putInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE, p)
                         .apply();
-                fabAlphaLabel.setText("透明度：" + p + "%（左滑透明，右滑模糊）");
+                fabAlphaLabel.setText("透明度：" + p + "%");
                 if (panelMode) {
                     applyFabSurface();
                 } else {
@@ -4968,7 +5271,7 @@ public class FreezeListActivity extends BaseActivity {
             blurBar.setMax(100);
             int blurPct = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 25)));
             blurBar.setProgress(blurPct);
-            blurLabel.setText("半屏外背景：" + blurPct + "%（左滑透明，右滑模糊）");
+            blurLabel.setText("半屏外背景：" + blurPct + "%");
             blurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -4976,7 +5279,7 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(lk(KEY_BLUR), p).apply();
-                    blurLabel.setText("半屏外背景：" + p + "%（左滑透明，右滑模糊）");
+                    blurLabel.setText("半屏外背景：" + p + "%");
                     applyBackdropStrength();
                 }
 
@@ -5003,7 +5306,7 @@ public class FreezeListActivity extends BaseActivity {
             int panelPct = Math.max(0, Math.min(100,
                     prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
             panelBar.setProgress(panelPct);
-            panelLabel.setText("半屏内背景：" + panelPct + "%（左滑透明，右滑模糊）");
+            panelLabel.setText("半屏内背景：" + panelPct + "%");
             panelBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -5011,7 +5314,7 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(lk(KEY_SURFACE), p).apply();
-                    panelLabel.setText("半屏内背景：" + p + "%（左滑透明，右滑模糊）");
+                    panelLabel.setText("半屏内背景：" + p + "%");
                     applyPanelSurface();
                 }
 
@@ -5266,7 +5569,7 @@ public class FreezeListActivity extends BaseActivity {
         // fingerDown：只有手指真的按住（DOWN/MOVE）时才算用户手势
         final boolean[] fingerDown = {false};
         final long[] suppressUntil = {0};
-        // 只有 ▼ 展开过才参与滚动显隐；收起时连占位高度一起收，窗口同步减高，不留白块
+        // 只有 ▼ 展开过才参与滚动显隐；滚动收起时只藏内容，保留占位高度，面板不动
         final boolean[] rowExpanded = {false};
         final boolean[] rowSpaceHidden = {false};
         final int[] rowFullH = {0};
@@ -5275,57 +5578,35 @@ public class FreezeListActivity extends BaseActivity {
             lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
             heightRow.setLayoutParams(lp);
         };
-        // 重新露出滑块：行高恢复、窗口同步加回同样高度，可视列表区高度不变
+        // 重新露出滑块：占位由滚动区自己让出，窗口高度全程没变，只需把行放回来
         final Runnable showRowSpace = () -> {
-            if (!rowExpanded[0] || !rowSpaceHidden[0] || rowFullH[0] <= 0) {
+            if (!rowExpanded[0] || !rowSpaceHidden[0]) {
                 return;
             }
             rowSpaceHidden[0] = false;
-            ViewGroup.LayoutParams lp = heightRow.getLayoutParams();
-            lp.height = rowFullH[0];
-            heightRow.setLayoutParams(lp);
+            heightRow.animate().cancel();
+            resetRowHeight.run();
             heightRow.setVisibility(View.VISIBLE);
             heightRow.setAlpha(0f);
             heightRow.animate().alpha(1f).setDuration(120).start();
-            applyDialogHeight(dialog, dialogContentHeightPx(dialog, shadowPad) + rowFullH[0], shadowPad);
             suppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
         };
-        // 收起滑块并连同占位一起收：行高动画到 0，窗口同帧减高，下面内容整体上移贴住
+        // 滚动收起滑块：行直接 GONE，把占位空间让给列表内容（顶部不留白、多显示一行）；
+        // 窗口高度与位置一律不动，不调用 applyDialogHeight
         final Runnable hideRowSpace = () -> {
             if (!rowExpanded[0] || rowSpaceHidden[0]) {
                 return;
             }
             int h = heightRow.getHeight();
-            if (h <= 0) {
-                h = rowFullH[0];
+            if (h > 0) {
+                rowFullH[0] = h;
             }
-            if (h <= 0) {
-                return;
-            }
-            rowFullH[0] = h;
             rowSpaceHidden[0] = true;
+            resetRowHeight.run();
             heightRow.animate().cancel();
-            heightRow.animate().alpha(0f).setDuration(100).start();
-            applyDialogHeight(dialog, dialogContentHeightPx(dialog, shadowPad) - h, shadowPad);
-            final int from = h;
-            android.animation.ValueAnimator va = android.animation.ValueAnimator.ofInt(from, 0);
-            va.setDuration(100);
-            va.addUpdateListener(a -> {
-                ViewGroup.LayoutParams lp = heightRow.getLayoutParams();
-                lp.height = (int) a.getAnimatedValue();
-                heightRow.setLayoutParams(lp);
-            });
-            va.addListener(new android.animation.AnimatorListenerAdapter() {
-                @Override
-                public void onAnimationEnd(android.animation.Animator animation) {
-                    ViewGroup.LayoutParams lp = heightRow.getLayoutParams();
-                    lp.height = 0;
-                    heightRow.setLayoutParams(lp);
-                    heightRow.setVisibility(View.INVISIBLE);
-                    heightRow.setAlpha(1f);
-                }
-            });
-            va.start();
+            heightRow.animate().alpha(0f).setDuration(100)
+                    .withEndAction(() -> heightRow.setVisibility(View.GONE))
+                    .start();
             suppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
         };
         collapseHeightRow[0] = () -> {
@@ -5375,7 +5656,7 @@ public class FreezeListActivity extends BaseActivity {
         // 1. 只要列表开始往下滑（scrollY 增大）就立刻收起，慢滑、小幅也收，不看位移阈值与速度；
         // 2. 收起后一直保持隐藏：中途任何普通上滑、滚动停住、惯性结束都不显示；
         // 3. 只有列表真的滑到最顶部（canScrollVertically(-1) 为 false）才重新显示；
-        // 4. 面板本身始终展开，收起时那两行连同占位高度一起收掉，不留白。
+        // 4. 面板高度、位置全程不变：收起只把滑块藏起来，占位高度原样保留，不收缩窗口。
         dialogScroll.setOnTouchListener((tv, e) -> {
             switch (e.getActionMasked()) {
                 case android.view.MotionEvent.ACTION_DOWN:
@@ -5624,7 +5905,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
 
-        // 滑块 2：设置面板展开范围 0–666dp，记忆点右上角倒三角时的高度，允许覆盖半屏
+        // 滑块 2：设置面板展开范围 0–888dp，记忆点右上角倒三角时的高度，允许覆盖半屏（不盖冻结按钮）
         expandBar.setMax(LAYOUT_EXPAND_MAX_DP);
         expandBar.setProgress(expandDialogDp());
         expandValue.setText(heightLabel("设置面板展开范围", expandDialogDp(), clampedExpandHeightPx(expandDialogDp())));
@@ -5661,7 +5942,7 @@ public class FreezeListActivity extends BaseActivity {
         return clampInt(prefs().getInt(key, LAYOUT_DIALOG_DEFAULT_DP), 0, LAYOUT_OPEN_MAX_DP);
     }
 
-    /** 「展开高度」记忆值（dp）：新装/重置默认 666dp，手动调过的沿用记忆值。 */
+    /** 「展开高度」记忆值（dp）：新装/重置默认 888dp，手动调过的沿用记忆值。 */
     private int expandDialogDp() {
         return clampInt(prefs().getInt(lk(KEY_LAYOUT_EXPAND_H), LAYOUT_EXPAND_MAX_DP),
                 0, LAYOUT_EXPAND_MAX_DP);
@@ -5683,7 +5964,7 @@ public class FreezeListActivity extends BaseActivity {
         return clampInt(Ui.dp(this, dp), Math.min(Ui.dp(this, 170), max), max);
     }
 
-    /** 「展开高度」实际可用高度：允许覆盖半屏，只受屏幕与 666dp 限制。 */
+    /** 「展开高度」实际可用高度：允许覆盖半屏，受屏幕、888dp 与冻结按钮位置共同限制。 */
     private int clampedExpandHeightPx(int dp) {
         int max = expandHeightMaxPx();
         return clampInt(Ui.dp(this, dp), Math.min(Ui.dp(this, 170), max), max);
@@ -5712,13 +5993,34 @@ public class FreezeListActivity extends BaseActivity {
         return Math.max(0, max);
     }
 
-    /** 展开高度上限：允许覆盖半屏区域，只受屏幕可用高度与 666dp 限制。 */
+    /**
+     * 展开高度上限：屏幕可用高度与 888dp 取小，再按底部冻结按钮的当前实际上沿夹紧。
+     * 按钮位置受「按钮大小 / 距底部 / 左右偏移」影响，这里一律按运行期的屏幕坐标实时取，
+     * 保证展开后的面板永远停在按钮上方，不会把按钮盖住。
+     */
     private int expandHeightMaxPx() {
         int pad = Ui.dp(this, 12);
         int screenH = getResources().getDisplayMetrics().heightPixels;
         int max = screenH - statusBarHeightPx() - pad * 2 - Ui.dp(this, 8);
         max = Math.min(max, Ui.dp(this, LAYOUT_EXPAND_MAX_DP));
+        int fabTop = freezeButtonTopPx();
+        if (fabTop > 0) {
+            // 弹窗内容顶边 = 默认 8dp + 记忆的拖动偏移，与 applyDialogGeometry 的定位口径一致
+            int dialogTop = Ui.dp(this, 8) + prefs().getInt(lk(KEY_LAYOUT_DY), 0);
+            max = Math.min(max, fabTop - dialogTop - Ui.dp(this, 12));
+        }
         return Math.max(0, max);
+    }
+
+    /** 底部冻结按钮当前的上沿 y（屏幕坐标）；未加载/不可见时返回 -1。 */
+    private int freezeButtonTopPx() {
+        if (freezeBtn == null || freezeBtn.getVisibility() != View.VISIBLE
+                || freezeBtn.getWidth() == 0) {
+            return -1;
+        }
+        int[] loc = new int[2];
+        freezeBtn.getLocationOnScreen(loc);
+        return loc[1];
     }
 
     /** 布局弹窗当前内容高度（px，不含阴影留白）；未知时按 0 处理。 */
@@ -6878,22 +7180,28 @@ public class FreezeListActivity extends BaseActivity {
         IO.execute(() -> {
             // 只开一次 su、一条脚本跑完全部包；处理完统一回读一次状态
             long startedAt = System.currentTimeMillis();
-            Map<String, String> outputs = execPmBatch(targets, freeze);
+            Map<String, String> outputs;
             Set<String> blocked = new HashSet<>();
-            if (freeze) {
-                // 只对被 ROM 拦住停用的包（两类固定文案）降级暂停，其余包行为不变
-                for (String pkg : targets) {
-                    if (SuspendSupport.romBlocked(outputs.get(pkg))) {
-                        blocked.add(pkg);
+            if (freeze && keepLauncherIcon) {
+                // 勾选「留桌面图标」：整批改走暂停通道，不执行 pm disable-user，图标才不会被摘掉
+                outputs = execSuspendBatch(targets);
+            } else {
+                outputs = execPmBatch(targets, freeze);
+                if (freeze) {
+                    // 只对被 ROM 拦住停用的包（两类固定文案）降级暂停，其余包行为不变
+                    for (String pkg : targets) {
+                        if (SuspendSupport.romBlocked(outputs.get(pkg))) {
+                            blocked.add(pkg);
+                        }
                     }
-                }
-                if (!blocked.isEmpty()) {
-                    Map<String, String> suspendOut = execSuspendBatch(new ArrayList<>(blocked));
-                    for (String pkg : blocked) {
-                        String prev = outputs.get(pkg);
-                        String now = suspendOut.get(pkg);
-                        outputs.put(pkg, (prev == null ? "" : prev + "\n")
-                                + (now == null ? "" : now));
+                    if (!blocked.isEmpty()) {
+                        Map<String, String> suspendOut = execSuspendBatch(new ArrayList<>(blocked));
+                        for (String pkg : blocked) {
+                            String prev = outputs.get(pkg);
+                            String now = suspendOut.get(pkg);
+                            outputs.put(pkg, (prev == null ? "" : prev + "\n")
+                                    + (now == null ? "" : now));
+                        }
                     }
                 }
             }
@@ -6916,6 +7224,14 @@ public class FreezeListActivity extends BaseActivity {
             Set<String> suspendedTruth = SuspendSupport.suspendedAmong(suspendCandidates);
             if (freeze) {
                 SuspendSupport.remember(this, suspendedTruth);
+                // 暂停不结束已有进程：确认暂停生效后补一次 force-stop，让冻结立即生效
+                if (keepLauncherIcon && !suspendedTruth.isEmpty()) {
+                    StringBuilder stop = new StringBuilder();
+                    for (String pkg : suspendedTruth) {
+                        stop.append("am force-stop ").append(pkg).append("; ");
+                    }
+                    PrivShell.exec(stop.toString(), 30);
+                }
             } else {
                 Set<String> next = SuspendSupport.cached(this);
                 next.removeAll(targets);
