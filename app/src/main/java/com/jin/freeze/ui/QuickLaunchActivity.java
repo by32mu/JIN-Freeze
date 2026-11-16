@@ -35,7 +35,11 @@ public class QuickLaunchActivity extends Activity {
             return;
         }
         if (ACTION_OPEN_FREEZE_LIST.equals(action)) {
-            startActivity(new Intent(this, FreezePanelActivity.class)
+            // 快捷方式打开的是半屏形态；勾了「隐藏后台」就走带 excludeFromRecents 的入口
+            boolean hideRecents = getSharedPreferences("freeze_list", MODE_PRIVATE)
+                    .getBoolean("panel_hide_recents", false);
+            startActivity(new Intent(this,
+                    hideRecents ? FreezePanelHiddenActivity.class : FreezePanelActivity.class)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             finish();
             return;

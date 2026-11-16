@@ -10,13 +10,23 @@ import android.os.Bundle;
  */
 public class LaunchActivity extends Activity {
 
+    private static final String PREFS = "freeze_list";
+    private static final String KEY_FULLSCREEN_OPEN = "fullscreen_open";
+    /** 「隐藏后台」：全屏用 hide_recents，半屏用 panel_hide_recents。 */
+    private static final String KEY_HIDE_RECENTS = "hide_recents";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        boolean fullscreen = getSharedPreferences("freeze_list", MODE_PRIVATE)
-                .getBoolean("fullscreen_open", true);
-        Intent target = new Intent(this,
-                fullscreen ? FreezeListActivity.class : FreezePanelActivity.class);
+        boolean fullscreen = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(KEY_FULLSCREEN_OPEN, true);
+        // 与冰箱一致：勾了「隐藏后台」就走带 excludeFromRecents 的入口，
+        // 任务从创建起就不进最近任务，系统不会截快照，最近任务里也就没有旧帧残影
+        boolean hideRecents = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(fullscreen ? KEY_HIDE_RECENTS : "panel_" + KEY_HIDE_RECENTS, false);
+        Intent target = new Intent(this, fullscreen
+                ? (hideRecents ? FreezeListHiddenActivity.class : FreezeListActivity.class)
+                : (hideRecents ? FreezePanelHiddenActivity.class : FreezePanelActivity.class));
         target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         // 打开 app 先检查 root / Shizuku：目标页面起来后在后台探测，未授权再弹统一提示
         target.putExtra(FreezeListActivity.EXTRA_CHECK_PRIV, true);

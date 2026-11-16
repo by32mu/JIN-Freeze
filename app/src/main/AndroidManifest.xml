@@ -59,9 +59,29 @@
             android:theme="@style/Theme.Jin.Panel"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- 半屏的隐藏入口：同上，勾选「隐藏后台」时半屏也走这里 -->
+        <activity
+            android:name=".ui.FreezePanelHiddenActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Jin.Panel"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- 全屏列表形态：singleTask 复用同一任务，桌面重复进入不会叠新任务 -->
         <activity
             android:name=".ui.FreezeListActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Jin.Full"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 「隐藏后台」的隐藏入口（与冰箱 MainAppHiddenActivity 同一套做法）：
+             本身带 excludeFromRecents，勾选开关后桌面/快捷方式都从这里进，
+             任务从创建起就不进最近任务，系统不会生成快照，也就没有可点的旧帧残影 -->
+        <activity
+            android:name=".ui.FreezeListHiddenActivity"
+            android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTask"
             android:theme="@style/Theme.Jin.Full"

@@ -147,7 +147,7 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_PANEL_HANDLE = "panel_handle_enabled";
     /** 冻结成功后是否自动收起列表（全屏/半屏各自记忆，回到进入前的应用）。 */
     private static final String KEY_PANEL_DISMISS = "dismiss_after_freeze";
-    /** 「隐藏后台」：勾选后离开列表时把任务从最近任务移除；全屏/半屏各自记忆。 */
+    /** 「隐藏后台」：勾选后本任务不进最近任务；全屏/半屏各自记忆。 */
     private static final String KEY_PANEL_HIDE_RECENTS = "hide_recents";
     /** 「冻结后保留桌面图标」：勾选后冻结改走 pm suspend，桌面图标不消失；两种形态共用。 */
     private static final String KEY_KEEP_LAUNCHER_ICON = "keep_launcher_icon";
@@ -316,8 +316,6 @@ public class FreezeListActivity extends BaseActivity {
     private boolean loadedOnce;
     /** 打开选应用页期间不让「隐藏半屏后台」把面板收掉，否则回传结果没人接。 */
     private boolean pickerOpen;
-    /** 「隐藏后台」已把本次任务从最近任务摘掉，避免 onPause 反复 finish。 */
-    private boolean taskHidden;
 
     private boolean working;
     private boolean editMode;
@@ -1903,52 +1901,15 @@ public class FreezeListActivity extends BaseActivity {
         if (panelMode) {
             restoreStatusBarIcons();
         }
-        // 勾选「隐藏后台」时，离开列表就把自身任务从最近任务摘掉；全屏与半屏都生效。
-        // 用 finishAndRemoveTask 而不是 finish()，避免只关页面留下空任务卡片。
-        hideTaskIfNeeded();
-    }
-
-    /**
-     * 「隐藏后台」：越早摘掉任务越好，否则 HyperOS 的最近任务（com.miui.home 画）
-     * 会先截一张图，等 onPause 再移除就留下残影卡片。
-     * 先让本任务彻底不进最近任务（excludeFromRecents + 关闭快照），再 finishAndRemoveTask。
-     */
-    private void hideTaskIfNeeded() {
-        if (!panelHideRecents || pickerOpen || taskHidden || isFinishing()) {
-            return;
-        }
-        taskHidden = true;
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                // 关掉最近任务里的实时快照，避免移除前已经被画出来
-                setRecentsScreenshotEnabled(false);
-            }
-            android.app.ActivityManager am =
-                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
-            if (am != null) {
-                for (android.app.ActivityManager.AppTask t : am.getAppTasks()) {
-                    if (t.getTaskInfo().id == getTaskId()) {
-                        t.setExcludeFromRecents(true);
-                    }
-                }
-            }
-        } catch (Throwable ignored) {
-            // 个别 ROM 不给改任务属性，仍按 finishAndRemoveTask 兜底
-        }
-        finishAndRemoveTask();
-        overridePendingTransition(0, 0);
-    }
-
-    /** 用户按 Home / 最近任务键离开：比 onPause 更早，先在这里把卡片摘掉。 */
-    @Override
-    protected void onUserLeaveHint() {
-        super.onUserLeaveHint();
-        hideTaskIfNeeded();
+        // 与冰箱一致：这里不再 finishAndRemoveTask / finish。
+        // 任务在 onResume 时就已经被排除出最近任务，系统不会给它画快照；
+        // 先让卡片进过最近任务再移除，正是 HyperOS 桌面留下可点旧帧的原因。
     }
 
     /**
      * 开关打开时让本任务从一开始就不进最近任务；关掉时恢复，保证还能正常留在后台。
-     * 每次 onResume 与拨动开关都同步一次。
+     * 与冰箱 onResume 里遍历 AppTask 置/清 excludeFromRecents 的做法一致，
+     * 覆盖「开关拨动前就已经存在的旧任务」；新任务由隐藏入口的清单属性兜住。
      */
     private void syncRecentsExclusion() {
         try {
@@ -1966,7 +1927,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
             }
         } catch (Throwable ignored) {
-            // 任务属性改不了就只靠离开时的移除兜底
+            // 个别 ROM 改不了任务属性；新任务仍由隐藏入口的 excludeFromRecents 兜住
         }
     }
 
@@ -4712,8 +4673,8 @@ public class FreezeListActivity extends BaseActivity {
         hideRecentsBox.setOnCheckedChangeListener((btn, on) -> {
             panelHideRecents = on;
             prefs().edit().putBoolean(lk(KEY_PANEL_HIDE_RECENTS), on).apply();
-            // 开关一变就同步任务属性：开着时任务从一开始就不进最近任务，关掉时恢复
-            taskHidden = false;
+            // 与冰箱拨开关时一样立刻同步任务属性：开着时当前任务马上退出最近任务，
+            // 关掉时恢复；下次从桌面进入会由 LaunchActivity 改走对应的隐藏/普通入口
             syncRecentsExclusion();
         });
 
@@ -5023,8 +4984,13 @@ public class FreezeListActivity extends BaseActivity {
                 dialogRef[0].dismiss();
             }
             if (switching) {
-                // 点击即切换：直接换到另一种形态的 Activity，不用退出重进
-                Class<?> next = on ? FreezeListActivity.class : FreezePanelActivity.class;
+                // 点击即切换：直接换到另一种形态的 Activity，不用退出重进；
+                // 目标形态开着「隐藏后台」时走对应的隐藏入口，保证新任务从创建起就不进最近任务
+                boolean hideTarget = prefs().getBoolean(
+                        on ? KEY_PANEL_HIDE_RECENTS : "panel_" + KEY_PANEL_HIDE_RECENTS, false);
+                Class<?> next = on
+                        ? (hideTarget ? FreezeListHiddenActivity.class : FreezeListActivity.class)
+                        : (hideTarget ? FreezePanelHiddenActivity.class : FreezePanelActivity.class);
                 Intent intent = new Intent(this, next);
                 intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
                 startActivity(intent);
