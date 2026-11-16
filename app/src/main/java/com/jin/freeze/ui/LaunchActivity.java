@@ -6,7 +6,7 @@ import android.os.Bundle;
 
 /**
  * 桌面图标入口：只做一次分流，不显示任何界面。
- * 「全屏打开模式」开启时进全屏冻结列表，否则进半屏面板（默认）。
+ * 默认进全屏冻结列表；「全屏打开模式」关掉后进半屏面板。
  */
 public class LaunchActivity extends Activity {
 
@@ -14,7 +14,7 @@ public class LaunchActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         boolean fullscreen = getSharedPreferences("freeze_list", MODE_PRIVATE)
-                .getBoolean("fullscreen_open", false);
+                .getBoolean("fullscreen_open", true);
         Intent target = new Intent(this,
                 fullscreen ? FreezeListActivity.class : FreezePanelActivity.class);
         target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
