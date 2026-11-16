@@ -225,6 +225,30 @@ public final class LaunchTarget {
         return exists(c, t.pkg, t.cls);
     }
 
+    /** 应用本身的启用状态（disable-user 的冻结包为 false，暂停包仍为 true）。 */
+    public static boolean enabled(Context c, String pkg) {
+        if (pkg == null || pkg.isEmpty()) {
+            return false;
+        }
+        try {
+            ApplicationInfo ai = c.getPackageManager()
+                    .getApplicationInfo(pkg, PackageManager.MATCH_DISABLED_COMPONENTS);
+            return ai.enabled;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 是否因冻结（disable-user）或暂停而暂时打不开，需要先解冻。 */
+    public static boolean blocked(Context c, String pkg) {
+        if (!enabled(c, pkg)) {
+            return true;
+        }
+        return SuspendSupport.cached(c).contains(pkg)
+                && Boolean.TRUE.equals(SuspendSupport.suspendedOne(pkg));
+    }
+
+
     /** 是否对外导出，可直接用普通 Intent 启动。 */
     public static boolean exported(Context c, String pkg, String cls) {
         try {

@@ -1,6 +1,7 @@
 package com.jin.freeze.ui;
 
 import android.app.AlertDialog;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
@@ -829,15 +830,7 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     private void pinToHome(App a) {
-        Intent launchIntent = getPackageManager().getLaunchIntentForPackage(a.pkg);
-        if (launchIntent == null || launchIntent.getComponent() == null) {
-            Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        com.jin.freeze.core.LaunchTarget.Target target =
-                new com.jin.freeze.core.LaunchTarget.Target(a.pkg,
-                        launchIntent.getComponent().getClassName(), a.label);
-        ShortcutPin.pin(this, "frozen_" + a.pkg, a.label, a.icon, target);
+        ShortcutPin.pin(this, a.pkg, a.label, a.icon);
     }
 
     private void bindCell(App a, Cell cell) {

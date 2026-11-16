@@ -1,8 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Android 12+ 的系统 Splash 默认取白色背景：入口壳、全屏、半屏都改成深色，别在首帧露白 -->
-    <style name="Theme.Jin.Trampoline" parent="@android:style/Theme.NoDisplay">
-        <item name="android:windowSplashScreenBackground">@color/launch_scrim</item>
+    <!-- 快捷方式落地壳：与 Hail 的 ApiActivity 同款透明主题（不能用 NoDisplay，
+         解冻是异步的，finish() 晚于 onResume 会崩），Splash 也压透明 -->
+    <style name="Theme.Jin.Trampoline" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowSplashScreenBackground">@android:color/transparent</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/transparent</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
     </style>

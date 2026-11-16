@@ -31,4 +31,6 @@
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
     </style>
 
+    <!-- 快捷方式落地壳定义在 splash.xml（v31 专用资源），这里不再重复声明 -->
+
 </resources>

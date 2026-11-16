@@ -2,6 +2,7 @@ package com.jin.freeze.ui;
 
 import android.app.AlertDialog;
 import android.content.ClipData;
+import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -3838,16 +3839,9 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 添加到桌面：系统固定快捷方式，指向该应用的启动页。 */
+    /** 添加到桌面：照搬 Hail，只带包名建固定快捷方式，不预先解析启动页。 */
     private void pinToHome(Item it) {
-        Intent launchIntent = getPackageManager().getLaunchIntentForPackage(it.pkg);
-        if (launchIntent == null || launchIntent.getComponent() == null) {
-            Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        LaunchTarget.Target target = new LaunchTarget.Target(it.pkg,
-                launchIntent.getComponent().getClassName(), it.label);
-        ShortcutPin.pin(this, "frozen_" + it.pkg, it.label, it.icon, target);
+        ShortcutPin.pin(this, it.pkg, it.label, it.icon);
     }
 
     /**

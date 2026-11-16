@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 快捷方式落地壳：不建窗口，仅做分流；单独给个主题，好在 Android 12+ 关掉系统白色 Splash -->
-    <style name="Theme.Jin.Trampoline" parent="@android:style/Theme.NoDisplay" />
+    <!-- 快捷方式落地壳：与 Hail 的 ApiActivity 同款透明主题。
+         不能用 Theme.NoDisplay：解冻要在后台线程等 pm 生效，finish() 晚于 onResume，
+         无窗口主题会抛「did not call finish() prior to onResume() completing」直接崩进程。 -->
+    <style name="Theme.Jin.Trampoline" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
 </resources>
