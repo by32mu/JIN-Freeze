@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用信息：圆圈 + i，用于「在其他应用中配置」（跳系统应用详情页） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4E7CF6"
+        android:strokeWidth="1.8"
+        android:pathData="M12,3 a9,9 0 1,0 0,18 a9,9 0 1,0 0,-18" />
+    <path
+        android:fillColor="#4E7CF6"
+        android:pathData="M12,7.6 a1.15,1.15 0 1,1 0,2.3 a1.15,1.15 0 1,1 0,-2.3" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4E7CF6"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M12,11.6 V16.6" />
+</vector>

@@ -143,13 +143,13 @@ public final class AppActionSheet {
             addItem(c, content, sheet, R.drawable.ic_check_badge, "多选",
                     actions::startMultiSelect, fg, iconFg);
         }
-        addItem(c, content, sheet, R.drawable.ic_settings, "在其他应用中配置", actions::appSettings, fg, iconFg);
+        addItem(c, content, sheet, R.drawable.ic_action_app_info, "在其他应用中配置", actions::appSettings, fg, iconFg);
         addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
         if (actions.inList()) {
             addItem(c, content, sheet, R.drawable.ic_minus, "从列表移除",
                     actions::removeFromList, fg, iconFg);
             divider(c, content, 18, lineColor);
-            addItem(c, content, sheet, R.drawable.ic_sc_unfreeze, "移除列表并解冻",
+            addItem(c, content, sheet, R.drawable.ic_action_circle_unlock, "移除列表并解冻",
                     actions::removeAndUnfreeze, fg, iconFg);
         }
 

@@ -4078,7 +4078,7 @@ public class FreezeListActivity extends BaseActivity {
         batchItem(R.drawable.ic_action_home, "添加到桌面", () -> batchPinHome(), sheet, fg, iconFg, content, true);
         batchItem(R.drawable.ic_minus, "从列表移除", () -> batchRemove(false), sheet, fg, iconFg, content, true);
         batchDivider(content, lineColor);
-        batchItem(R.drawable.ic_sc_unfreeze, "移除列表并解冻", () -> batchRemove(true), sheet, fg, iconFg, content, true);
+        batchItem(R.drawable.ic_action_circle_unlock, "移除列表并解冻", () -> batchRemove(true), sheet, fg, iconFg, content, true);
         batchDivider(content, lineColor);
         batchItem(R.drawable.ic_back, "返回继续操作",
                 () -> sheet.dismiss(), sheet, fg, iconFg, content, false);
