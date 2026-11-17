@@ -5858,10 +5858,10 @@ public class FreezeListActivity extends BaseActivity {
             }
             boolean shown = !rowSpaceHidden[0];
             if (shown) {
-                // 往下滑一丁点就收起，不做累计、不等阈值
+                // 往下滑一丁点就收起，不做累计、不等阈值；
+                // 只是把滑块藏起来，面板仍是展开高度，箭头保持朝上不动
                 if (dy > 0) {
                     hideRowSpace.run();
-                    sizeToggle.setImageResource(R.drawable.ic_chevron_down);
                 }
                 return;
             }
@@ -5869,7 +5869,6 @@ public class FreezeListActivity extends BaseActivity {
             // 避免弹窗改高度导致的滚动回调把滑块自己放出来）
             if (fingerDown[0] && !dialogScroll.canScrollVertically(-1)) {
                 showRowSpace.run();
-                sizeToggle.setImageResource(R.drawable.ic_chevron_up);
             }
         });
         dialog.setOnShowListener(d -> {
