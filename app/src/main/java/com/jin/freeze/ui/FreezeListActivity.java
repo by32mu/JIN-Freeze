@@ -2409,8 +2409,9 @@ public class FreezeListActivity extends BaseActivity {
             chip.setSingleLine(true);
             chip.setGravity(Gravity.CENTER);
             chip.setPadding(Ui.dp(this, 16), Ui.dp(this, 7), Ui.dp(this, 16), Ui.dp(this, 7));
-            chip.setBackgroundResource(on ? R.drawable.bg_btn_blue : R.drawable.bg_btn_white);
-            chip.setTextColor(on ? 0xFFFFFFFF : getColor(R.color.blue));
+            // 选中态用低饱和浅蓝胶囊 + 深蓝字：原来的高饱和蓝底白字在全屏里太扎眼
+            chip.setBackgroundResource(on ? R.drawable.bg_tab_selected : R.drawable.bg_btn_white);
+            chip.setTextColor(on ? getColor(R.color.tab_selected_text) : getColor(R.color.blue));
             chip.setTypeface(null, on ? android.graphics.Typeface.BOLD
                     : android.graphics.Typeface.NORMAL);
             chip.setOnClickListener(v -> selectTab(t.id));
@@ -3905,7 +3906,7 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 给 iconBox 加选中圈：画在图标上层，半透明主色填充 + 3dp 描边，避免被应用图标盖住。 */
+    /** 给 iconBox 加选中圈：主色描边 + 半透明主色底，外面再垫一圈白色描边，淡色与深色图标上都能看清。 */
     private void addSelectRing(Cell c) {
         if (c.iconBox == null) return;
         if (c.selectRing != null) return;
@@ -3913,12 +3914,29 @@ public class FreezeListActivity extends BaseActivity {
         int strokePx = Math.max(2, (int) (3f * getResources().getDisplayMetrics().density));
         int radius = Math.max(Ui.dp(this, 6), (int) (computedIconPx() * 0.18f));
         int primary = Ui.primary(this);
-        android.graphics.drawable.GradientDrawable draw = new android.graphics.drawable.GradientDrawable();
-        draw.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-        draw.setColor((primary & 0x00FFFFFF) | 0x33000000);
-        draw.setCornerRadius(radius);
-        draw.setStroke(strokePx, primary);
-        ring.setBackground(draw);
+
+        // 内层：主色细环 + 很浅的主色底
+        android.graphics.drawable.GradientDrawable inner =
+                new android.graphics.drawable.GradientDrawable();
+        inner.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        inner.setColor((primary & 0x00FFFFFF) | 0x33000000);
+        inner.setCornerRadius(radius);
+        inner.setStroke(strokePx, primary);
+
+        // 外层：白色描边垫底，比主色环宽 2dp，露出一圈白边；
+        // 解冻状态的应用图标是原色（经常偏黑），只有主色蓝环时几乎看不见。
+        android.graphics.drawable.GradientDrawable halo =
+                new android.graphics.drawable.GradientDrawable();
+        halo.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        halo.setColor(0x00000000);
+        halo.setCornerRadius(radius);
+        halo.setStroke(strokePx + Math.max(2, (int) (2f * getResources().getDisplayMetrics().density)),
+                0xFFFFFFFF);
+
+        android.graphics.drawable.LayerDrawable layers =
+                new android.graphics.drawable.LayerDrawable(
+                        new android.graphics.drawable.Drawable[]{inner, halo});
+        ring.setBackground(layers);
         ring.setClickable(false);
         ring.setFocusable(false);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(

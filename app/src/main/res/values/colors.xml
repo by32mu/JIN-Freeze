@@ -25,4 +25,7 @@
     <color name="accent_surface_stroke">#647A99</color>
     <color name="accent_surface_stroke_soft">#CDD7E5</color>
     <color name="sel_fill">#2E647A99</color>
+    <!-- 全屏标签页选中态：低饱和浅蓝底 + 深蓝字，替代原来扎眼的高饱和蓝胶囊 -->
+    <color name="tab_selected_bg">#DEE8FB</color>
+    <color name="tab_selected_text">#2F5AD8</color>
 </resources>

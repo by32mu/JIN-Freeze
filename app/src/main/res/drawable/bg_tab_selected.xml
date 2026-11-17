@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 全屏标签页选中态：低饱和浅蓝胶囊，圆角与未选中白胶囊保持一致 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/tab_selected_bg" />
+    <corners android:radius="22dp" />
+</shape>

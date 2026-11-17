@@ -22,4 +22,7 @@
     <color name="accent_surface_stroke">#8FA3C0</color>
     <color name="accent_surface_stroke_soft">#3B4757</color>
     <color name="sel_fill">#338FA3C0</color>
+    <!-- 全屏标签页选中态：深色下同样降饱和，浅蓝字保证可读 -->
+    <color name="tab_selected_bg">#2E3E5C</color>
+    <color name="tab_selected_text">#A9C2F5</color>
 </resources>
