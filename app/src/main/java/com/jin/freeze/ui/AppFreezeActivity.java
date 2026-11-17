@@ -26,6 +26,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.jin.freeze.R;
+import com.jin.freeze.core.AppIconCache;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.SuspendSupport;
 import com.jin.freeze.core.SwipeFreeze;
@@ -398,7 +399,8 @@ public class AppFreezeActivity extends BaseActivity {
                             || (userId == 0 && suspended.contains(a.pkg)))
                             : !ai.enabled;
                     try {
-                        a.icon = ai.loadIcon(pm);
+                        // 走公共缓存：再次进入添加页时图标直接命中，不再重复解码
+                        a.icon = AppIconCache.load(this, a.pkg, ai);
                     } catch (Exception ignored) {
                     }
                     apps.add(a);

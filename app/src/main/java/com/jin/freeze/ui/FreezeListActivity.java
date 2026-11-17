@@ -49,6 +49,7 @@ import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.jin.freeze.R;
 import com.jin.freeze.JinApp;
+import com.jin.freeze.core.AppIconCache;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.ShizukuGate;
@@ -2692,10 +2693,62 @@ public class FreezeListActivity extends BaseActivity {
         return String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
     }
 
+    /**
+     * 首帧用的快速列表：只用本机 PackageInfo 和暂停缓存，不跑任何 shell 命令。
+     * 冻结状态与真值可能有两三处偏差，后台真值回来后由 reload 的正式渲染覆盖。
+     */
+    private List<Item> quickItems(Set<String> wanted, List<String> order, boolean custom) {
+        PackageManager pm = getPackageManager();
+        Set<String> suspended = SuspendSupport.cached(this);
+        Map<String, Item> map = new HashMap<>();
+        for (String key : wanted) {
+            String pkg = packagePart(key);
+            int userId = userIdPart(key);
+            Item it = new Item();
+            it.pkg = key;
+            it.userId = userId;
+            try {
+                ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+                it.label = pm.getApplicationLabel(ai).toString();
+                // 内存/磁盘缓存里的图标先顶上，缺的等正式刷新再补
+                it.icon = AppIconCache.peekAny(this, pkg);
+                it.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
+                        | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+                it.suspended = userId == 0 && suspended.contains(pkg);
+                it.frozen = it.suspended || !ai.enabled;
+            } catch (Exception e) {
+                it.label = pkg;
+            }
+            if (userId != 0) {
+                it.label += "（双开）";
+            }
+            map.put(key, it);
+        }
+        List<Item> list = new ArrayList<>();
+        if (custom && !order.isEmpty()) {
+            for (String pkg : order) {
+                Item it = map.remove(pkg);
+                if (it != null) {
+                    list.add(it);
+                }
+            }
+        }
+        List<Item> rest = new ArrayList<>(map.values());
+        Collections.sort(rest, FreezeListActivity::byDefault);
+        list.addAll(rest);
+        return list;
+    }
+
     protected void reload() {
         Set<String> wanted = pkgs();
         List<String> order = savedOrder();
         boolean custom = customOrder();
+        // 冷启动首帧：不查 shell（su/pm 命令要几百毫秒），先用 PackageInfo 自带状态画出来，
+        // 后台真值回来后再刷一次，避免白屏等命令。
+        if (!loadedOnce && items.isEmpty() && !wanted.isEmpty()) {
+            items.addAll(quickItems(wanted, order, custom));
+            render();
+        }
         IO.execute(() -> {
             Set<String> disabled = disabledPackages();
             boolean truthOk = disabled != null;
@@ -2736,7 +2789,8 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 if (ai != null) {
                     it.label = pm.getApplicationLabel(ai).toString();
-                    it.icon = ai.loadIcon(pm);
+                    // 首屏只取内存缓存，未命中的图标在下面并行解码，避免串行 loadIcon 拖慢
+                    it.icon = AppIconCache.peek(this, pkg);
                     it.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
                             | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
                 } else {
@@ -2783,6 +2837,39 @@ public class FreezeListActivity extends BaseActivity {
                 list.addAll(map.values());
                 Collections.sort(list, FreezeListActivity::byDefault);
             }
+            // 缓存未命中的图标并行解码：串行 loadIcon 每个 5~20ms，几十个就要几百毫秒。
+            // 解码线程统一由 AppIconCache 的线程池承担，最多等 800ms，超时先用占位图标渲染。
+            List<Item> needIcon = new ArrayList<>();
+            for (Item it : list) {
+                if (it.icon == null) {
+                    needIcon.add(it);
+                }
+            }
+            if (!needIcon.isEmpty()) {
+                final java.util.concurrent.CountDownLatch latch =
+                        new java.util.concurrent.CountDownLatch(needIcon.size());
+                for (Item it : needIcon) {
+                    final Item target = it;
+                    AppIconCache.EXEC.execute(() -> {
+                        try {
+                            String name = packagePart(target.pkg);
+                            ApplicationInfo info = pm.getApplicationInfo(name, 0);
+                            Drawable icon = AppIconCache.load(this, name, info);
+                            if (icon != null) {
+                                target.icon = icon;
+                            }
+                        } catch (Exception ignored) {
+                        } finally {
+                            latch.countDown();
+                        }
+                    });
+                }
+                try {
+                    latch.await(800, java.util.concurrent.TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             main.post(() -> {
                 if (isFinishing() || isDestroyed()) {
                     return;
@@ -2791,6 +2878,8 @@ public class FreezeListActivity extends BaseActivity {
                 items.addAll(list);
                 loadedOnce = true;
                 render();
+                // 上面等图标最多 800ms，超时的那几个继续在后台补，补到再重绘一次
+                loadPendingIconsAsync();
                 verifySuspendedAsync();
                 if (pendingRevealPkg != null) {
                     String pkg = pendingRevealPkg;
@@ -2811,6 +2900,43 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
         });
+    }
+
+    /** 超时仍未拿到图标的项，渲染后继续在后台补；全部补完再重绘一次。 */
+    private void loadPendingIconsAsync() {
+        final List<Item> pending = new ArrayList<>();
+        for (Item it : items) {
+            if (it.icon == null) {
+                pending.add(it);
+            }
+        }
+        if (pending.isEmpty()) {
+            return;
+        }
+        final java.util.concurrent.atomic.AtomicInteger left =
+                new java.util.concurrent.atomic.AtomicInteger(pending.size());
+        final PackageManager pm = getPackageManager();
+        for (final Item it : pending) {
+            AppIconCache.EXEC.execute(() -> {
+                Drawable icon = null;
+                try {
+                    String name = packagePart(it.pkg);
+                    ApplicationInfo info = pm.getApplicationInfo(name, 0);
+                    icon = AppIconCache.load(this, name, info);
+                } catch (Exception ignored) {
+                }
+                final Drawable loaded = icon;
+                main.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    it.icon = loaded;
+                    if (left.decrementAndGet() == 0) {
+                        render();
+                    }
+                });
+            });
+        }
     }
 
     /**
