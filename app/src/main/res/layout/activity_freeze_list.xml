@@ -12,7 +12,7 @@
         android:layout_height="match_parent"
         android:orientation="vertical">
 
-        <!-- 顶栏：左侧 返回+解冻，右侧 减号+加号，标题以屏幕为基准绝对居中 -->
+        <!-- 顶栏：左侧 返回+设置，右侧 减号+加号，标题以屏幕为基准绝对居中 -->
         <FrameLayout
             android:id="@+id/page_header"
             android:layout_width="match_parent"
@@ -35,13 +35,12 @@
                     android:src="@drawable/ic_back" />
 
                 <ImageButton
-                    android:id="@+id/btn_unfreeze"
+                    android:id="@+id/btn_settings"
                     style="@style/PageHeaderActionIcon"
                     android:layout_marginStart="0dp"
                     android:layout_marginEnd="0dp"
-                    android:contentDescription="一键解冻"
-                    android:src="@drawable/ic_unfreeze_small"
-                    android:tint="@color/unlock_icon" />
+                    android:contentDescription="设置"
+                    android:src="@drawable/ic_settings" />
             </LinearLayout>
 
             <TextView
@@ -127,41 +126,7 @@
                         android:orientation="horizontal" />
                 </HorizontalScrollView>
 
-                <TextView
-                    android:id="@+id/layout"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:paddingStart="8dp"
-                    android:paddingTop="7dp"
-                    android:paddingEnd="4dp"
-                    android:paddingBottom="7dp"
-                    android:text="设置"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/backup"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:paddingStart="8dp"
-                    android:paddingTop="7dp"
-                    android:paddingEnd="8dp"
-                    android:paddingBottom="7dp"
-                    android:text="备份"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/restore"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:paddingStart="2dp"
-                    android:paddingTop="7dp"
-                    android:paddingEnd="4dp"
-                    android:paddingBottom="7dp"
-                    android:text="恢复"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
+                
             </LinearLayout>
 
             <TextView

@@ -339,7 +339,7 @@ public class FreezeListActivity extends BaseActivity {
 
     private TextView count;
     private View freezeBtn;
-    private View unfreezeBtn;
+    private View settingsBtn;
     private android.widget.ImageButton editBtn;
     private androidx.recyclerview.widget.RecyclerView grid;
     private GridAdapter gridAdapter;
@@ -589,7 +589,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         count = findViewById(R.id.count);
         freezeBtn = findViewById(R.id.btn_freeze);
-        unfreezeBtn = findViewById(R.id.btn_unfreeze);
+        settingsBtn = findViewById(R.id.btn_settings);
         editBtn = findViewById(R.id.edit);
         grid = findViewById(R.id.grid);
         scrollView = grid;
@@ -601,17 +601,8 @@ public class FreezeListActivity extends BaseActivity {
         if (editBtn != null) {
             editBtn.setOnClickListener(v -> setEditMode(!editMode));
         }
-        View backup = findViewById(R.id.backup);
-        if (backup != null) {
-            backup.setOnClickListener(v -> showBackup());
-        }
-        View restore = findViewById(R.id.restore);
-        if (restore != null) {
-            restore.setOnClickListener(v -> showRestore());
-        }
-        View layoutBtn = findViewById(R.id.layout);
-        if (layoutBtn != null) {
-            layoutBtn.setOnClickListener(v -> showLayoutDialog());
+        if (settingsBtn != null) {
+            settingsBtn.setOnClickListener(v -> showLayoutDialog());
         }
         // 半屏形态底栏没有输入框：左边搜索图标直接进添加应用页（自带搜索与用户/系统切换）
         View panelSearch = findViewById(R.id.panel_search);
@@ -699,11 +690,8 @@ public class FreezeListActivity extends BaseActivity {
             });
         }
 
-        // 一键冻结/解冻不做前置确认，直接执行
+        // 一键冻结不做前置确认，直接执行
         freezeBtn.setOnClickListener(v -> runBatch(true, filtered()));
-        if (unfreezeBtn != null) {
-            unfreezeBtn.setOnClickListener(v -> runBatch(false, filtered()));
-        }
 
         pendingAction = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_ACTION);
         // 「从旧版导入」已移除，清掉历史遗留的迁移标记
@@ -1122,7 +1110,7 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         int color = getColor(R.color.fs_text_muted);
-        int[] ids = {R.id.layout, R.id.backup, R.id.restore, R.id.sys_hint, R.id.count};
+        int[] ids = {R.id.sys_hint, R.id.count};
         for (int id : ids) {
             View v = findViewById(id);
             if (v instanceof TextView) {
@@ -3016,28 +3004,29 @@ public class FreezeListActivity extends BaseActivity {
     private void updateCount(List<Item> shown) {
         boolean empty = shown.isEmpty();
         if (count != null) {
+            String hint;
             if (items.isEmpty()) {
-                count.setText("名单为空，点右上角「+」添加应用");
+                hint = "名单为空，点右上角「+」添加应用";
             } else if (empty) {
-                count.setText("当前筛选下没有应用");
+                hint = "当前筛选下没有应用";
             } else if (editMode) {
-                count.setText("编辑模式：点图标右上角减号移出名单");
+                hint = "编辑模式：点图标右上角减号移出名单";
             } else if (selectMode) {
-                count.setText("多选模式：点图标选择，长按已选图标操作，返回退出");
+                hint = "多选模式：点图标选择，长按已选图标操作，返回退出";
+            } else if (!panelMode) {
+                // 全屏模式不再显示「当前筛选 N 个，点击打开，长按打开菜单」这行提示
+                hint = null;
             } else {
-                count.setText("当前筛选 " + shown.size() + " 个"
+                hint = "当前筛选 " + shown.size() + " 个"
                         + (customOrder() ? " · 自定义顺序" : "")
                         + (moveMode ? "，点击选中或长按拖动可换位"
-                                    : "，点击打开，长按打开菜单"));
+                                    : "，点击打开，长按打开菜单");
             }
+            count.setText(hint == null ? "" : hint);
+            count.setVisibility(hint == null ? View.GONE : View.VISIBLE);
         }
         freezeBtn.setAlpha(empty || working ? 0.4f : 1f);
         freezeBtn.setEnabled(!empty && !working);
-        if (unfreezeBtn != null) {
-            // 一键解冻图标始终保持纯黑（深色模式走高对比浅色）；名单为空只置灰交互，不再把图标淡成 40%
-            unfreezeBtn.setAlpha(1f);
-            unfreezeBtn.setEnabled(!empty && !working);
-        }
     }
 
     /** 搭一个格子并接好交互；显示内容由 bindCellTo 在复用时刷新。 */
