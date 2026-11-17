@@ -34,6 +34,18 @@ public final class SwipeFreeze {
     public static final String PREFS = "freeze_list";
     public static final String KEY_ENABLED = "swipe_freeze_enabled";
     public static final String KEY_TAGS = "swipe_freeze_tags";
+    /** 锁屏冻结开关：独立于划卡冻结，默认关闭。 */
+    public static final String KEY_LOCK_ENABLED = "lock_freeze_enabled";
+    /** 锁屏后延时秒数（0-300），0 表示立即冻结。 */
+    public static final String KEY_LOCK_DELAY = "lock_freeze_delay_seconds";
+    /** 锁屏冻结自己的标签过滤（与划卡冻结互不影响）。 */
+    public static final String KEY_LOCK_TAGS = "lock_freeze_tags";
+    public static final int LOCK_DELAY_MAX = 300;
+    /** 默认「立即冻结」 */
+    public static final int LOCK_DELAY_DEFAULT = 0;
+    /** 设置页探测 LSPosed 模块是否在线：发 ping，模块在 system_server 回 pong */
+    public static final String ACTION_STATUS_PING = "com.jin.freeze.action.STATUS_PING";
+    public static final String ACTION_STATUS_PONG = "com.jin.freeze.action.STATUS_PONG";
     public static final String KEY_PKGS = "pkgs";
     public static final String KEY_TABS = "tabs";
     public static final String KEY_APP_TABS = "app_tabs";
@@ -71,6 +83,38 @@ public final class SwipeFreeze {
 
     public static void setEnabled(Context context, boolean on) {
         prefs(context).edit().putBoolean(KEY_ENABLED, on).apply();
+    }
+
+    public static boolean lockEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_LOCK_ENABLED, false);
+    }
+
+    public static void setLockEnabled(Context context, boolean on) {
+        prefs(context).edit().putBoolean(KEY_LOCK_ENABLED, on).apply();
+    }
+
+    /** 锁屏后延时秒数：0 表示立即冻结，范围 0-300。 */
+    public static int lockDelaySeconds(Context context) {
+        int value = prefs(context).getInt(KEY_LOCK_DELAY, LOCK_DELAY_DEFAULT);
+        return Math.max(0, Math.min(LOCK_DELAY_MAX, value));
+    }
+
+    public static void setLockDelaySeconds(Context context, int seconds) {
+        int value = Math.max(0, Math.min(LOCK_DELAY_MAX, seconds));
+        prefs(context).edit().putInt(KEY_LOCK_DELAY, value).apply();
+    }
+
+    /** 锁屏冻结的标签过滤；null = 从未改过，按「全选」处理。 */
+    public static Set<String> lockSelectedTags(Context context) {
+        if (!prefs(context).contains(KEY_LOCK_TAGS)) {
+            return null;
+        }
+        Set<String> raw = prefs(context).getStringSet(KEY_LOCK_TAGS, null);
+        return raw == null ? null : new HashSet<>(raw);
+    }
+
+    public static void setLockSelectedTags(Context context, Set<String> ids) {
+        prefs(context).edit().putStringSet(KEY_LOCK_TAGS, new HashSet<>(ids)).apply();
     }
 
     /** null = 用户从未改过勾选，按「全选」处理（与默认全勾选一致）。 */
@@ -193,11 +237,15 @@ public final class SwipeFreeze {
             tags.put(pkg, set);
         }
         Set<String> selected = selectedTags(context);
+        Set<String> lockSelected = lockSelectedTags(context);
 
         JSONObject root = new JSONObject();
         try {
             root.put("version", 1);
             root.put("enabled", enabled(context));
+            // 锁屏冻结独立开关与延时（秒），hook 侧锁屏时读取
+            root.put("lock_enabled", lockEnabled(context));
+            root.put("lock_delay", lockDelaySeconds(context));
             root.put("packages", new JSONArray(pkgs));
 
             JSONObject tagsObj = new JSONObject();
@@ -215,6 +263,9 @@ public final class SwipeFreeze {
             // 没写过勾选：不写 selected，hook 侧按「全选」处理
             if (selected != null) {
                 root.put("selected", new JSONArray(selected));
+            }
+            if (lockSelected != null) {
+                root.put("lock_tags", new JSONArray(lockSelected));
             }
         } catch (Exception ignored) {
         }

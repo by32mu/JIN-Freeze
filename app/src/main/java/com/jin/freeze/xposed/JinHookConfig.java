@@ -7,9 +7,11 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -30,19 +32,29 @@ public final class JinHookConfig {
 
     public static final class Snapshot {
         final boolean enabled;
+        /** 锁屏冻结开关（与划卡冻结互不影响） */
+        final boolean lockEnabled;
+        /** 锁屏后延时秒数，0 = 立即冻结 */
+        final int lockDelaySeconds;
         final Set<String> packages;
         final Map<String, Set<String>> tags;
         final Map<String, String> labels;
         /** null = 未写该字段（视为全选） */
         final Set<String> selected;
+        /** 锁屏冻结自己的标签勾选；null = 未写该字段（视为全选） */
+        final Set<String> lockSelected;
 
-        Snapshot(boolean enabled, Set<String> packages, Map<String, Set<String>> tags,
-                 Map<String, String> labels, Set<String> selected) {
+        Snapshot(boolean enabled, boolean lockEnabled, int lockDelaySeconds,
+                 Set<String> packages, Map<String, Set<String>> tags,
+                 Map<String, String> labels, Set<String> selected, Set<String> lockSelected) {
             this.enabled = enabled;
+            this.lockEnabled = lockEnabled;
+            this.lockDelaySeconds = lockDelaySeconds;
             this.packages = packages;
             this.tags = tags;
             this.labels = labels;
             this.selected = selected;
+            this.lockSelected = lockSelected;
         }
     }
 
@@ -61,20 +73,41 @@ public final class JinHookConfig {
         if (snap == null || !snap.enabled || !snap.packages.contains(pkg)) {
             return false;
         }
-        // 一个标签都没勾：不冻结任何应用
-        if (snap.selected != null && snap.selected.isEmpty()) {
+        return passesTags(snap, pkg, snap.selected);
+    }
+
+    /**
+     * 锁屏冻结用：只看名单 + 标签口径，与划卡冻结开关无关
+     * （锁屏冻结是独立开关，关掉划卡不影响锁屏）。
+     */
+    public static List<String> freezablePackages() {
+        List<String> packages = new ArrayList<>();
+        Snapshot snap = snapshot();
+        if (snap == null) {
+            return packages;
+        }
+        for (String pkg : snap.packages) {
+            if (passesTags(snap, pkg, snap.lockSelected)) {
+                packages.add(pkg);
+            }
+        }
+        return packages;
+    }
+
+    /** 标签口径：一个都没勾不冻；包没有标签信息则不参与过滤（按名单冻结）。 */
+    private static boolean passesTags(Snapshot snap, String pkg, Set<String> selected) {
+        if (selected != null && selected.isEmpty()) {
             return false;
         }
         Set<String> tags = snap.tags.get(pkg);
-        // 没有标签信息的老格式：不参与标签过滤，仍按名单冻结
         if (tags == null || tags.isEmpty()) {
             return true;
         }
-        if (snap.selected == null) {
+        if (selected == null) {
             return true;
         }
         for (String tag : tags) {
-            if (snap.selected.contains(tag)) {
+            if (selected.contains(tag)) {
                 return true;
             }
         }
@@ -110,6 +143,8 @@ public final class JinHookConfig {
         String text = read(file);
         JSONObject root = new JSONObject(text);
         boolean enabled = root.optBoolean("enabled", false);
+        boolean lockEnabled = root.optBoolean("lock_enabled", false);
+        int lockDelaySeconds = Math.max(0, Math.min(300, root.optInt("lock_delay", 0)));
 
         Set<String> packages = new HashSet<>();
         JSONArray array = root.optJSONArray("packages");
@@ -161,21 +196,30 @@ public final class JinHookConfig {
             }
         }
 
-        Set<String> selected = null;
-        if (root.has("selected") && !root.isNull("selected")) {
-            selected = new HashSet<>();
-            JSONArray array2 = root.optJSONArray("selected");
-            if (array2 != null) {
-                for (int i = 0; i < array2.length(); i++) {
-                    String id = array2.optString(i, "").trim();
-                    if (!id.isEmpty()) {
-                        selected.add(id);
-                    }
+        Set<String> selected = readIds(root, "selected");
+        Set<String> lockSelected = readIds(root, "lock_tags");
+        return new Snapshot(enabled, lockEnabled, lockDelaySeconds,
+                Collections.unmodifiableSet(packages),
+                Collections.unmodifiableMap(tags), Collections.unmodifiableMap(labels),
+                selected, lockSelected);
+    }
+
+    /** 读字符串数组字段；字段缺失（或 null）= 未设置，返回 null；空数组 = 一个都没勾。 */
+    private static Set<String> readIds(JSONObject root, String key) {
+        if (!root.has(key) || root.isNull(key)) {
+            return null;
+        }
+        Set<String> ids = new HashSet<>();
+        JSONArray array = root.optJSONArray(key);
+        if (array != null) {
+            for (int i = 0; i < array.length(); i++) {
+                String id = array.optString(i, "").trim();
+                if (!id.isEmpty()) {
+                    ids.add(id);
                 }
             }
         }
-        return new Snapshot(enabled, Collections.unmodifiableSet(packages),
-                Collections.unmodifiableMap(tags), Collections.unmodifiableMap(labels), selected);
+        return ids;
     }
 
     private static String read(File file) throws Exception {
