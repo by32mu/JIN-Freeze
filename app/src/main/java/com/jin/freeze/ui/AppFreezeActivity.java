@@ -666,13 +666,29 @@ public class AppFreezeActivity extends BaseActivity {
         icon.setClipToOutline(true);
         row.addView(icon, new LinearLayout.LayoutParams(iconPx, iconPx));
 
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams textsLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        textsLp.leftMargin = Ui.dp(this, 12);
+
         TextView name = Ui.text(this, a.label, 14, Ui.TEXT_PRIMARY, false);
         name.setSingleLine(true);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        nameLp.leftMargin = Ui.dp(this, 12);
-        row.addView(name, nameLp);
+        texts.addView(name, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 添加应用（选择模式）的列表形态：名称下方补一行包名，便于区分同名或名称被截断的应用
+        if (pickMode) {
+            TextView pkg = Ui.text(this, a.pkg, 11, Ui.TEXT_SECONDARY, false);
+            pkg.setSingleLine(true);
+            pkg.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+            LinearLayout.LayoutParams pkgLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            pkgLp.topMargin = Ui.dp(this, 2);
+            texts.addView(pkg, pkgLp);
+        }
+        row.addView(texts, textsLp);
 
         Cell cell = new Cell();
         cell.root = row;

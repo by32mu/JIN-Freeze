@@ -94,8 +94,6 @@ final class SwipeFreezeHook {
                 String reason = removalReason();
                 Object result = proceed.run();
                 if (reason != null && !home && info != null) {
-                    android.util.Log.i(TAG, "ATSS.removeTask pkg=" + info.pkg
-                            + " user=" + info.userId + " reason=" + reason);
                     if (JinHookConfig.shouldFreeze(info.pkg)) {
                         JinFreeze.freeze(info.pkg, reason, info.userId);
                     }
@@ -111,7 +109,6 @@ final class SwipeFreezeHook {
             Object result = proceed.run();
             boolean success = !(result instanceof Boolean) || (Boolean) result;
             if (success && info != null) {
-                android.util.Log.i(TAG, "removeTask pkg=" + info.pkg + " user=" + info.userId);
                 if (JinHookConfig.shouldFreeze(info.pkg)) {
                     JinFreeze.freeze(info.pkg, "swipe", info.userId);
                 }
@@ -132,7 +129,6 @@ final class SwipeFreezeHook {
                 }
             }
             if (!listed.isEmpty()) {
-                android.util.Log.i(TAG, "removeAllVisibleRecentTasks 命中 " + listed.size() + " 个");
                 JinFreeze.freezeAll(listed, "clear-all");
             }
             return result;

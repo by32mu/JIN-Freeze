@@ -162,7 +162,6 @@ final class LockFreezeHook {
         JinHookConfig.Snapshot snap = JinHookConfig.snapshot();
         boolean on = snap != null && snap.lockEnabled;
         int delay = snap == null ? 0 : snap.lockDelaySeconds;
-        android.util.Log.i(TAG, "锁屏: lock=" + on + ", delay=" + delay + "s");
         if (!on) {
             cancelAlarm("锁屏冻结开关关闭");
             return;
@@ -185,11 +184,9 @@ final class LockFreezeHook {
         pendingAt = 0L;
         JinHookConfig.Snapshot snap = JinHookConfig.snapshot();
         if (snap == null || !snap.lockEnabled) {
-            android.util.Log.i(TAG, "闹钟触发但锁屏冻结已关闭，忽略");
             return;
         }
         if (!locked) {
-            android.util.Log.i(TAG, "闹钟触发但已解锁，忽略");
             return;
         }
         freezeAll("lock-timeout");
@@ -198,10 +195,8 @@ final class LockFreezeHook {
     private static void freezeAll(String reason) {
         List<String> packages = JinHookConfig.freezablePackages();
         if (packages.isEmpty()) {
-            android.util.Log.i(TAG, "名单为空或标签未启用，无需冻结 (" + reason + ")");
             return;
         }
-        android.util.Log.i(TAG, "锁屏冻结 " + packages.size() + " 个 (" + reason + ")");
         JinFreeze.freezeAll(packages, reason);
     }
 
@@ -216,7 +211,6 @@ final class LockFreezeHook {
             alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP,
                     triggerAt, alarmPendingIntent());
             pendingAt = triggerAt;
-            android.util.Log.i(TAG, "已设置精确闹钟: " + seconds + "s 后触发");
         } catch (Throwable t) {
             android.util.Log.w(TAG, "设置精确闹钟失败", t);
         }
@@ -234,7 +228,6 @@ final class LockFreezeHook {
         }
         try {
             alarmManager.cancel(alarmPendingIntent());
-            android.util.Log.i(TAG, "已取消冻结闹钟: " + reason);
         } catch (Throwable t) {
             android.util.Log.w(TAG, "取消闹钟失败", t);
         }

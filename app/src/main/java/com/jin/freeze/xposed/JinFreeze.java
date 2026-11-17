@@ -52,9 +52,7 @@ final class JinFreeze {
         }
         EXECUTOR.execute(() -> {
             try {
-                boolean ok = setDisabledUser(pkg, userId);
-                android.util.Log.i("JinSwipeFreeze",
-                        "冻结 " + pkg + " -> " + (ok ? "成功" : "失败") + " (" + reason + ", user=" + userId + ")");
+                setDisabledUser(pkg, userId);
             } finally {
                 IN_FLIGHT.remove(pkg);
             }

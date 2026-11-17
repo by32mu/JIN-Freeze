@@ -205,6 +205,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_FULL_SURFACE = "full_surface";
     /** 全屏里的雪花按钮底板档位：单独记忆，不和半屏共用。 */
     private static final String KEY_FULL_FAB_SURFACE = "full_fab_surface";
+    /** 全屏顶栏（横幅）背景档位：单独记忆；没设过时跟随「全屏背景」，升级后观感不变。 */
+    private static final String KEY_HEADER_SURFACE = "header_surface";
+    /** 全屏标签页胶囊整体档位：单独记忆，默认实心。 */
+    private static final String KEY_TAB_SURFACE = "tab_surface";
     /** 搜索框颜色档位：独立记忆，与全屏/半屏背景都解耦。 */
     private static final String KEY_SEARCH_SURFACE = "search_surface";
     /** 启动时检查 root / Shizuku：入口带上这个标记，页面起来后探测一次。 */
@@ -911,6 +915,20 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
+     * 全屏顶栏（横幅）档位：没单独设过时跟随「全屏背景」，
+     * 这样已有用户升级后横幅观感不变，动过新滑块才改为独立记忆。
+     */
+    private int headerSurfacePct() {
+        int v = prefs().getInt(KEY_HEADER_SURFACE, -1);
+        return v < 0 ? fullSurfacePct() : Math.max(0, Math.min(100, v));
+    }
+
+    /** 全屏标签页胶囊整体档位：默认实心，与页面背景互不影响。 */
+    private int tabSurfacePct() {
+        return Math.max(0, Math.min(100, prefs().getInt(KEY_TAB_SURFACE, SURFACE_SOLID)));
+    }
+
+    /**
      * 全屏页：系统栏留白加到内层内容上，page_root 的背景一直铺到状态栏/导航栏底下；
      * 半屏保持默认（留白加在 content 上）。
      */
@@ -1102,13 +1120,20 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 全屏「同一档位」铺到顶栏与移动模式下的选中高亮框（整页底色在窗口背景上）。
-     * 用户/系统分组胶囊不在其列：胶囊颜色与「全屏背景」透明度调节无关，始终保持原样。
+     * 全屏底板按各自的档位铺：顶栏走「横幅透明度」，标签页胶囊整条走「标签页透明度」，
+     * 移动模式下的选中高亮框仍跟「全屏背景」（整页底色在窗口背景上）。
      * 列表每次重绘后要再调一次，避免新建的视图漏掉。
      */
     private void applyFullscreenSurfaces(int pct) {
         // page_root 的底板已经交给窗口背景（applyWindowBackdrop），这里不再给它上第二层 alpha
-        applySurface(findViewById(R.id.page_header), pct);
+        applySurface(findViewById(R.id.page_header), headerSurfacePct());
+        // 标签页胶囊整条一组：选中/未选中一起缩放，与页面背景互不影响
+        if (tabBar != null) {
+            int tabPct = tabSurfacePct();
+            for (int i = 0; i < tabBar.getChildCount(); i++) {
+                applySurface(tabBar.getChildAt(i), tabPct);
+            }
+        }
         // 格子自身没有底板（图标直接落在页面背景上），不需要遍历列表子 View
         // 搜索框颜色归自己的档位单独管，上面这轮铺完再盖回自己的 alpha
         applySearchSurface();
@@ -6377,10 +6402,76 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
 
+            // 顶栏（横幅）背景：没设过时跟随全屏背景，动过滑块后独立记忆
+            final TextView headerLabel = new TextView(this);
+            headerLabel.setTextSize(11);
+            headerLabel.setTextColor(getColor(R.color.text_secondary));
+            headerLabel.setPadding(0, Ui.dp(this, 8), 0, 0);
+
+            final SeekBar headerBar = new SeekBar(this);
+            headerBar.setMax(100);
+            int headerPct = headerSurfacePct();
+            headerBar.setProgress(headerPct);
+            headerLabel.setText("横幅透明度：" + headerPct + "%（左滑透明，右滑模糊）");
+            headerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                    if (!fromUser) {
+                        return;
+                    }
+                    prefs().edit().putInt(KEY_HEADER_SURFACE, p).apply();
+                    headerLabel.setText("横幅透明度：" + p + "%（左滑透明，右滑模糊）");
+                    applyFullscreenSurface();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar sb) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                }
+            });
+
+            // 标签页胶囊整条：选中/未选中一起缩放，与页面背景互不影响
+            final TextView tabSurfLabel = new TextView(this);
+            tabSurfLabel.setTextSize(11);
+            tabSurfLabel.setTextColor(getColor(R.color.text_secondary));
+            tabSurfLabel.setPadding(0, Ui.dp(this, 8), 0, 0);
+
+            final SeekBar tabSurfBar = new SeekBar(this);
+            tabSurfBar.setMax(100);
+            int tabSurfPct = tabSurfacePct();
+            tabSurfBar.setProgress(tabSurfPct);
+            tabSurfLabel.setText("标签页透明度：" + tabSurfPct + "%（左滑透明，右滑模糊）");
+            tabSurfBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                    if (!fromUser) {
+                        return;
+                    }
+                    prefs().edit().putInt(KEY_TAB_SURFACE, p).apply();
+                    tabSurfLabel.setText("标签页透明度：" + p + "%（左滑透明，右滑模糊）");
+                    applyFullscreenSurface();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar sb) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                }
+            });
+
             // 冻结按钮透明度已统一放到「距底部」下面，这里不再单独占一行
             box.addView(transTitle);
             box.addView(fullBgLabel);
             box.addView(fullBgBar);
+            box.addView(headerLabel);
+            box.addView(headerBar);
+            box.addView(tabSurfLabel);
+            box.addView(tabSurfBar);
         }
 
         // 搜索框透明度：只属于全屏（半屏底部没有搜索框）；独立档位，与背景档位解耦
@@ -8251,8 +8342,6 @@ public class FreezeListActivity extends BaseActivity {
                 PrivShell.Result r = execPm(it.pkg, it.userId, freeze);
                 outputs.put(it.pkg, r == null || r.out == null ? "" : r.out);
             }
-            android.util.Log.i("FreezeBatch", (freeze ? "freeze " : "unfreeze ")
-                    + targets.size() + " pkg took " + (System.currentTimeMillis() - startedAt) + " ms");
             // 批量只回读一次系统真值，逐包按「是否已在目标状态」判成败；读不到才退回文本判断
             Set<String> truth = disabledPackages();
             // 降级通道真值同样只批量读一次：冻结时查「停用没成功的」，解冻时查本机暂停过的

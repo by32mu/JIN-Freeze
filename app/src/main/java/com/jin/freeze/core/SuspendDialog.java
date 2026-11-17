@@ -81,8 +81,6 @@ public final class SuspendDialog {
      */
     public static boolean suspend(Context c, String pkg, String label) {
         if (!available() || pkg == null) {
-            Log.i("JinPm", "dialog unavailable: sdk=" + Build.VERSION.SDK_INT
-                    + " shizuku=" + shizukuState());
             return false;
         }
         try {
@@ -115,8 +113,6 @@ public final class SuspendDialog {
             // 以 root 身份运行的 Shizuku 用本应用包名，shell 身份必须报 com.android.shell
             String caller = Shizuku.getUid() == 0 ? c.getPackageName() : "com.android.shell";
             boolean newSignature = target.getParameterTypes().length >= 9;
-            Log.i("JinPm", METHOD + " args=" + target.getParameterTypes().length
-                    + " caller=" + caller + " userId=" + userId);
             Object[] args = newSignature
                     // Android 15+：…, dialogInfo, flags, suspendingPackage, suspendingUserId, targetUserId
                     ? new Object[]{new String[]{pkg}, Boolean.TRUE, null, null, info, 0,
@@ -125,7 +121,6 @@ public final class SuspendDialog {
                     : new Object[]{new String[]{pkg}, Boolean.TRUE, null, null, info,
                             caller, userId};
             String[] rejected = (String[]) target.invoke(pm, args);
-            Log.i("JinPm", METHOD + " ok, rejected=" + (rejected == null ? 0 : rejected.length));
             return rejected == null || rejected.length == 0;
         } catch (Throwable t) {
             Throwable cause = t instanceof InvocationTargetException && t.getCause() != null
@@ -165,7 +160,6 @@ public final class SuspendDialog {
                 Log.w("JinPm", "hidden api exemption failed: " + t);
             }
             exempted = ok;
-            Log.i("JinPm", "hidden api exemption=" + ok);
         }
     }
 
