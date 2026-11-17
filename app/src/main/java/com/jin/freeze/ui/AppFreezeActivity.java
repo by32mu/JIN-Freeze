@@ -66,6 +66,7 @@ public class AppFreezeActivity extends BaseActivity {
     private static final class App {
         String label;
         String pkg;
+        int userId;
         Drawable icon;
         boolean system;
         boolean frozen;
@@ -268,6 +269,71 @@ public class AppFreezeActivity extends BaseActivity {
         }
     }
 
+    private static String instanceKey(String pkg, int userId) {
+        return pkg + "@" + userId;
+    }
+
+    /** 名单存储键：主用户用纯包名（兼容旧数据），分身才带「@用户」。 */
+    private static String storageKey(String pkg, int userId) {
+        return userId == 0 ? pkg : instanceKey(pkg, userId);
+    }
+
+    /** 判断名单/顺序里的一条记录是否就是当前这个应用实例。 */
+    private static boolean sameInstance(String stored, String pkg, int userId) {
+        return packagePart(stored).equals(pkg) && parseUserId(stored) == userId;
+    }
+
+    private static int parseUserId(String key) {
+        int at = key.lastIndexOf('@');
+        if (at < 0) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(key.substring(at + 1));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    private static String packagePart(String key) {
+        int at = key.lastIndexOf('@');
+        return at > 0 ? key.substring(0, at) : key;
+    }
+
+    private List<Integer> discoverUsers() {
+        Set<Integer> ids = new HashSet<>();
+        ids.add(0);
+        PrivShell.Result r = PrivShell.exec("pm list users", 15);
+        if (r.out != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("UserInfo\\{(\\d+):").matcher(r.out);
+            while (m.find()) {
+                try {
+                    ids.add(Integer.parseInt(m.group(1)));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        List<Integer> result = new ArrayList<>(ids);
+        Collections.sort(result);
+        return result;
+    }
+
+    private Set<String> listPackagesForUser(int userId) {
+        Set<String> packages = new HashSet<>();
+        PrivShell.Result r = PrivShell.exec("pm list packages --user " + userId, 30);
+        if (r.out == null) {
+            return packages;
+        }
+        for (String line : r.out.split("\\n")) {
+            String t = line.trim();
+            if (t.startsWith("package:")) {
+                packages.add(t.substring("package:".length()).trim());
+            }
+        }
+        return packages;
+    }
+
     private void loadApps() {
         if (loading) {
             return;
@@ -285,29 +351,58 @@ public class AppFreezeActivity extends BaseActivity {
             if (disabled == null) {
                 disabled = new HashSet<>();
             }
-            // 降级通道（pm suspend）的包不在 -d 列表里：只查本机暂停过的缓存集合
             Set<String> suspended = hasPriv
                     ? SuspendSupport.suspendedAmong(SuspendSupport.cached(this))
                     : new HashSet<>();
 
             List<App> apps = new ArrayList<>();
             PackageManager pm = getPackageManager();
-            for (PackageInfo pi : pm.getInstalledPackages(0)) {
-                ApplicationInfo ai = pi.applicationInfo;
-                if (ai == null) {
-                    continue;
+            List<Integer> userIds = hasPriv ? discoverUsers() : Collections.singletonList(0);
+            // 每个分身用户单独读一次停用真值，避免把主用户的状态套到分身上
+            Map<Integer, Set<String>> userDisabled = new HashMap<>();
+            for (int userId : userIds) {
+                if (userId != 0) {
+                    userDisabled.put(userId, disabledPackages(userId));
                 }
-                App a = new App();
-                a.label = pm.getApplicationLabel(ai).toString();
-                a.pkg = pi.packageName;
-                a.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
-                        | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
-                a.frozen = disabled.contains(a.pkg) || suspended.contains(a.pkg) || !ai.enabled;
-                try {
-                    a.icon = ai.loadIcon(pm);
-                } catch (Exception ignored) {
+            }
+            for (int userId : userIds) {
+                Set<String> packages = hasPriv ? listPackagesForUser(userId) : new HashSet<>();
+                List<PackageInfo> installed = userId == 0
+                        ? pm.getInstalledPackages(0) : new ArrayList<>();
+                if (userId != 0) {
+                    for (String pkg : packages) {
+                        try {
+                            installed.add(pm.getPackageInfo(pkg, 0));
+                        } catch (Exception ignored) {
+                        }
+                    }
                 }
-                apps.add(a);
+                for (PackageInfo pi : installed) {
+                    ApplicationInfo ai = pi.applicationInfo;
+                    if (ai == null) {
+                        continue;
+                    }
+                    App a = new App();
+                    a.label = pm.getApplicationLabel(ai).toString();
+                    a.pkg = pi.packageName;
+                    a.userId = userId;
+                    if (userId != 0) {
+                        a.label += "（双开）";
+                    }
+                    a.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
+                            | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+                    String key = instanceKey(a.pkg, userId);
+                    Set<String> truthForUser = userId == 0 ? disabled : userDisabled.get(userId);
+                    a.frozen = truthForUser != null
+                            ? (truthForUser.contains(a.pkg)
+                            || (userId == 0 && suspended.contains(a.pkg)))
+                            : !ai.enabled;
+                    try {
+                        a.icon = ai.loadIcon(pm);
+                    } catch (Exception ignored) {
+                    }
+                    apps.add(a);
+                }
             }
             // 选择模式：展示全部应用，已在名单里的也保留，长按可与半屏一样「移除列表并解冻」
             Collections.sort(apps, (x, y) -> {
@@ -432,7 +527,7 @@ public class AppFreezeActivity extends BaseActivity {
         // 勾选只保留当前可见的项：切标签/筛选/搜索后，批量与「确定」不会带上看不见的应用
         Set<String> shownPkgs = new HashSet<>();
         for (App a : shown) {
-            shownPkgs.add(a.pkg);
+            shownPkgs.add(instanceKey(a.pkg, a.userId));
         }
         selected.retainAll(shownPkgs);
         updateBatchBar();
@@ -528,7 +623,7 @@ public class AppFreezeActivity extends BaseActivity {
         Cell cell = new Cell();
         cell.root = box;
         cell.icon = icon;
-        cells.put(a.pkg, cell);
+        cells.put(instanceKey(a.pkg, a.userId), cell);
         bindCell(a, cell);
 
         box.setContentDescription(a.label);
@@ -580,7 +675,7 @@ public class AppFreezeActivity extends BaseActivity {
         Cell cell = new Cell();
         cell.root = row;
         cell.icon = icon;
-        cells.put(a.pkg, cell);
+        cells.put(instanceKey(a.pkg, a.userId), cell);
         bindCell(a, cell);
 
         row.setContentDescription(a.label);
@@ -592,10 +687,11 @@ public class AppFreezeActivity extends BaseActivity {
     private void bindActions(App a, Cell cell, View target) {
         target.setOnClickListener(v -> {
             if (pickMode || batchMode) {
-                if (selected.contains(a.pkg)) {
-                    selected.remove(a.pkg);
+                String key = instanceKey(a.pkg, a.userId);
+                if (selected.contains(key)) {
+                    selected.remove(key);
                 } else {
-                    selected.add(a.pkg);
+                    selected.add(key);
                 }
                 bindCell(a, cell);
                 updateBatchBar();
@@ -637,7 +733,7 @@ public class AppFreezeActivity extends BaseActivity {
             @Override
             public void toggleFreeze() {
                 if (a.frozen) {
-                    doPickUnfreeze(a, cells.get(a.pkg));
+                    doPickUnfreeze(a, cells.get(instanceKey(a.pkg, a.userId)));
                 } else {
                     toggle(a);
                 }
@@ -660,7 +756,7 @@ public class AppFreezeActivity extends BaseActivity {
 
             @Override
             public boolean inList() {
-                return inFreezeList(a.pkg);
+                return inFreezeList(a);
             }
 
             @Override
@@ -679,8 +775,9 @@ public class AppFreezeActivity extends BaseActivity {
         return getSharedPreferences("freeze_list", MODE_PRIVATE);
     }
 
-    private boolean inFreezeList(String pkg) {
-        return new HashSet<>(listPrefs().getStringSet("pkgs", new HashSet<>())).contains(pkg);
+    private boolean inFreezeList(App a) {
+        return new HashSet<>(listPrefs().getStringSet("pkgs", new HashSet<>()))
+                .contains(storageKey(a.pkg, a.userId));
     }
 
     /** 与「冻结列表」里的移除入口同一语义：先摘名单与标签归属，再解冻；解冻失败单独报错。 */
@@ -688,7 +785,7 @@ public class AppFreezeActivity extends BaseActivity {
     private void removeOnlyFromList(App a) {
         SharedPreferences fp = listPrefs();
         Set<String> cur = new HashSet<>(fp.getStringSet("pkgs", new HashSet<>()));
-        if (!cur.remove(a.pkg)) {
+        if (!cur.remove(storageKey(a.pkg, a.userId))) {
             return;
         }
         SharedPreferences.Editor ed = fp.edit().putStringSet("pkgs", cur);
@@ -697,7 +794,7 @@ public class AppFreezeActivity extends BaseActivity {
             StringBuilder sb = new StringBuilder();
             for (String line : raw.split("\n")) {
                 String p = line.trim();
-                if (p.isEmpty() || p.equals(a.pkg)) {
+                if (p.isEmpty() || sameInstance(p, a.pkg, a.userId)) {
                     continue;
                 }
                 if (sb.length() > 0) {
@@ -709,8 +806,9 @@ public class AppFreezeActivity extends BaseActivity {
         }
         try {
             JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
-            if (o.has(a.pkg)) {
-                o.remove(a.pkg);
+            String listKey = storageKey(a.pkg, a.userId);
+            if (o.has(listKey)) {
+                o.remove(listKey);
                 ed.putString("app_tabs", o.toString());
             }
         } catch (Exception ignored) {
@@ -723,14 +821,14 @@ public class AppFreezeActivity extends BaseActivity {
     private void removeFromList(App a) {
         SharedPreferences fp = listPrefs();
         Set<String> cur = new HashSet<>(fp.getStringSet("pkgs", new HashSet<>()));
-        cur.remove(a.pkg);
+        cur.remove(storageKey(a.pkg, a.userId));
         SharedPreferences.Editor ed = fp.edit().putStringSet("pkgs", cur);
         String raw = fp.getString("order", "");
         if (!raw.isEmpty()) {
             StringBuilder sb = new StringBuilder();
             for (String line : raw.split("\n")) {
                 String p = line.trim();
-                if (p.isEmpty() || p.equals(a.pkg)) {
+                if (p.isEmpty() || sameInstance(p, a.pkg, a.userId)) {
                     continue;
                 }
                 if (sb.length() > 0) {
@@ -742,8 +840,9 @@ public class AppFreezeActivity extends BaseActivity {
         }
         try {
             JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
-            if (o.has(a.pkg)) {
-                o.remove(a.pkg);
+            String listKey = storageKey(a.pkg, a.userId);
+            if (o.has(listKey)) {
+                o.remove(listKey);
                 ed.putString("app_tabs", o.toString());
             }
         } catch (Exception ignored) {
@@ -753,7 +852,7 @@ public class AppFreezeActivity extends BaseActivity {
             Toast.makeText(this, "已移出名单", Toast.LENGTH_SHORT).show();
             return;
         }
-        doPickUnfreeze(a, cells.get(a.pkg));
+        doPickUnfreeze(a, cells.get(instanceKey(a.pkg, a.userId)));
     }
 
     /** 更改标签页：读取冻结列表的标签配置，写回 app_tabs，与列表页共用同一份数据。 */
@@ -805,7 +904,7 @@ public class AppFreezeActivity extends BaseActivity {
                 .setItems(targetNames.toArray(new String[0]), (d, w) -> {
                     try {
                         JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
-                        o.put(a.pkg, targetIds.get(w));
+                        o.put(storageKey(a.pkg, a.userId), targetIds.get(w));
                         fp.edit().putString("app_tabs", o.toString()).apply();
                         Toast.makeText(this, "已移动到「" + targetNames.get(w) + "」",
                                 Toast.LENGTH_SHORT).show();
@@ -842,7 +941,7 @@ public class AppFreezeActivity extends BaseActivity {
             cell.icon.clearColorFilter();
             cell.icon.setAlpha(1f);
         }
-        boolean sel = (batchMode || pickMode) && selected.contains(a.pkg);
+        boolean sel = (batchMode || pickMode) && selected.contains(instanceKey(a.pkg, a.userId));
         cell.root.setBackgroundResource(sel
                 ? R.drawable.bg_card_selected : R.drawable.bg_card);
     }
@@ -850,8 +949,8 @@ public class AppFreezeActivity extends BaseActivity {
     /** 添加页内解冻：成功静默恢复彩色，失败展示 pm 真实输出。 */
     private void doPickUnfreeze(App a, Cell cell) {
         IO.execute(() -> {
-            PrivShell.Result r = execPm(a.pkg, false);
-            boolean ok = applied(a.pkg, false, r);
+            PrivShell.Result r = execPm(a.pkg, a.userId, false);
+            boolean ok = applied(a, false, r);
             main.post(() -> {
                 if (isFinishing() || isDestroyed()) {
                     return;
@@ -876,7 +975,11 @@ public class AppFreezeActivity extends BaseActivity {
     /** 选择模式确认：把勾选的包名回传给「冻结列表」。 */
     private void finishWithPicked() {
         Intent data = new Intent();
-        data.putStringArrayListExtra(EXTRA_PICKED, new ArrayList<>(selected));
+        ArrayList<String> picked = new ArrayList<>();
+        for (String key : selected) {
+            picked.add(key);
+        }
+        data.putStringArrayListExtra(EXTRA_PICKED, picked);
         setResult(RESULT_OK, data);
         finish();
     }
@@ -896,14 +999,28 @@ public class AppFreezeActivity extends BaseActivity {
                 // 只在实际读到暂停项时回写缓存：一次读失败不把已暂停的清空
                 SuspendSupport.replace(this, suspended);
             }
+            Map<Integer, Set<String>> userDisabled = new HashMap<>();
+            for (App a : all) {
+                if (a.userId != 0 && !userDisabled.containsKey(a.userId)) {
+                    userDisabled.put(a.userId, disabledPackages(a.userId));
+                }
+            }
             main.post(() -> {
                 refreshing = false;
-                if (isFinishing() || isDestroyed() || !ok) {
+                if (isFinishing() || isDestroyed()) {
                     return;
                 }
                 for (App a : all) {
-                    a.suspended = suspended.contains(a.pkg);
-                    a.frozen = disabled.contains(a.pkg) || a.suspended;
+                    if (a.userId == 0) {
+                        if (!ok) continue;
+                        a.suspended = suspended.contains(a.pkg);
+                        a.frozen = disabled.contains(a.pkg) || a.suspended;
+                    } else {
+                        Set<String> truth = userDisabled.get(a.userId);
+                        if (truth != null) {
+                            a.frozen = truth.contains(a.pkg);
+                        }
+                    }
                 }
                 // 状态变化后按「已冻结在前」的规则重排，避免状态变了位置不动
                 render(search.getText().toString().trim());
@@ -917,7 +1034,7 @@ public class AppFreezeActivity extends BaseActivity {
         batchBtn.setText(on ? "完成" : "批量");
         batchBar.setVisibility(on ? View.VISIBLE : View.GONE);
         for (App a : all) {
-            Cell cell = cells.get(a.pkg);
+            Cell cell = cells.get(instanceKey(a.pkg, a.userId));
             if (cell != null) {
                 bindCell(a, cell);
             }
@@ -980,10 +1097,10 @@ public class AppFreezeActivity extends BaseActivity {
         final boolean toFreeze = !a.frozen;
         working = true;
         IO.execute(() -> {
-            PrivShell.Result r = execPm(a.pkg, toFreeze);
-            boolean ok = applied(a.pkg, toFreeze, r);
-            // 系统应用被 ROM 拦住停用时，自动降级为 pm suspend
-            boolean blocked = toFreeze && !ok && SuspendSupport.romBlocked(r.out);
+            PrivShell.Result r = execPm(a.pkg, a.userId, toFreeze);
+            boolean ok = applied(a, toFreeze, r);
+            // 系统应用被 ROM 拦住停用时，自动降级为 pm suspend（只覆盖主用户）
+            boolean blocked = toFreeze && a.userId == 0 && !ok && SuspendSupport.romBlocked(r.out);
             if (blocked) {
                 PrivShell.Result s = SuspendSupport.suspend(this, a.pkg, a.label);
                 if (suspendApplied(a.pkg, s)) {
@@ -1038,10 +1155,11 @@ public class AppFreezeActivity extends BaseActivity {
         }
         working = true;
         IO.execute(() -> {
-            PrivShell.Result r = execPm(a.pkg, false);
-            boolean ok = applied(a.pkg, false, r);
+            PrivShell.Result r = execPm(a.pkg, a.userId, false);
+            boolean ok = applied(a, false, r);
             // 撤销暂停失败时单独给一句，不落到通用的「启用未生效」
-            final String failReason = !ok && SuspendSupport.cached(this).contains(a.pkg)
+            final String failReason = !ok && a.userId == 0
+                    && SuspendSupport.cached(this).contains(a.pkg)
                     && Boolean.TRUE.equals(SuspendSupport.suspendedOne(a.pkg))
                     ? "本机不允许取消暂停，无法打开" : null;
             main.post(() -> {
@@ -1072,8 +1190,13 @@ public class AppFreezeActivity extends BaseActivity {
 
     /** 批量冻结/解冻选中的应用：逐条执行并汇总成功/失败，失败项带 pm 原始报错。 */
     private void runBatch(boolean freeze) {
-        final List<String> targets = new ArrayList<>(selected);
-        if (targets.isEmpty()) {
+        final List<App> targetApps = new ArrayList<>();
+        for (App a : all) {
+            if (selected.contains(instanceKey(a.pkg, a.userId))) {
+                targetApps.add(a);
+            }
+        }
+        if (targetApps.isEmpty()) {
             return;
         }
         working = true;
@@ -1083,44 +1206,52 @@ public class AppFreezeActivity extends BaseActivity {
         IO.execute(() -> {
             Map<String, PrivShell.Result> results = new HashMap<>();
             Set<String> degraded = new HashSet<>();
-            for (String pkg : targets) {
-                PrivShell.Result r = execPm(pkg, freeze);
-                results.put(pkg, r);
-                // 被 ROM 拦住停用的包就地降级暂停，其余包行为不变
-                if (freeze && SuspendSupport.romBlocked(r.out)) {
+            for (App app : targetApps) {
+                String pkg = app.pkg;
+                PrivShell.Result r = execPm(pkg, app.userId, freeze);
+                results.put(instanceKey(pkg, app.userId), r);
+                // 分身实例使用带用户 ID 的 pm 命令；暂停降级暂只保留主用户路径。
+                if (freeze && app.userId == 0 && SuspendSupport.romBlocked(r.out)) {
                     degraded.add(pkg);
-                    results.put(pkg, SuspendSupport.suspend(this, pkg, labelOf(pkg)));
+                    results.put(instanceKey(pkg, app.userId),
+                            SuspendSupport.suspend(this, pkg, app.label));
                 }
             }
             // 批量只回读一次真值，逐包按「是否已在目标状态」判成败
             Set<String> truth = disabledPackages();
             // 降级通道真值同样只批量读一次：冻结查「停用没成功的」，解冻查本机暂停过的
             Set<String> suspendCandidates = new HashSet<>();
+            for (App app : targetApps) {
+                if (app.userId == 0) {
+                    suspendCandidates.add(app.pkg);
+                }
+            }
             if (freeze) {
-                for (String pkg : targets) {
-                    if (truth == null || !truth.contains(pkg)) {
-                        suspendCandidates.add(pkg);
-                    }
+                if (truth != null) {
+                    suspendCandidates.removeIf(pkg -> truth.contains(pkg));
                 }
             } else {
-                suspendCandidates.addAll(SuspendSupport.cached(this));
-                suspendCandidates.retainAll(targets);
+                suspendCandidates.retainAll(SuspendSupport.cached(this));
             }
             Set<String> suspendedTruth = SuspendSupport.suspendedAmong(suspendCandidates);
             if (freeze) {
                 SuspendSupport.remember(this, suspendedTruth);
             } else {
                 Set<String> next = SuspendSupport.cached(this);
-                next.removeAll(targets);
+                next.removeAll(suspendCandidates);
                 next.addAll(suspendedTruth);
                 SuspendSupport.replace(this, next);
             }
             int okCount = 0;
             List<String> fails = new ArrayList<>();
-            for (String pkg : targets) {
-                PrivShell.Result r = results.get(pkg);
+            for (App app : targetApps) {
+                String pkg = app.pkg;
+                String key = instanceKey(pkg, app.userId);
+                PrivShell.Result r = results.get(key);
                 boolean ok;
-                if (truth != null) {
+                if (app.userId != 0) {
+                    ok = isPmOk(r);
+                } else if (truth != null) {
                     boolean dis = truth.contains(pkg);
                     ok = freeze ? (dis || suspendedTruth.contains(pkg))
                             : (!dis && !suspendedTruth.contains(pkg));
@@ -1130,8 +1261,7 @@ public class AppFreezeActivity extends BaseActivity {
                 if (ok) {
                     okCount++;
                 } else {
-                    // 批量失败清单只列应用名 + 短原因，不贴 pm 栈
-                    fails.add(labelOf(pkg) + "：" + (degraded.contains(pkg)
+                    fails.add(app.label + "：" + (degraded.contains(pkg)
                             ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(r, freeze)));
                 }
             }
@@ -1165,9 +1295,14 @@ public class AppFreezeActivity extends BaseActivity {
 
     /** 执行 pm，返回完整结果（含退出码与是否超时），成败不在这里判。 */
     private PrivShell.Result execPm(String pkg, boolean freeze) {
+        return execPm(pkg, 0, freeze);
+    }
+
+    private PrivShell.Result execPm(String pkg, int userId, boolean freeze) {
         String cmd = freeze
-                ? "pm disable-user --user 0 " + pkg
-                : "pm unsuspend --user 0 " + pkg + "; pm enable --user 0 " + pkg;
+                ? "pm disable-user --user " + userId + " " + pkg
+                : "pm unsuspend --user " + userId + " " + pkg
+                + "; pm enable --user " + userId + " " + pkg;
         return PrivShell.exec(cmd, 30);
     }
 
@@ -1177,7 +1312,12 @@ public class AppFreezeActivity extends BaseActivity {
      * 两者必须分开，否则「一个都没冻结」会被当成读取失败。
      */
     private Set<String> disabledPackages() {
-        PrivShell.Result r = PrivShell.exec("pm list packages -d --user 0", 30);
+        return disabledPackages(0);
+    }
+
+    /** 读指定用户下的停用包：分身必须按自己的用户查。 */
+    private Set<String> disabledPackages(int userId) {
+        PrivShell.Result r = PrivShell.exec("pm list packages -d --user " + userId, 30);
         if (r.timeout) {
             return null;
         }
@@ -1203,6 +1343,14 @@ public class AppFreezeActivity extends BaseActivity {
      * 冻结 = 在禁用列表里，或（降级通道）处于暂停态；
      * 解冻 = 既不在禁用列表，也确实退出了暂停。
      */
+    /** 按应用实例判定：分身查不到主用户禁用列表，只能按命令输出判断。 */
+    private boolean applied(App a, boolean freeze, PrivShell.Result r) {
+        if (a.userId != 0) {
+            return isPmOk(r);
+        }
+        return applied(a.pkg, freeze, r);
+    }
+
     private boolean applied(String pkg, boolean freeze, PrivShell.Result r) {
         Set<String> truth = disabledPackages();
         if (truth == null) {
@@ -1262,6 +1410,12 @@ public class AppFreezeActivity extends BaseActivity {
         Intent i = getPackageManager().getLaunchIntentForPackage(a.pkg);
         if (i == null) {
             Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // 分身要在它自己的用户下启动，否则打开的是主应用
+        if (a.userId != 0 && i.getComponent() != null) {
+            PrivShell.exec("am start --user " + a.userId + " -n "
+                    + i.getComponent().flattenToShortString(), 15);
             return;
         }
         try {

@@ -34,6 +34,7 @@ import android.view.animation.DecelerateInterpolator;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -91,6 +92,27 @@ public class FreezeListActivity extends BaseActivity {
 
     private static final String PREFS = "freeze_list";
     private static final String KEY_PKGS = "pkgs";
+
+    private static String instanceKey(String pkg, int userId) {
+        return pkg + "@" + userId;
+    }
+
+    /** 落盘用的键：主用户沿用纯包名（兼容旧名单），分身才带「@用户」后缀。 */
+    private static String storageKey(String pkg, int userId) {
+        return userId == 0 ? pkg : instanceKey(pkg, userId);
+    }
+
+    private static String packagePart(String key) {
+        int at = key.lastIndexOf('@');
+        return at > 0 ? key.substring(0, at) : key;
+    }
+
+    private static int userIdPart(String key) {
+        int at = key.lastIndexOf('@');
+        if (at < 0) return 0;
+        try { return Integer.parseInt(key.substring(at + 1)); }
+        catch (NumberFormatException ignored) { return 0; }
+    }
     private static final String KEY_ORDER = "order";
     private static final String KEY_CUSTOM = "custom_order";
     private static final int COLUMNS = 5;
@@ -211,6 +233,7 @@ public class FreezeListActivity extends BaseActivity {
     private static final int INTRO_OUT_MS = 340;
     private static final class Item {
         String pkg;
+        int userId;
         String label;
         Drawable icon;
         boolean system;
@@ -235,6 +258,8 @@ public class FreezeListActivity extends BaseActivity {
         /** 最新触点：长按触发前再核一次是否仍在抖动范围内，滑动过就不算长按。 */
         float lastX;
         float lastY;
+        /** 多选态选中后加在 iconBox 上的圆角描边圈，removeSelectRing 用它 removeView。 */
+        View selectRing;
     }
 
     /**
@@ -357,6 +382,15 @@ public class FreezeListActivity extends BaseActivity {
     private boolean dragMoved;
     /** 最近一次长按触发时间：用于吞掉紧接着的松手点击。 */
     private long lastLongPressAt;
+    /** 多选模式：第一次长按进入，第二次长按弹批量操作菜单。 */
+    private boolean selectMode;
+    /** 多选模式下已选中的包名集合；退出多选时清空。 */
+    private final Set<String> selectedPkgs = new HashSet<>();
+    /** 批量操作的目标快照：弹窗打开那一刻定格，退出多选清空选中后仍能执行。 */
+    private final List<Item> batchTargets = new ArrayList<>();
+    /** 多选态顶部已选图标横排（懒加载），选中增减时刷新。 */
+    private HorizontalScrollView selectStrip;
+    private LinearLayout selectStripRow;
     /** 半屏面板可拖高度范围（px），随拖动实时夹紧；只约束内容区，不含把手。 */
     private int panelMinHpx;
     private int panelMaxHpx;
@@ -450,15 +484,18 @@ public class FreezeListActivity extends BaseActivity {
                 if (picked == null || picked.isEmpty()) {
                     return;
                 }
+                List<String> normalized = new ArrayList<>();
+                for (String key : picked) {
+                    normalized.add(storageKey(packagePart(key), userIdPart(key)));
+                }
                 Set<String> cur = new HashSet<>(pkgs());
-                // 记住第一个真正新增的包名，刷新完成后定位到它真正所属的标签
-                for (String p : picked) {
-                    if (!cur.contains(p)) {
-                        pendingRevealPkg = p;
+                for (String key : normalized) {
+                    if (!cur.contains(key)) {
+                        pendingRevealPkg = key;
                         break;
                     }
                 }
-                cur.addAll(picked);
+                cur.addAll(normalized);
                 prefs().edit().putStringSet(KEY_PKGS, cur).apply();
                 SwipeFreeze.syncAsync(this);
                 reload();
@@ -1963,6 +2000,11 @@ public class FreezeListActivity extends BaseActivity {
      */
     @Override
     public void onBackPressed() {
+        // 多选态优先退出多选，不直接关面板
+        if (selectMode) {
+            exitSelectMode();
+            return;
+        }
         if (panelMode) {
             closeWithIntro(() -> {
                 finishAndRemoveTask();
@@ -2668,19 +2710,30 @@ public class FreezeListActivity extends BaseActivity {
             // 首屏只用本机暂停缓存渲染；逐个 dumpsys 复核耗时（18 个包约 1.2s），
             // 放到渲染完成后的后台做，见 verifySuspendedAsync()
             Set<String> suspended = new HashSet<>(SuspendSupport.cached(this));
+            // 分身按各自用户读一次停用真值，主用户与分身的状态互不影响
+            Map<Integer, Set<String>> cloneDisabled = new HashMap<>();
+            for (String key : wanted) {
+                int uid = userIdPart(key);
+                if (uid != 0 && !cloneDisabled.containsKey(uid)) {
+                    cloneDisabled.put(uid, disabledPackagesFor(uid));
+                }
+            }
             PackageManager pm = getPackageManager();
             Map<String, Item> map = new HashMap<>();
             Set<String> kept = new HashSet<>();
             Set<String> removed = new HashSet<>();
-            for (String pkg : wanted) {
+            for (String key : wanted) {
+                String pkg = packagePart(key);
+                int userId = userIdPart(key);
                 Item it = new Item();
-                it.pkg = pkg;
+                it.pkg = key;
+                it.userId = userId;
                 ApplicationInfo ai = null;
                 try {
                     ai = pm.getApplicationInfo(pkg, 0);
                 } catch (PackageManager.NameNotFoundException e) {
                     // 已卸载：从名单（及标签归属）里移除
-                    removed.add(pkg);
+                    removed.add(key);
                     continue;
                 } catch (Exception ignored) {
                 }
@@ -2692,15 +2745,24 @@ public class FreezeListActivity extends BaseActivity {
                 } else {
                     it.label = pkg;
                 }
-                it.suspended = suspended.contains(pkg);
-                it.frozen = truthOk ? (disabled.contains(pkg) || it.suspended)
-                        : (ai != null && !ai.enabled);
-                kept.add(pkg);
-                map.put(pkg, it);
+                if (userId == 0) {
+                    it.suspended = suspended.contains(pkg);
+                    it.frozen = truthOk ? (disabled.contains(pkg) || it.suspended)
+                            : (ai != null && !ai.enabled);
+                } else {
+                    Set<String> cloneTruth = cloneDisabled.get(userId);
+                    it.frozen = cloneTruth != null ? cloneTruth.contains(pkg)
+                            : (ai != null && !ai.enabled);
+                }
+                if (userId != 0) {
+                    it.label += "（双开）";
+                }
+                kept.add(key);
+                map.put(key, it);
             }
             if (!removed.isEmpty()) {
-                for (String pkg : removed) {
-                    appTabs.remove(pkg);
+                for (String key : removed) {
+                    appTabs.remove(key);
                 }
                 saveAppTabs();
             }
@@ -2789,7 +2851,12 @@ public class FreezeListActivity extends BaseActivity {
      * 不能把「空」当成读失败，否则会把全部条目渲染成未冻结。
      */
     private Set<String> disabledPackages() {
-        PrivShell.Result r = PrivShell.exec("pm list packages -d --user 0", 30);
+        return disabledPackagesFor(0);
+    }
+
+    /** 读指定用户下的停用包；分身必须按自己的用户查，不能共用 user 0 的结果。 */
+    private Set<String> disabledPackagesFor(int userId) {
+        PrivShell.Result r = PrivShell.exec("pm list packages -d --user " + userId, 30);
         if (r.timeout) {
             return null;
         }
@@ -2941,6 +3008,9 @@ public class FreezeListActivity extends BaseActivity {
             gridAdapter.submit(shown);
         }
         reapplyFullscreenSurfaces();
+        // render 之后 cell 都绑定好了；如果还在多选态，补上抖动和选中圈
+        refreshAllCellSelection();
+        refreshSelectStrip();
     }
 
     private void updateCount(List<Item> shown) {
@@ -2952,6 +3022,8 @@ public class FreezeListActivity extends BaseActivity {
                 count.setText("当前筛选下没有应用");
             } else if (editMode) {
                 count.setText("编辑模式：点图标右上角减号移出名单");
+            } else if (selectMode) {
+                count.setText("多选模式：点图标选择，长按已选图标操作，返回退出");
             } else {
                 count.setText("当前筛选 " + shown.size() + " 个"
                         + (customOrder() ? " · 自定义顺序" : "")
@@ -3038,6 +3110,8 @@ public class FreezeListActivity extends BaseActivity {
         cell.name = name;
         cell.badge = badge;
         cell.suspendBadge = suspendBadge;
+        // 把 Cell 挂到 root 上：多选态要靠它反查可见格子的抖动/选中圈
+        box.setTag(cell);
         // 监听器不绑定具体应用：拖拽换位后只重绑数据，点击/长按跟着当前数据走
         badge.setOnClickListener(v -> {
             if (cell.item == null) {
@@ -3056,8 +3130,13 @@ public class FreezeListActivity extends BaseActivity {
             if (cur == null || editMode) {
                 return;
             }
-            // 长按刚触发过（已弹出操作单）：吞掉这次松手带来的点击
+            // 长按刚触发过（已弹出操作单/进入多选）：吞掉这次松手带来的点击
             if (android.os.SystemClock.uptimeMillis() - lastLongPressAt < 800) {
+                return;
+            }
+            // 多选模式下点击 → toggle 选中
+            if (selectMode) {
+                toggleSelect(cur);
                 return;
             }
             if (moveMode) {
@@ -3091,6 +3170,15 @@ public class FreezeListActivity extends BaseActivity {
             }
             box.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
                     android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+            if (selectMode) {
+                // 多选态：长按已圈选的图标 → 弹批量操作单；长按未选的 → 先圈上
+                if (selectedPkgs.contains(cell.item.pkg)) {
+                    showBatchSheet();
+                } else {
+                    toggleSelect(cell.item);
+                }
+                return;
+            }
             showAppSheet(cell.item);
         };
         box.setOnTouchListener((v, e) -> {
@@ -3369,6 +3457,8 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         cell.name.setVisibility(showName ? View.VISIBLE : View.GONE);
+        // 滚动复用/重绑时同步多选视觉：圈跟随当前选中集合
+        if (selectMode && selectedPkgs.contains(it.pkg)) addSelectRing(cell); else removeSelectRing(cell);
     }
 
     /** 按项刷新：只让可见格子重绑数据，不重建视图、不动滚动位置。 */
@@ -3379,6 +3469,8 @@ public class FreezeListActivity extends BaseActivity {
         updateCount(gridAdapter.shown());
         gridAdapter.refreshBound();
         reapplyFullscreenSurfaces();
+        // rebind 之后 cell 被 adapter 复用/重绑，多选态要重新补抖动和选中圈
+        refreshAllCellSelection();
     }
 
     // ---------------- 点击移动图标（移动模式） ----------------
@@ -3520,6 +3612,178 @@ public class FreezeListActivity extends BaseActivity {
 
     // ---------------- 长按底部操作单 ----------------
 
+    /** 多选入口：长按菜单里点了「多选」→ sheet dismiss 后调用；进入多选态。 */
+    private void enterSelectMode() {
+        selectMode = true;
+        selectedPkgs.clear();
+        Toast.makeText(this, "已进入多选模式：点图标选择，长按已选图标操作", Toast.LENGTH_SHORT).show();
+        updateSelectHint();
+        refreshSelectStrip();
+    }
+
+    /** 退出多选：清选中、移除圈、收起顶部图标条。 */
+    private void exitSelectMode() {
+        selectMode = false;
+        selectedPkgs.clear();
+        for (Cell c : allCells()) {
+            removeSelectRing(c);
+        }
+        if (count != null && gridAdapter != null) updateCount(gridAdapter.shown());
+        refreshSelectStrip();
+    }
+
+    /** 多选态下更新顶部提示文案（不显示数量，选中项用图标横排展示）。 */
+    private void updateSelectHint() {
+        if (count != null && selectMode) {
+            count.setText("多选模式：点图标选择，长按已选图标操作，返回退出");
+        }
+    }
+
+    /** 面板顶部的已选图标横排：懒加载插入在列表上方，选中增减时实时重建。 */
+    private void ensureSelectStrip() {
+        if (selectStrip != null && selectStrip.getParent() != null) return;
+        if (grid == null || !(grid.getParent() instanceof ViewGroup)) return;
+        ViewGroup holder = (ViewGroup) grid.getParent();
+        // 全屏：grid 直接放在竖向 LinearLayout 里，插在 grid 上方
+        // 半屏：grid 在带 weight 的 FrameLayout 里，需要插到面板 LinearLayout 中该容器上方
+        ViewGroup host;
+        int idx;
+        if (holder instanceof LinearLayout) {
+            host = holder;
+            idx = holder.indexOfChild(grid);
+        } else if (holder.getParent() instanceof LinearLayout) {
+            host = (ViewGroup) holder.getParent();
+            idx = host.indexOfChild(holder);
+        } else {
+            host = holder;
+            idx = holder.indexOfChild(grid);
+        }
+
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        hsv.setClipToPadding(false);
+        hsv.setVisibility(View.GONE);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        int pad = Ui.dp(this, 14);
+        row.setPadding(pad, Ui.dp(this, 6), pad, Ui.dp(this, 6));
+        hsv.addView(row, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        int idx2 = idx < 0 ? host.getChildCount() : idx;
+        if (host instanceof LinearLayout) {
+            host.addView(hsv, idx2, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            host.addView(hsv, idx2);
+        }
+        selectStrip = hsv;
+        selectStripRow = row;
+    }
+
+    /** 按当前选中集合重建顶部图标条；退出多选时整条隐藏。 */
+    private void refreshSelectStrip() {
+        if (selectMode) ensureSelectStrip();
+        if (selectStrip == null || selectStripRow == null) return;
+        selectStripRow.removeAllViews();
+        if (!selectMode) {
+            selectStrip.setVisibility(View.GONE);
+            return;
+        }
+        int sz = Ui.dp(this, 30);
+        int gap = Ui.dp(this, 6);
+        for (Item it : items) {
+            if (!selectedPkgs.contains(it.pkg)) continue;
+            ImageView iv = new ImageView(this);
+            iv.setImageDrawable(it.icon != null ? it.icon
+                    : androidx.core.content.ContextCompat.getDrawable(this, R.drawable.ic_launcher));
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            iv.setContentDescription(it.label);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
+            lp.rightMargin = gap;
+            selectStripRow.addView(iv, lp);
+        }
+        selectStrip.setVisibility(selectStripRow.getChildCount() == 0 ? View.GONE : View.VISIBLE);
+    }
+
+    /** 多选态下点击 cell 切换选中圈。 */
+    private void toggleSelect(Item it) {
+        if (it == null) return;
+        Cell c = findCell(it.pkg);
+        boolean already = selectedPkgs.contains(it.pkg);
+        if (already) {
+            selectedPkgs.remove(it.pkg);
+            if (c != null) removeSelectRing(c);
+        } else {
+            selectedPkgs.add(it.pkg);
+            if (c != null) addSelectRing(c);
+        }
+        // 同一屏幕上可能有别的 cell 状态变了（一般不会，但以防复用错位）
+        for (Cell x : allCells()) {
+            if (x.item != null && selectedPkgs.contains(x.item.pkg)) addSelectRing(x);
+        }
+        updateSelectHint();
+        refreshSelectStrip();
+    }
+
+    /** 遍历可见 cell：按当前选中集合补圈/去圈。 */
+    private void refreshAllCellSelection() {
+        for (Cell c : allCells()) {
+            if (c.item == null || c.iconBox == null) continue;
+            if (selectedPkgs.contains(c.item.pkg)) addSelectRing(c); else removeSelectRing(c);
+        }
+    }
+
+    /** 给 iconBox 加选中圈：画在图标上层，半透明主色填充 + 3dp 描边，避免被应用图标盖住。 */
+    private void addSelectRing(Cell c) {
+        if (c.iconBox == null) return;
+        if (c.selectRing != null) return;
+        View ring = new View(this);
+        int strokePx = Math.max(2, (int) (3f * getResources().getDisplayMetrics().density));
+        int radius = Math.max(Ui.dp(this, 6), (int) (computedIconPx() * 0.18f));
+        int primary = Ui.primary(this);
+        android.graphics.drawable.GradientDrawable draw = new android.graphics.drawable.GradientDrawable();
+        draw.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        draw.setColor((primary & 0x00FFFFFF) | 0x33000000);
+        draw.setCornerRadius(radius);
+        draw.setStroke(strokePx, primary);
+        ring.setBackground(draw);
+        ring.setClickable(false);
+        ring.setFocusable(false);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        // 加在最后一层：图标、角标都在它下面，圈完整可见
+        c.iconBox.addView(ring, lp);
+        c.selectRing = ring;
+    }
+
+    private void removeSelectRing(Cell c) {
+        if (c.iconBox == null || c.selectRing == null) return;
+        c.iconBox.removeView(c.selectRing);
+        c.selectRing = null;
+    }
+
+    /** 按包名找可见 cell（多选时包名和 cell.item 一一对应，不会冲突）。 */
+    private Cell findCell(String pkg) {
+        for (Cell c : allCells()) {
+            if (c.item != null && pkg.equals(c.item.pkg)) return c;
+        }
+        return null;
+    }
+
+    /** 取当前屏幕上所有可见 cell（grid 里的 viewHolder 集合）。 */
+    private List<Cell> allCells() {
+        List<Cell> out = new ArrayList<>();
+        if (grid == null) return out;
+        for (int i = 0; i < grid.getChildCount(); i++) {
+            View v = grid.getChildAt(i);
+            Object tag = v.getTag();
+            if (tag instanceof Cell) out.add((Cell) tag);
+        }
+        return out;
+    }
+
     /** 长按不拖动松手：底部半屏操作单（冰箱式），拖动排序不进这里。 */
     private void showAppSheet(Item it) {
         // 选项框背景与宿主页同一档透明度：半屏取 panel_surface，全屏取 full_surface
@@ -3566,7 +3830,388 @@ public class FreezeListActivity extends BaseActivity {
             public void removeAndUnfreeze() {
                 FreezeListActivity.this.removeAndUnfreeze(it);
             }
+
+            @Override
+            public boolean multiSelectEnabled() {
+                return true;
+            }
+
+            @Override
+            public void startMultiSelect() {
+                enterSelectMode();
+                toggleSelect(it);
+            }
         });
+    }
+
+    // ---------------- 多选批量操作单 ----------------
+
+    /** 多选态下第二次长按触发：底部批量操作单，复用 AppActionSheet 视觉风格。 */
+    private void showBatchSheet() {
+        if (selectedPkgs.isEmpty()) return;
+        batchTargets.clear();
+        for (Item it : items) {
+            if (selectedPkgs.contains(it.pkg)) batchTargets.add(it);
+        }
+        final int n = batchTargets.size();
+
+        final android.graphics.Bitmap wallpaper =
+                getSharedPreferences(WallpaperSource.PREF, MODE_PRIVATE)
+                        .getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)
+                        ? WallpaperSource.sheetBitmap(this, srcMode()) : null;
+        final boolean onWallpaper = wallpaper != null;
+        final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
+        final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(this);
+        final int lineColor = onWallpaper ? 0x33FFFFFF : Ui.color(this, R.color.divider);
+
+        final com.google.android.material.bottomsheet.BottomSheetDialog sheet =
+                new com.google.android.material.bottomsheet.BottomSheetDialog(this, R.style.Theme_Jin_Sheet);
+
+        android.widget.FrameLayout outer = new android.widget.FrameLayout(this);
+        outer.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 12), Ui.dp(this, 56));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        Drawable cardBg;
+        if (onWallpaper) {
+            cardBg = new android.graphics.drawable.LayerDrawable(new Drawable[]{
+                    new WallpaperDrawable(wallpaper, 0),
+                    new android.graphics.drawable.ColorDrawable(0x66000000)});
+        } else {
+            cardBg = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_dialog).mutate();
+        }
+        content.setBackground(cardBg);
+        content.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        final int radius = Ui.promptRadius(this);
+        content.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View v, android.graphics.Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), radius);
+            }
+        });
+        content.setClipToOutline(true);
+        outer.addView(content, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 顶部已选图标横排：替代「已选 N 项」文字，横向可滚动
+        HorizontalScrollView headScroll = new HorizontalScrollView(this);
+        headScroll.setHorizontalScrollBarEnabled(false);
+        headScroll.setClipToPadding(false);
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        headRow.setPadding(Ui.dp(this, 18), Ui.dp(this, 14), Ui.dp(this, 18), Ui.dp(this, 10));
+        int headIcon = Ui.dp(this, 34);
+        int headGap = Ui.dp(this, 6);
+        for (Item it : batchTargets) {
+            ImageView iv = new ImageView(this);
+            iv.setImageDrawable(it.icon != null ? it.icon
+                    : androidx.core.content.ContextCompat.getDrawable(this, R.drawable.ic_launcher));
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            iv.setContentDescription(it.label);
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(headIcon, headIcon);
+            ilp.rightMargin = headGap;
+            headRow.addView(iv, ilp);
+        }
+        headScroll.addView(headRow, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        content.addView(headScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        batchDivider(content, lineColor);
+
+        // 先扫一遍选中项，看 frozen / unfrozen 各有多少（按钮上标数量，但两个都常驻）
+        int frozenCnt = 0;
+        int unfrozenCnt = 0;
+        for (Item it : batchTargets) {
+            if (it.frozen) frozenCnt++; else unfrozenCnt++;
+        }
+        batchItem(R.drawable.ic_sc_freeze, "冻结（" + unfrozenCnt + "）",
+                () -> batchFreeze(), sheet, fg, iconFg, content, true);
+        batchItem(R.drawable.ic_sc_unfreeze, "解冻（" + frozenCnt + "）",
+                () -> batchUnfreeze(), sheet, fg, iconFg, content, true);
+        batchDivider(content, lineColor);
+        batchItem(R.drawable.ic_action_tag, "更改标签页", () -> batchMoveTab(), sheet, fg, iconFg, content, true);
+        batchItem(R.drawable.ic_action_home, "添加到桌面", () -> batchPinHome(), sheet, fg, iconFg, content, true);
+        batchItem(R.drawable.ic_minus, "从列表移除", () -> batchRemove(false), sheet, fg, iconFg, content, true);
+        batchDivider(content, lineColor);
+        batchItem(R.drawable.ic_sc_unfreeze, "移除列表并解冻", () -> batchRemove(true), sheet, fg, iconFg, content, true);
+        batchDivider(content, lineColor);
+        batchItem(R.drawable.ic_back, "返回继续操作",
+                () -> sheet.dismiss(), sheet, fg, iconFg, content, false);
+
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.addView(outer);
+        sheet.setContentView(sv);
+        sheet.getBehavior().setState(com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED);
+        sheet.setOnShowListener(d -> AppActionSheet.makeSheetTransparent(sheet));
+        // 默认：弹窗收起即退出多选（点空白/返回键）
+        sheet.setOnDismissListener(d -> exitSelectMode());
+        sheet.show();
+        AppActionSheet.makeSheetTransparent(sheet);
+    }
+
+    /**
+     * @param exitOnDismiss true: 执行该操作后，dismiss 时退出多选；false: 仅关闭弹窗，保持多选态。
+     */
+    private void batchItem(int iconRes, String text, Runnable action,
+                           com.google.android.material.bottomsheet.BottomSheetDialog sheet,
+                           int fg, int iconFg, LinearLayout parent, boolean exitOnDismiss) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0);
+        row.setBackgroundResource(R.drawable.bg_menu_item);
+        row.setClickable(true);
+        ImageView ic = new ImageView(this);
+        ic.setImageResource(iconRes);
+        ic.setImageTintList(android.content.res.ColorStateList.valueOf(iconFg));
+        row.addView(ic, new LinearLayout.LayoutParams(Ui.dp(this, 20), Ui.dp(this, 20)));
+        TextView label = Ui.text(this, text, 13, fg, false);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp.leftMargin = Ui.dp(this, 12);
+        row.addView(label, lp);
+        row.setOnClickListener(v -> {
+            if (exitOnDismiss) {
+                sheet.dismiss();
+                action.run();
+            } else {
+                // 保持多选：先取消 dismiss 监听，再关闭弹窗
+                sheet.setOnDismissListener(null);
+                sheet.dismiss();
+                action.run();
+            }
+        });
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 46));
+        rlp.leftMargin = Ui.dp(this, 5); rlp.rightMargin = Ui.dp(this, 5);
+        parent.addView(row, rlp);
+    }
+
+    private void batchDivider(LinearLayout parent, int color) {
+        View line = new View(this);
+        line.setBackgroundColor(color);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, Ui.dp(this, 0.5f)));
+        lp.leftMargin = Ui.dp(this, 18);
+        parent.addView(line, lp);
+    }
+
+    /** 批量冻结：IO 线程拼 pm disable-user（或 keepLauncherIcon 时 suspend）脚本执行，跑完 reload。 */
+    private void batchFreeze() {
+        if (working) {
+            Toast.makeText(this, "正在执行其他操作，请稍后再试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<Item> todo = new ArrayList<>();
+        for (Item it : batchTargets) {
+            if (!it.frozen) todo.add(it);
+        }
+        if (todo.isEmpty()) {
+            Toast.makeText(this, "选中项都已经是冻结状态", Toast.LENGTH_SHORT).show();
+            exitSelectMode();
+            return;
+        }
+        final int targetCount = todo.size();
+        working = true;
+        exitSelectMode();
+        Toast.makeText(this, "正在冻结 " + targetCount + " 个应用…", Toast.LENGTH_SHORT).show();
+        IO.execute(() -> {
+            int done = 0;
+            for (Item it : todo) {
+                boolean ok = false;
+                if (keepLauncherIcon && it.userId == 0) {
+                    // 与单个冻结一致：保留桌面图标走暂停通道（分身没有这个通道）
+                    ok = suspendApplied(it.pkg,
+                            SuspendSupport.suspend(this, packagePart(it.pkg), it.label));
+                    if (ok) {
+                        SuspendSupport.remember(this, Collections.singleton(packagePart(it.pkg)));
+                        PrivShell.exec("am force-stop --user " + it.userId + " "
+                                + packagePart(it.pkg), 10);
+                    }
+                } else {
+                    PrivShell.Result r = execPm(it.pkg, it.userId, true);
+                    ok = applied(it.pkg, true, r);
+                    // 停用被 ROM 拦住时，和单个冻结一样自动降级为暂停
+                    if (!ok && SuspendSupport.romBlocked(r.out)) {
+                        ok = it.userId == 0
+                            && suspendApplied(it.pkg, SuspendSupport.suspend(this, packagePart(it.pkg), it.label));
+                        if (ok) SuspendSupport.remember(this, Collections.singleton(packagePart(it.pkg)));
+                    }
+                }
+                if (ok) done++;
+            }
+            final int doneN = done;
+            main.post(() -> {
+                working = false;
+                if (isFinishing() || isDestroyed()) return;
+                reload();
+                Toast.makeText(this, "已冻结 " + doneN + " 个应用"
+                        + (doneN < targetCount ? "，失败 " + (targetCount - doneN) + " 个" : ""),
+                        Toast.LENGTH_SHORT).show();
+            });
+        });
+    }
+
+    /** 批量解冻：IO 线程拼 pm 脚本一次性执行，跑完回读暂停缓存再 reload。 */
+    private void batchUnfreeze() {
+        if (working) {
+            Toast.makeText(this, "正在执行其他操作，请稍后再试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<Item> frozen = new ArrayList<>();
+        for (Item it : batchTargets) {
+            if (it.frozen) {
+                frozen.add(it);
+            }
+        }
+        if (frozen.isEmpty()) {
+            Toast.makeText(this, "选中项都不是冻结状态", Toast.LENGTH_SHORT).show();
+            exitSelectMode();
+            return;
+        }
+        final int targetCount = frozen.size();
+        working = true;
+        exitSelectMode();
+        Toast.makeText(this, "正在解冻 " + targetCount + " 个应用…", Toast.LENGTH_SHORT).show();
+        IO.execute(() -> {
+            StringBuilder script = new StringBuilder();
+            Set<String> suspended = new HashSet<>();
+            for (Item it : frozen) {
+                String name = packagePart(it.pkg);
+                if (it.suspended && it.userId == 0) {
+                    suspended.add(name);
+                }
+                script.append("pm unsuspend --user ").append(it.userId).append(' ')
+                        .append(name).append(" >/dev/null 2>&1; ");
+                script.append("pm enable --user ").append(it.userId).append(' ')
+                        .append(name).append(" >/dev/null 2>&1; ");
+            }
+            PrivShell.exec(script.toString(), Math.max(30, 10 + frozen.size() * 5));
+            Set<String> truth = SuspendSupport.suspendedAmong(suspended);
+            SuspendSupport.remember(this, truth);
+            main.post(() -> {
+                working = false;
+                reload();
+                Toast.makeText(this, "已解冻 " + targetCount + " 个应用", Toast.LENGTH_SHORT).show();
+            });
+        });
+    }
+
+    /** 批量改标签页：弹一个标签选择框，选中后全部移过去。 */
+    private void batchMoveTab() {
+        List<Tab> targets = new ArrayList<>();
+        Set<String> curLabels = new HashSet<>();
+        for (Item it : batchTargets) {
+            curLabels.add(tabIdOf(it));
+        }
+        for (Tab t : tabs) {
+            if (!curLabels.contains(t.id)) targets.add(t);
+        }
+        if (targets.isEmpty()) {
+            Toast.makeText(this, "选中项已全部在同一标签，或只有一个标签", Toast.LENGTH_SHORT).show();
+            exitSelectMode();
+            return;
+        }
+        String[] names = new String[targets.size()];
+        for (int i = 0; i < targets.size(); i++) {
+            Tab t = targets.get(i);
+            names[i] = t.visible ? t.name : t.name + "（已隐藏）";
+        }
+        int n = batchTargets.size();
+        AlertDialog pick = new AlertDialog.Builder(this)
+                .setTitle("把 " + n + " 个应用移动到…")
+                .setItems(names, (d, w) -> {
+                    Tab target = targets.get(w);
+                    int moved = 0;
+                    for (Item it : batchTargets) {
+                        appTabs.put(it.pkg, target.id);
+                        moved++;
+                    }
+                    saveAppTabs();
+                    exitSelectMode();
+                    render();
+                    Toast.makeText(this, "已移动 " + moved + " 个到「" + target.name + "」", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("取消", (d, w) -> exitSelectMode())
+                .setOnCancelListener(d -> exitSelectMode())
+                .create();
+        pick.show();
+        Ui.roundAlertDialog(pick);
+    }
+
+    /** 批量添加到桌面：逐个 pinToHome，每个会触发系统确认框。 */
+    private void batchPinHome() {
+        int n = batchTargets.size();
+        int done = 0;
+        for (Item it : batchTargets) {
+            pinToHome(it);
+            done++;
+        }
+        exitSelectMode();
+        if (n > 1) {
+            Toast.makeText(this, "已添加 " + done + " 个到桌面", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * 批量从列表移除 / 移除并解冻。
+     * @param alsoUnfreeze true = 移除后顺便解冻
+     */
+    private void batchRemove(boolean alsoUnfreeze) {
+        if (working) {
+            Toast.makeText(this, "正在执行其他操作，请稍后再试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<Item> targets = new ArrayList<>(batchTargets);
+        int n = targets.size();
+        if (n == 0) {
+            exitSelectMode();
+            return;
+        }
+        Set<String> cur = pkgs();
+        List<String> order = savedOrder();
+        List<Item> toUnfreeze = new ArrayList<>();
+        Set<String> suspended = new HashSet<>();
+        for (Item it : targets) {
+            cur.remove(it.pkg);
+            appTabs.remove(it.pkg);
+            order.remove(it.pkg);
+            items.remove(it);
+            if (alsoUnfreeze && it.frozen) {
+                toUnfreeze.add(it);
+                if (it.suspended && it.userId == 0) suspended.add(it.pkg);
+            }
+        }
+        prefs().edit().putStringSet(KEY_PKGS, cur).apply();
+        StringBuilder sb = new StringBuilder();
+        for (String p : order) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(p);
+        }
+        prefs().edit().putString(KEY_ORDER, sb.toString()).apply();
+
+        if (!toUnfreeze.isEmpty()) {
+            IO.execute(() -> {
+                StringBuilder script = new StringBuilder();
+                for (Item item : toUnfreeze) {
+                    String name = packagePart(item.pkg);
+                    script.append("pm unsuspend --user ").append(item.userId).append(' ')
+                            .append(name).append(" >/dev/null 2>&1; ");
+                    script.append("pm enable --user ").append(item.userId).append(' ')
+                            .append(name).append(" >/dev/null 2>&1; ");
+                }
+                PrivShell.exec(script.toString(), Math.max(30, 10 + toUnfreeze.size() * 5));
+                Set<String> truth = SuspendSupport.suspendedAmong(suspended);
+                SuspendSupport.remember(this, truth);
+            });
+        }
+
+        if (selectedPkg != null && !pkgs().contains(selectedPkg)) selectedPkg = null;
+        if (draggingPkg != null && !pkgs().contains(draggingPkg)) draggingPkg = null;
+        exitSelectMode();
+        saveAppTabs();
+        SwipeFreeze.syncAsync(this);
+        reload();
+        Toast.makeText(this, (alsoUnfreeze ? "已移除并解冻 " : "已从列表移除 ") + n + " 个应用", Toast.LENGTH_SHORT).show();
     }
 
     /** 运行：已冻结的先解冻再打开。 */
@@ -3601,33 +4246,34 @@ public class FreezeListActivity extends BaseActivity {
             PrivShell.Result r;
             boolean ok;
             // 勾选「保留桌面图标」时直接走暂停通道：停用会让桌面图标消失，暂停不会
-            boolean keep = keepLauncherIcon;
+            // 暂停通道只覆盖主用户，分身只能走停用
+            boolean keep = keepLauncherIcon && it.userId == 0;
             boolean blocked = false;
             boolean suspendedNow = false;
             if (keep) {
-                r = SuspendSupport.suspend(this, it.pkg, it.label);
+                r = SuspendSupport.suspend(this, packagePart(it.pkg), it.label);
                 ok = suspendApplied(it.pkg, r);
                 if (ok) {
                     suspendedNow = true;
-                    SuspendSupport.remember(this, Collections.singleton(it.pkg));
+                    SuspendSupport.remember(this, Collections.singleton(packagePart(it.pkg)));
                     // 暂停不结束已有进程，补一次 force-stop 让冻结立即生效
-                    PrivShell.exec("am force-stop " + it.pkg, 10);
+                    PrivShell.exec("am force-stop " + packagePart(it.pkg), 10);
                 } else {
                     android.util.Log.w("JinPm", "suspend failed: code=" + r.code
                             + " timeout=" + r.timeout + "\n"
                             + (r.out == null ? "" : r.out.trim()));
                 }
             } else {
-                r = execPm(it.pkg, true);
+                r = execPm(it.pkg, it.userId, true);
                 ok = applied(it.pkg, true, r);
-                // 系统应用被 ROM 拦住停用（两类固定文案）时，自动降级为 pm suspend 暂停
-                blocked = !ok && SuspendSupport.romBlocked(r.out);
+                // 系统应用被 ROM 拦住停用（两类固定文案）时，自动降级为 pm suspend 暂停（仅主用户）
+                blocked = it.userId == 0 && !ok && SuspendSupport.romBlocked(r.out);
                 if (blocked) {
-                    PrivShell.Result s = SuspendSupport.suspend(this, it.pkg, it.label);
+                    PrivShell.Result s = SuspendSupport.suspend(this, packagePart(it.pkg), it.label);
                     if (suspendApplied(it.pkg, s)) {
                         ok = true;
                         suspendedNow = true;
-                        SuspendSupport.remember(this, Collections.singleton(it.pkg));
+                        SuspendSupport.remember(this, Collections.singleton(packagePart(it.pkg)));
                     } else {
                         android.util.Log.w("JinPm", "suspend fallback failed: code=" + s.code
                                 + " timeout=" + s.timeout + "\n"
@@ -3673,7 +4319,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         working = true;
         IO.execute(() -> {
-            PrivShell.Result r = execPm(it.pkg, false);
+            PrivShell.Result r = execPm(it.pkg, it.userId, false);
             boolean ok = applied(it.pkg, false, r);
             main.post(() -> {
                 working = false;
@@ -3703,8 +4349,9 @@ public class FreezeListActivity extends BaseActivity {
         }
         final List<String> candidates = new ArrayList<>();
         for (Item it : items) {
-            if (it.frozen && !it.suspended) {
-                candidates.add(it.pkg);
+            // 暂停通道只覆盖主用户，分身不参与切换
+            if (it.userId == 0 && it.frozen && !it.suspended) {
+                candidates.add(packagePart(it.pkg));
             }
         }
         if (candidates.isEmpty()) {
@@ -3755,8 +4402,8 @@ public class FreezeListActivity extends BaseActivity {
         }
         final Set<String> pool = new HashSet<>();
         for (Item it : items) {
-            if (it.frozen) {
-                pool.add(it.pkg);
+            if (it.frozen && it.userId == 0) {
+                pool.add(packagePart(it.pkg));
             }
         }
         pool.addAll(SuspendSupport.cached(this));
@@ -3837,7 +4484,7 @@ public class FreezeListActivity extends BaseActivity {
     /** 在其他应用中配置：走系统应用详情页，失败落系统设置首页并提示。 */
     private void openAppSettings(Item it) {
         Intent detail = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                Uri.parse("package:" + it.pkg));
+                Uri.parse("package:" + packagePart(it.pkg)));
         detail.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             startActivity(detail);
@@ -3855,7 +4502,7 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 添加到桌面：照搬 Hail，只带包名建固定快捷方式，不预先解析启动页。 */
     private void pinToHome(Item it) {
-        ShortcutPin.pin(this, it.pkg, it.label, it.icon);
+        ShortcutPin.pin(this, packagePart(it.pkg), it.label, it.icon);
     }
 
     /**
@@ -3928,7 +4575,7 @@ public class FreezeListActivity extends BaseActivity {
         working = true;
         render();
         IO.execute(() -> {
-            PrivShell.Result r = execPm(it.pkg, false);
+            PrivShell.Result r = execPm(it.pkg, it.userId, false);
             boolean ok = applied(it.pkg, false, r);
             main.post(() -> {
                 working = false;
@@ -6998,11 +7645,18 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private File backupDir() {
-        File base = getExternalFilesDir(null);
-        if (base == null) {
-            base = getFilesDir();
+        // 用户指定备份路径：/storage/emulated/0/Download/凚/备份
+        File dir = new File("/storage/emulated/0/Download/凚/备份");
+        if (!dir.exists()) dir.mkdirs();
+        if (dir.exists() && dir.canWrite()) {
+            return dir;
         }
-        return new File(base, BACKUP_DIR);
+        // 兜底：Download 目录不可写时退回应用内部存储
+        File base = getExternalFilesDir(null);
+        if (base == null) base = getFilesDir();
+        File fallback = new File(base, BACKUP_DIR);
+        if (!fallback.exists()) fallback.mkdirs();
+        return fallback;
     }
 
     /** 紧凑卡片弹窗：宽度 76%、内边距与字号整体收一档，与搞机助手备份/恢复弹框同一档。 */
@@ -7341,7 +7995,7 @@ public class FreezeListActivity extends BaseActivity {
         final String label = it.label;
         IO.execute(() -> {
             // 解冻两个通道都收：先撤暂停（非暂停状态下为空操作），再补启用
-            PrivShell.Result r = execPm(pkg, false);
+            PrivShell.Result r = execPm(pkg, userIdPart(pkg), false);
             boolean ok = applied(pkg, false, r);
             if (!ok) {
                 android.util.Log.w("JinPm", "removeNow unfreeze failed:\n"
@@ -7366,7 +8020,7 @@ public class FreezeListActivity extends BaseActivity {
         if (working) {
             return;
         }
-        final List<String> targets = new ArrayList<>();
+        final List<Item> targets = new ArrayList<>();
         int skippedCount = 0;
         for (Item it : shown) {
             // 已经到位的直接跳过，不发起 pm 调用，也不算失败
@@ -7374,7 +8028,7 @@ public class FreezeListActivity extends BaseActivity {
                 skippedCount++;
                 continue;
             }
-            targets.add(it.pkg);
+            targets.add(it);
         }
         final int skippedFinal = skippedCount;
         if (targets.isEmpty()) {
@@ -7403,30 +8057,42 @@ public class FreezeListActivity extends BaseActivity {
         IO.execute(() -> {
             // 只开一次 su、一条脚本跑完全部包；处理完统一回读一次状态
             long startedAt = System.currentTimeMillis();
-            Map<String, String> outputs;
+            Map<String, String> outputs = new HashMap<>();
             Set<String> blocked = new HashSet<>();
-            if (freeze && keepLauncherIcon) {
-                // 勾选「留桌面图标」：整批改走暂停通道，不执行 pm disable-user，图标才不会被摘掉
-                outputs = execSuspendBatch(targets);
-            } else {
-                outputs = execPmBatch(targets, freeze);
-                if (freeze) {
-                    // 只对被 ROM 拦住停用的包（两类固定文案）降级暂停，其余包行为不变
-                    for (String pkg : targets) {
-                        if (SuspendSupport.romBlocked(outputs.get(pkg))) {
-                            blocked.add(pkg);
+            // 主用户走一次性批量脚本；分身逐个带 --user 执行，没有 suspend 降级通道
+            List<String> zeroKeys = new ArrayList<>();
+            for (Item it : targets) {
+                if (it.userId == 0) zeroKeys.add(it.pkg);
+            }
+            if (!zeroKeys.isEmpty()) {
+                if (freeze && keepLauncherIcon) {
+                    // 勾选「留桌面图标」：整批改走暂停通道，不执行 pm disable-user，图标才不会被摘掉
+                    outputs.putAll(execSuspendBatch(zeroKeys));
+                } else {
+                    outputs.putAll(execPmBatch(zeroKeys, freeze));
+                    if (freeze) {
+                        // 只对被 ROM 拦住停用的包（两类固定文案）降级暂停，其余包行为不变
+                        for (String key : zeroKeys) {
+                            if (SuspendSupport.romBlocked(outputs.get(key))) {
+                                blocked.add(key);
+                            }
                         }
-                    }
-                    if (!blocked.isEmpty()) {
-                        Map<String, String> suspendOut = execSuspendBatch(new ArrayList<>(blocked));
-                        for (String pkg : blocked) {
-                            String prev = outputs.get(pkg);
-                            String now = suspendOut.get(pkg);
-                            outputs.put(pkg, (prev == null ? "" : prev + "\n")
-                                    + (now == null ? "" : now));
+                        if (!blocked.isEmpty()) {
+                            Map<String, String> suspendOut = execSuspendBatch(new ArrayList<>(blocked));
+                            for (String key : blocked) {
+                                String prev = outputs.get(key);
+                                String now = suspendOut.get(key);
+                                outputs.put(key, (prev == null ? "" : prev + "\n")
+                                        + (now == null ? "" : now));
+                            }
                         }
                     }
                 }
+            }
+            for (Item it : targets) {
+                if (it.userId == 0) continue;
+                PrivShell.Result r = execPm(it.pkg, it.userId, freeze);
+                outputs.put(it.pkg, r == null || r.out == null ? "" : r.out);
             }
             android.util.Log.i("FreezeBatch", (freeze ? "freeze " : "unfreeze ")
                     + targets.size() + " pkg took " + (System.currentTimeMillis() - startedAt) + " ms");
@@ -7434,15 +8100,19 @@ public class FreezeListActivity extends BaseActivity {
             Set<String> truth = disabledPackages();
             // 降级通道真值同样只批量读一次：冻结时查「停用没成功的」，解冻时查本机暂停过的
             Set<String> suspendCandidates = new HashSet<>();
+            Set<String> zeroNames = new HashSet<>();
+            for (Item it : targets) {
+                if (it.userId == 0) zeroNames.add(packagePart(it.pkg));
+            }
             if (freeze) {
-                for (String pkg : targets) {
-                    if (truth == null || !truth.contains(pkg)) {
-                        suspendCandidates.add(pkg);
+                for (String name : zeroNames) {
+                    if (truth == null || !truth.contains(name)) {
+                        suspendCandidates.add(name);
                     }
                 }
             } else {
                 suspendCandidates.addAll(SuspendSupport.cached(this));
-                suspendCandidates.retainAll(targets);
+                suspendCandidates.retainAll(zeroNames);
             }
             Set<String> suspendedTruth = SuspendSupport.suspendedAmong(suspendCandidates);
             if (freeze) {
@@ -7457,23 +8127,28 @@ public class FreezeListActivity extends BaseActivity {
                 }
             } else {
                 Set<String> next = SuspendSupport.cached(this);
-                next.removeAll(targets);
+                next.removeAll(zeroNames);
                 next.addAll(suspendedTruth);
                 SuspendSupport.replace(this, next);
             }
             int okCount = 0;
             List<String> fails = new ArrayList<>();
-            for (String pkg : targets) {
-                String out = outputs.get(pkg);
+            for (Item it : targets) {
+                String key = it.pkg;
+                String out = outputs.get(key);
                 if (out == null) {
                     out = "pm 未返回该包的结果";
                 }
                 boolean ok;
-                if (truth != null) {
-                    boolean dis = truth.contains(pkg);
+                if (it.userId != 0) {
+                    // 分身没有主用户禁用列表可用，按该条命令的输出判定
+                    ok = isPmOkText(out);
+                } else if (truth != null) {
+                    String name = packagePart(key);
+                    boolean dis = truth.contains(name);
                     // 暂停态与停用态等价：冻结命中任一即成功，解冻必须两者都退出
-                    ok = freeze ? (dis || suspendedTruth.contains(pkg))
-                            : (!dis && !suspendedTruth.contains(pkg));
+                    ok = freeze ? (dis || suspendedTruth.contains(name))
+                            : (!dis && !suspendedTruth.contains(name));
                 } else {
                     ok = isPmOkText(out);
                 }
@@ -7482,7 +8157,7 @@ public class FreezeListActivity extends BaseActivity {
                 } else {
                     // 批量失败清单只列应用名 + 短原因，不贴 pm 栈；
                     // 已降级仍失败的给「两条通道都被拒」那句，不再回放 disable 的原始报错
-                    fails.add(labelOf(pkg) + "：" + (blocked.contains(pkg)
+                    fails.add(it.label + "：" + (blocked.contains(key)
                             ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(out, freeze)));
                 }
             }
@@ -7531,7 +8206,7 @@ public class FreezeListActivity extends BaseActivity {
         StringBuilder script = new StringBuilder();
         for (String pkg : pkgs) {
             script.append("echo '").append(MARK).append(pkg).append("'; ")
-                    .append(pmCommand(pkg, freeze))
+                    .append(pmCommand(pkg, 0, freeze))
                     .append(" 2>&1; ");
         }
         return splitMarked(PrivShell.exec(script.toString(),
@@ -7546,7 +8221,8 @@ public class FreezeListActivity extends BaseActivity {
         Map<String, String> result = new HashMap<>();
         List<String> pending = new ArrayList<>();
         for (String pkg : pkgs) {
-            if (SuspendDialog.suspend(this, pkg, labelOf(pkg))) {
+            String name = packagePart(pkg);
+            if (SuspendDialog.suspend(this, name, labelOf(pkg))) {
                 result.put(pkg, "");
             } else {
                 pending.add(pkg);
@@ -7558,7 +8234,8 @@ public class FreezeListActivity extends BaseActivity {
         StringBuilder script = new StringBuilder();
         for (String pkg : pending) {
             script.append("echo '").append(MARK).append(pkg).append("'; ")
-                    .append(SuspendSupport.suspendCommand(pkg, labelOf(pkg))).append(" 2>&1; ");
+                    .append(SuspendSupport.suspendCommand(packagePart(pkg), labelOf(pkg)))
+                    .append(" 2>&1; ");
         }
         result.putAll(splitMarked(PrivShell.exec(script.toString(),
                 Math.max(30, 10 + pending.size() * 5)), pending));
@@ -7619,7 +8296,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         working = true;
         IO.execute(() -> {
-            PrivShell.Result r = execPm(it.pkg, false);
+            PrivShell.Result r = execPm(it.pkg, it.userId, false);
             boolean ok = applied(it.pkg, false, r);
             // 撤销暂停失败时单独给一句，不落到通用的「启用未生效」
             final String failReason = !ok && SuspendSupport.cached(this).contains(it.pkg)
@@ -7652,9 +8329,16 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private void launch(Item it) {
-        Intent i = getPackageManager().getLaunchIntentForPackage(it.pkg);
+        String name = packagePart(it.pkg);
+        Intent i = getPackageManager().getLaunchIntentForPackage(name);
         if (i == null) {
             Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // 分身必须在它自己的用户下启动，否则会打开主应用
+        if (it.userId != 0 && i.getComponent() != null) {
+            PrivShell.exec("am start --user " + it.userId + " -n "
+                    + i.getComponent().flattenToShortString(), 15);
             return;
         }
         // 面板里主动打开应用：正常离场，面板行为交给系统默认
@@ -7668,17 +8352,21 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 执行 pm，返回完整结果（含退出码与是否超时），成败不在这里判。 */
     private PrivShell.Result execPm(String pkg, boolean freeze) {
-        return PrivShell.exec(pmCommand(pkg, freeze), 30);
+        return execPm(pkg, 0, freeze);
     }
 
-    /**
-     * 冻结只走 disable-user；解冻先撤暂停再补启用，两条通道都收（都在 --user 0 下）。
-     * 正常未暂停的包执行 unsuspend 是无操作，不会影响原有行为。
-     */
-    private static String pmCommand(String pkg, boolean freeze) {
+    private PrivShell.Result execPm(String pkg, int userId, boolean freeze) {
+        return PrivShell.exec(pmCommand(pkg, userId, freeze), 30);
+    }
+
+    /** 冻结和解冻都明确指定目标用户，避免主用户与分身互相影响。 */
+    private static String pmCommand(String pkg, int userId, boolean freeze) {
+        // 入参可能是「包名@用户」的实例键，真正交给 pm 的必须去掉用户后缀
+        String name = packagePart(pkg);
         return freeze
-                ? "pm disable-user --user 0 " + pkg
-                : "pm unsuspend --user 0 " + pkg + "; pm enable --user 0 " + pkg;
+                ? "pm disable-user --user " + userId + " " + name
+                : "pm unsuspend --user " + userId + " " + name
+                + "; pm enable --user " + userId + " " + name;
     }
 
     /**
@@ -7687,7 +8375,12 @@ public class FreezeListActivity extends BaseActivity {
      * 解冻 = 既不在禁用列表，也确实退出了暂停。
      * 禁用真值读不到才退回退出码 + 报错文本。
      */
-    private boolean applied(String pkg, boolean freeze, PrivShell.Result r) {
+    private boolean applied(String pkgOrKey, boolean freeze, PrivShell.Result r) {
+        // 分身没有主用户的禁用真值可用，只能按命令输出判定
+        if (userIdPart(pkgOrKey) != 0) {
+            return isPmOk(r);
+        }
+        String pkg = packagePart(pkgOrKey);
         Set<String> truth = disabledPackages();
         if (truth == null) {
             return isPmOk(r);
@@ -7716,7 +8409,8 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /** 降级执行 pm suspend 后确认暂停确实生效：优先 dumpsys 真值，读不到才看命令结果。 */
-    private boolean suspendApplied(String pkg, PrivShell.Result r) {
+    private boolean suspendApplied(String pkgOrKey, PrivShell.Result r) {
+        String pkg = packagePart(pkgOrKey);
         if (Boolean.TRUE.equals(SuspendSupport.suspendedOne(pkg))) {
             return true;
         }

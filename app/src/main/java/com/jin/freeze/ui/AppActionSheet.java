@@ -40,6 +40,16 @@ public final class AppActionSheet {
         void removeFromList();
 
         void removeAndUnfreeze();
+
+        /** 是否显示多选按钮：只有真正支持多选批量操作的页面才 override 返回 true。 */
+        default boolean multiSelectEnabled() {
+            return false;
+        }
+
+        /** 从本次长按进入多选态（ActionSheet 自己 dismiss，调用方负责进入 selectMode）。 */
+        default void startMultiSelect() {
+            // 默认空实现：不支持多选的页面不用 override
+        }
     }
 
     private AppActionSheet() {
@@ -128,13 +138,18 @@ public final class AppActionSheet {
                 frozen ? "解冻" : "冻结", actions::toggleFreeze, fg, iconFg);
         divider(c, content, 18, lineColor);
         addItem(c, content, sheet, R.drawable.ic_action_tag, "更改标签页", actions::moveTab, fg, iconFg);
+        // 多选入口：紧跟在「更改标签页」下方
+        if (actions.multiSelectEnabled()) {
+            addItem(c, content, sheet, R.drawable.ic_check_badge, "多选",
+                    actions::startMultiSelect, fg, iconFg);
+        }
         addItem(c, content, sheet, R.drawable.ic_settings, "在其他应用中配置", actions::appSettings, fg, iconFg);
         addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
         if (actions.inList()) {
             addItem(c, content, sheet, R.drawable.ic_minus, "从列表移除",
                     actions::removeFromList, fg, iconFg);
             divider(c, content, 18, lineColor);
-            addItem(c, content, sheet, R.drawable.ic_minus, "移除列表并解冻",
+            addItem(c, content, sheet, R.drawable.ic_sc_unfreeze, "移除列表并解冻",
                     actions::removeAndUnfreeze, fg, iconFg);
         }
 
@@ -149,7 +164,7 @@ public final class AppActionSheet {
     }
 
     /** 把 BottomSheet 的窗口、decor、底板全部清成透明，圆角只由内部卡片负责。 */
-    private static void makeSheetTransparent(BottomSheetDialog sheet) {
+    public static void makeSheetTransparent(BottomSheetDialog sheet) {
         final android.graphics.drawable.ColorDrawable clear =
                 new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT);
         if (sheet.getWindow() != null) {

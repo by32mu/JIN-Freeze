@@ -203,12 +203,10 @@ public final class SwipeFreeze {
         return allTabs(context);
     }
 
-    private static String tabIdOf(Context context, String pkg, Map<String, String> mapping) {
-        String id = mapping.get(pkg);
-        if (id != null && containsTab(allTabs(context), id)) {
-            return id;
-        }
-        return isSystemApp(context, pkg) ? TAB_SYSTEM : TAB_USER;
+    /** 名单键可能带「@用户」后缀，交回 hook 的一律是纯包名。 */
+    private static String packagePart(String key) {
+        int at = key.lastIndexOf('@');
+        return at > 0 ? key.substring(0, at) : key;
     }
 
     private static boolean isSystemApp(Context context, String pkg) {
@@ -224,16 +222,29 @@ public final class SwipeFreeze {
 
     /** 按当前偏好生成配置文件内容；格式与 hook 侧 JinHookConfig 一一对应。 */
     public static String buildConfig(Context context) {
-        Set<String> pkgs = new TreeSet<>(prefs(context).getStringSet(KEY_PKGS, new HashSet<>()));
+        // 名单里可能带「包名@用户」的分身键；hook 侧只认包名，这里统一还原并去重
+        Set<String> raw = prefs(context).getStringSet(KEY_PKGS, new HashSet<>());
         Map<String, String> mapping = appTabMap(context);
         Map<String, String> labels = new LinkedHashMap<>();
         for (Tag tag : allTabs(context)) {
             labels.put(tag.id, tag.name);
         }
+        Set<String> pkgs = new TreeSet<>();
         Map<String, Set<String>> tags = new LinkedHashMap<>();
-        for (String pkg : pkgs) {
+        for (String key : new TreeSet<>(raw)) {
+            String pkg = packagePart(key);
+            if (!pkgs.add(pkg)) {
+                continue;
+            }
+            String tab = mapping.get(key);
+            if (tab == null) {
+                tab = mapping.get(pkg);
+            }
+            if (tab == null || !containsTab(allTabs(context), tab)) {
+                tab = isSystemApp(context, pkg) ? TAB_SYSTEM : TAB_USER;
+            }
             Set<String> set = new HashSet<>();
-            set.add(tabIdOf(context, pkg, mapping));
+            set.add(tab);
             tags.put(pkg, set);
         }
         Set<String> selected = selectedTags(context);
