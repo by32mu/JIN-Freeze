@@ -177,6 +177,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_KEEP_LAUNCHER_ICON = "keep_launcher_icon";
     /** 「长按冻结按钮触发解冻图标」：取消后长按无反应也不震动；两种形态共用，默认勾选。 */
     private static final String KEY_FAB_LONG_PRESS_UNFREEZE = "fab_long_press_unfreeze";
+    /** 「仅冻结/解冻当前标签」：勾选后底部一键冻结与长按解冻只处理当前标签页的应用。 */
+    private static final String KEY_BATCH_CURRENT_TAB_ONLY = "batch_current_tab_only";
 
     /** 「半屏打开时隐藏状态栏」：只作用于半屏面板，不影响全屏页。 */
     private static final String KEY_PANEL_HIDE_STATUS_BAR = "panel_hide_status_bar";
@@ -404,6 +406,8 @@ public class FreezeListActivity extends BaseActivity {
     protected boolean panelHideRecents;
     /** 「冻结后保留桌面图标」开关：勾选后冻结走 suspend 通道，图标保留并置灰。 */
     private boolean keepLauncherIcon;
+    /** 「仅冻结/解冻当前标签」开关：勾选后一键冻结/解冻只作用于当前标签页。 */
+    private boolean batchCurrentTabOnly;
     /** 半屏打开时是否隐藏状态栏（布局设置开关，默认不隐藏）。 */
     private boolean panelHideStatusBar;
     /** 当前是否已把状态栏隐藏掉；隐藏期间不再做图标反色。 */
@@ -589,7 +593,11 @@ public class FreezeListActivity extends BaseActivity {
         }
         count = findViewById(R.id.count);
         freezeBtn = findViewById(R.id.btn_freeze);
+        // 全屏左上角是 btn_settings，半屏右下角仍是 layout，两个形态共用同一套设置弹窗
         settingsBtn = findViewById(R.id.btn_settings);
+        if (settingsBtn == null) {
+            settingsBtn = findViewById(R.id.layout);
+        }
         editBtn = findViewById(R.id.edit);
         grid = findViewById(R.id.grid);
         scrollView = grid;
@@ -645,6 +653,7 @@ public class FreezeListActivity extends BaseActivity {
         panelDismissAfterFreeze = prefs().getBoolean(lk(KEY_PANEL_DISMISS), true);
         panelHideRecents = prefs().getBoolean(lk(KEY_PANEL_HIDE_RECENTS), false);
         keepLauncherIcon = prefs().getBoolean(KEY_KEEP_LAUNCHER_ICON, false);
+        batchCurrentTabOnly = prefs().getBoolean(KEY_BATCH_CURRENT_TAB_ONLY, false);
         if (panelMode) {
             panelHandleEnabled = prefs().getBoolean(KEY_PANEL_HANDLE, true);
             panelHideStatusBar = prefs().getBoolean(KEY_PANEL_HIDE_STATUS_BAR, false);
@@ -691,7 +700,7 @@ public class FreezeListActivity extends BaseActivity {
         }
 
         // 一键冻结不做前置确认，直接执行
-        freezeBtn.setOnClickListener(v -> runBatch(true, filtered()));
+        freezeBtn.setOnClickListener(v -> runBatch(true, batchTargets()));
 
         pendingAction = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_ACTION);
         // 「从旧版导入」已移除，清掉历史遗留的迁移标记
@@ -2798,7 +2807,7 @@ public class FreezeListActivity extends BaseActivity {
                 if (pendingAction != null) {
                     String act = pendingAction;
                     pendingAction = null;
-                    runBatch(ACTION_FREEZE.equals(act), filtered());
+                    runBatch(ACTION_FREEZE.equals(act), batchTargets());
                 }
             });
         });
@@ -2866,7 +2875,7 @@ public class FreezeListActivity extends BaseActivity {
         return set;
     }
 
-    /** 当前标签 + 搜索取交集；一键冻结/解冻只作用于这里返回的名单项。 */
+    /** 当前标签 + 搜索取交集；标签内渲染与「仅当前标签」的批量操作都走这里。 */
     private List<Item> filtered() {
         String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
         List<Item> shown = new ArrayList<>();
@@ -2884,6 +2893,27 @@ public class FreezeListActivity extends BaseActivity {
         // 没有手动拖拽过才按「已冻结在前、组内名称升序」自动排；自定义顺序不受状态变化影响
         if (!customOrder()) {
             Collections.sort(shown, FreezeListActivity::byDefault);
+        }
+        return shown;
+    }
+
+    /**
+     * 一键冻结 / 长按解冻的处理范围：
+     * 勾选「仅冻结/解冻当前标签」时等于当前标签（含搜索过滤），否则是整份名单（只保留搜索过滤）。
+     */
+    private List<Item> batchTargets() {
+        if (batchCurrentTabOnly) {
+            return filtered();
+        }
+        String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
+        List<Item> shown = new ArrayList<>();
+        for (Item it : items) {
+            if (!q.isEmpty()
+                    && !it.label.toLowerCase(Locale.ROOT).contains(q)
+                    && !it.pkg.toLowerCase(Locale.ROOT).contains(q)) {
+                continue;
+            }
+            shown.add(it);
         }
         return shown;
     }
@@ -4799,7 +4829,7 @@ public class FreezeListActivity extends BaseActivity {
         unfreezeFab.setOnClickListener(v -> {
             collapseUnfreezeFab();
             if (!working) {
-                runBatch(false, filtered());
+                runBatch(false, batchTargets());
             }
         });
         // 点击/按住解冻图标都算操作，重新计时
@@ -5516,6 +5546,17 @@ public class FreezeListActivity extends BaseActivity {
         longPressBox.setOnCheckedChangeListener((btn, on) ->
                 prefs().edit().putBoolean(KEY_FAB_LONG_PRESS_UNFREEZE, on).apply());
 
+        // 仅冻结/解冻当前标签：勾选后底部一键冻结与长按解冻只处理当前标签页的应用
+        CheckBox tabOnlyBox = new CheckBox(this);
+        tabOnlyBox.setText("仅冻结/解冻当前标签");
+        tabOnlyBox.setTextSize(12);
+        tabOnlyBox.setMinimumHeight(Ui.dp(this, 32));
+        tabOnlyBox.setChecked(batchCurrentTabOnly);
+        tabOnlyBox.setOnCheckedChangeListener((btn, on) -> {
+            batchCurrentTabOnly = on;
+            prefs().edit().putBoolean(KEY_BATCH_CURRENT_TAB_ONLY, on).apply();
+        });
+
         // 半屏专属：顶部小白条是否允许拖动改高度（开关与高度值分开存）
         CheckBox handleBox = null;
         CheckBox hideStatusBarBox = null;
@@ -5847,6 +5888,7 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(tipBox);
         box.addView(keepIconBox);
         box.addView(longPressBox);
+        box.addView(tabOnlyBox);
 
         // 全屏打开模式：只决定桌面图标进来时的形态，两种形态各用各的布局参数
         CheckBox fullBox = new CheckBox(this);
