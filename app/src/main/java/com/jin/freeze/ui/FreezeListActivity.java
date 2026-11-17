@@ -288,6 +288,11 @@ public class FreezeListActivity extends BaseActivity {
     private final Handler main = new Handler(Looper.getMainLooper());
     /** LSPosed 模块在线状态：null=探测中，true=在线，false=离线 */
     private Boolean lsposedAlive;
+    /** 暂停真值后台复核是否在跑，避免连续 reload 重复排队 dumpsys。 */
+    private final java.util.concurrent.atomic.AtomicBoolean suspendVerifying =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    /** 真值不一致触发的那次重刷不再复核，避免来回重复。 */
+    private volatile int skipSuspendVerify;
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -2659,13 +2664,10 @@ public class FreezeListActivity extends BaseActivity {
                 // 真值没读到：下面按 PackageInfo.enabled 兜底，不能一律当成未冻结
                 disabled = new HashSet<>();
             }
-            // 降级通道（pm suspend）的包不会出现在 pm list packages -d 里：
-            // 只对「本机暂停过」的缓存集合做一次批量 dumpsys，不逐包查全量，刷新开销可控
-            Set<String> suspended = SuspendSupport.suspendedAmong(SuspendSupport.cached(this));
-            if (!suspended.isEmpty()) {
-                // 只在实际读到暂停项时回写缓存：一次读失败不把已暂停的清空
-                SuspendSupport.replace(this, suspended);
-            }
+            // 降级通道（pm suspend）的包不会出现在 pm list packages -d 里。
+            // 首屏只用本机暂停缓存渲染；逐个 dumpsys 复核耗时（18 个包约 1.2s），
+            // 放到渲染完成后的后台做，见 verifySuspendedAsync()
+            Set<String> suspended = new HashSet<>(SuspendSupport.cached(this));
             PackageManager pm = getPackageManager();
             Map<String, Item> map = new HashMap<>();
             Set<String> kept = new HashSet<>();
@@ -2730,6 +2732,7 @@ public class FreezeListActivity extends BaseActivity {
                 items.addAll(list);
                 loadedOnce = true;
                 render();
+                verifySuspendedAsync();
                 if (pendingRevealPkg != null) {
                     String pkg = pendingRevealPkg;
                     pendingRevealPkg = null;
@@ -2746,6 +2749,35 @@ public class FreezeListActivity extends BaseActivity {
                     String act = pendingAction;
                     pendingAction = null;
                     runBatch(ACTION_FREEZE.equals(act), filtered());
+                }
+            });
+        });
+    }
+
+    /**
+     * 渲染后复核暂停真值：列表首屏不阻塞，后台逐个 dumpsys 查缓存里的包，
+     * 只在真值与缓存不一致（且真值非空，避免一次读失败把缓存清空）时回写并重刷一次。
+     */
+    private void verifySuspendedAsync() {
+        if (skipSuspendVerify > 0) {
+            skipSuspendVerify--;
+            return;
+        }
+        final Set<String> cached = SuspendSupport.cached(this);
+        if (cached.isEmpty() || !suspendVerifying.compareAndSet(false, true)) {
+            return;
+        }
+        IO.execute(() -> {
+            Set<String> truth = SuspendSupport.suspendedAmong(cached);
+            suspendVerifying.set(false);
+            if (truth.isEmpty() || truth.equals(cached)) {
+                return;
+            }
+            SuspendSupport.replace(this, truth);
+            skipSuspendVerify = 1;
+            main.post(() -> {
+                if (!isFinishing() && !isDestroyed()) {
+                    reload();
                 }
             });
         });
