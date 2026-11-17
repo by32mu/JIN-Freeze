@@ -4308,18 +4308,26 @@ public class FreezeListActivity extends BaseActivity {
         Ui.roundAlertDialog(pick);
     }
 
-    /** 批量添加到桌面：逐个 pinToHome，每个会触发系统确认框。 */
+    /**
+     * 批量添加到桌面：交给 ShortcutPin 的串行队列，等上一个确认结果再发下一个。
+     * 早先在一个循环里连续 requestPinShortcut，桌面确认页会互相顶掉，只有前面几个能加成功。
+     */
     private void batchPinHome() {
-        int n = batchTargets.size();
-        int done = 0;
+        List<String> pkgs = new ArrayList<>();
         for (Item it : batchTargets) {
-            pinToHome(it);
-            done++;
+            pkgs.add(packagePart(it.pkg));
         }
+        final int n = pkgs.size();
         exitSelectMode();
-        if (n > 1) {
-            Toast.makeText(this, "已添加 " + done + " 个到桌面", Toast.LENGTH_SHORT).show();
-        }
+        ShortcutPin.pinAll(this, pkgs, () -> {
+            if (isFinishing() || isDestroyed()) {
+                return;
+            }
+            if (n > 1) {
+                Toast.makeText(this, "已逐个请求添加 " + n + " 个，请在桌面确认",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
     }
 
     /**
@@ -7248,7 +7256,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final String BACKUP_FILE_PREFIX = "JIN-";
     private static final int RESTORE_SETTINGS = 1;
     private static final int RESTORE_FREEZE = 2;
-    private static final int RESTORE_BOTH = 3;
+    /** 只恢复桌面快捷方式：备份里有、当前桌面没有的，逐个重新请求固定。 */
+    private static final int RESTORE_SHORTCUTS = 4;
+    /** 全部恢复：配置 + 冻结列表 + 桌面快捷方式。 */
+    private static final int RESTORE_ALL = 5;
 
     /** 名单类键归 freeze 段，其余键归 settings 段，不重复备份。 */
     private static final String[] BACKUP_LIST_KEYS = {
@@ -7287,6 +7298,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         final int listCount = items.size();
         final int settingCount = backupSettingCount();
+        final int shortcutCount = ShortcutPin.pinnedPackages(this).size();
         final AlertDialog[] ref = new AlertDialog[1];
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -7295,18 +7307,19 @@ public class FreezeListActivity extends BaseActivity {
                         + "时间.json），恢复时从文件列表选择");
         optFile.setOnClickListener(v -> {
             dismiss(ref);
-            saveBackupFile(json, listCount, settingCount);
+            saveBackupFile(json, listCount, settingCount, shortcutCount);
         });
         content.addView(optFile);
         LinearLayout optText = optionRowCompact("生成文本",
                 "生成一串压缩后的短文本（自动复制），可存到备忘录 / 聊天里；恢复时粘回来即可");
         optText.setOnClickListener(v -> {
             dismiss(ref);
-            showBackupText(json, listCount, settingCount);
+            showBackupText(json, listCount, settingCount, shortcutCount);
         });
         content.addView(optText, topMargin(6));
         ref[0] = compactCard("备份",
-                "冻结列表 " + listCount + " 个、设置 " + settingCount + " 项，会写进同一份备份",
+                "冻结列表 " + listCount + " 个、设置 " + settingCount + " 项、桌面快捷方式 "
+                        + shortcutCount + " 个，会写进同一份备份",
                 content, new String[]{"取消"}, new Runnable[]{null});
     }
 
@@ -7329,12 +7342,12 @@ public class FreezeListActivity extends BaseActivity {
             showRestorePaste();
         });
         content.addView(optText, topMargin(6));
-        ref[0] = compactCard("恢复", "先选备份来源，再决定恢复配置还是冻结列表",
+        ref[0] = compactCard("恢复", "先选备份来源，再决定恢复配置、冻结列表还是桌面快捷方式",
                 content, new String[]{"取消"}, new Runnable[]{null});
     }
 
     /** 文本备份：压缩 + Base64 成尽量短的一串，进剪贴板并展示出来。 */
-    private void showBackupText(String json, int listCount, int settingCount) {
+    private void showBackupText(String json, int listCount, int settingCount, int shortcutCount) {
         final String text = encodeBackupText(json);
         if (text == null) {
             Toast.makeText(this, "备份文本生成失败", Toast.LENGTH_SHORT).show();
@@ -7353,7 +7366,8 @@ public class FreezeListActivity extends BaseActivity {
         int raw = json.length();
         int pct = raw == 0 ? 100 : Math.round(text.length() * 100f / raw);
         compactCard("备份文本（已复制）",
-                "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项\n"
+                "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项 + 快捷方式 "
+                        + shortcutCount + " 个\n"
                         + text.length() + " 字符（原始 " + raw + " 字符，约 " + pct + "%）",
                 sv, new String[]{"关闭", "再复制一次"}, new Runnable[]{null, () -> {
                     cm.setPrimaryClip(ClipData.newPlainText("凚备份", text));
@@ -7362,7 +7376,8 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /** 文件备份：内容与文本备份完全一致（JIN: 开头的压缩串），文件名沿用同一标识。 */
-    private void saveBackupFile(final String json, final int listCount, final int settingCount) {
+    private void saveBackupFile(final String json, final int listCount, final int settingCount,
+                                final int shortcutCount) {
         final String text = encodeBackupText(json);
         if (text == null) {
             Toast.makeText(this, "备份内容生成失败", Toast.LENGTH_SHORT).show();
@@ -7398,7 +7413,8 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 final String path = f.getAbsolutePath();
                 compactCard("备份完成",
-                        "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项\n" + path,
+                        "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项 + 快捷方式 "
+                                + shortcutCount + " 个\n" + path,
                         null, new String[]{"关闭", "复制路径"}, new Runnable[]{null, () -> {
                             android.content.ClipboardManager cm = (android.content.ClipboardManager)
                                     getSystemService(CLIPBOARD_SERVICE);
@@ -7544,6 +7560,12 @@ public class FreezeListActivity extends BaseActivity {
             listCount = arr == null ? freeze.optInt("count", 0) : arr.length();
         }
         int setCount = settings == null ? 0 : settings.length();
+        JSONObject shortcuts = data.optJSONObject("shortcuts");
+        int shortcutCount = 0;
+        if (shortcuts != null) {
+            JSONArray arr = shortcuts.optJSONArray("pkgs");
+            shortcutCount = arr == null ? shortcuts.optInt("count", 0) : arr.length();
+        }
         StringBuilder desc = new StringBuilder("来源：").append(source);
         String created = data.optString("createdAt", "");
         String ver = data.optString("appVersion", "");
@@ -7570,13 +7592,22 @@ public class FreezeListActivity extends BaseActivity {
             applyRestore(data, RESTORE_FREEZE);
         });
         content.addView(onlyList, topMargin(6));
-        LinearLayout both = optionRowCompact("两者一起恢复",
-                "配置 " + setCount + " 项 + 冻结列表 " + listCount + " 个");
-        both.setOnClickListener(v -> {
+        LinearLayout onlyShortcuts = optionRowCompact("只恢复快捷方式",
+                shortcutCount == 0 ? "这份备份里没有桌面快捷方式记录"
+                        : shortcutCount + " 个桌面图标，只补当前桌面缺少的，每个需在系统弹框确认");
+        onlyShortcuts.setOnClickListener(v -> {
             dismiss(ref);
-            applyRestore(data, RESTORE_BOTH);
+            applyRestore(data, RESTORE_SHORTCUTS);
         });
-        content.addView(both, topMargin(6));
+        content.addView(onlyShortcuts, topMargin(6));
+        LinearLayout all = optionRowCompact("全部恢复",
+                "配置 " + setCount + " 项 + 冻结列表 " + listCount + " 个 + 快捷方式 "
+                        + shortcutCount + " 个");
+        all.setOnClickListener(v -> {
+            dismiss(ref);
+            applyRestore(data, RESTORE_ALL);
+        });
+        content.addView(all, topMargin(6));
         ref[0] = compactCard("选择恢复内容", desc, content,
                 new String[]{"取消"}, new Runnable[]{null});
     }
@@ -7586,22 +7617,33 @@ public class FreezeListActivity extends BaseActivity {
      * 也不主动调 SwipeFreeze 同步；插件名单由原有路径在下次进列表页时自然同步。
      */
     private void applyRestore(JSONObject data, int mode) {
+        boolean doSettings = mode == RESTORE_SETTINGS || mode == RESTORE_ALL;
+        boolean doFreeze = mode == RESTORE_FREEZE || mode == RESTORE_ALL;
+        boolean doShortcuts = mode == RESTORE_SHORTCUTS || mode == RESTORE_ALL;
         int setCount = 0;
         int listCount = 0;
         int missing = 0;
-        if (mode != RESTORE_FREEZE) {
+        int shortcutTotal = 0;
+        int shortcutRequested = 0;
+        if (doSettings) {
             setCount = writeBackupSettings(data.optJSONObject("settings"));
         }
-        if (mode != RESTORE_SETTINGS) {
+        if (doFreeze) {
             int[] r = writeBackupFreeze(data.optJSONObject("freeze"));
             listCount = r[0];
             missing = r[1];
         }
+        if (doShortcuts) {
+            JSONObject sc = data.optJSONObject("shortcuts");
+            JSONArray arr = sc == null ? null : sc.optJSONArray("pkgs");
+            shortcutTotal = arr == null ? 0 : arr.length();
+            shortcutRequested = restoreShortcutPkgs(arr);
+        }
         StringBuilder msg = new StringBuilder();
-        if (mode != RESTORE_FREEZE) {
+        if (doSettings) {
             msg.append("配置 ").append(setCount).append(" 项");
         }
-        if (mode != RESTORE_SETTINGS) {
+        if (doFreeze) {
             if (msg.length() > 0) {
                 msg.append('\n');
             }
@@ -7610,7 +7652,20 @@ public class FreezeListActivity extends BaseActivity {
                 msg.append("（跳过未安装 ").append(missing).append(" 个）");
             }
         }
-        final boolean settingsApplied = mode != RESTORE_FREEZE;
+        if (doShortcuts) {
+            if (msg.length() > 0) {
+                msg.append('\n');
+            }
+            if (shortcutTotal == 0) {
+                msg.append("备份里没有桌面快捷方式记录");
+            } else if (shortcutRequested == 0) {
+                msg.append("桌面快捷方式已存在（").append(shortcutTotal).append(" 个），无需重加");
+            } else {
+                msg.append("桌面快捷方式：已请求添加 ").append(shortcutRequested)
+                        .append(" 个，请在桌面弹出的确认框里逐个确认");
+            }
+        }
+        final boolean settingsApplied = doSettings;
         compactCard("恢复完成", msg.toString(), null, new String[]{"完成"}, new Runnable[]{() -> {
             if (settingsApplied) {
                 // 布局参数在 onCreate 读取，重建一次让恢复的设置立即生效
@@ -7621,7 +7676,39 @@ public class FreezeListActivity extends BaseActivity {
         }});
     }
 
-    /** 备份 JSON：与搞机助手同一套字段，freeze 段 + settings 段。 */
+    /**
+     * 恢复桌面快捷方式：只补当前桌面缺少的，已固定或未安装的跳过。
+     * 冻结应用处于 disable 状态，查安装信息必须带 MATCH_DISABLED_COMPONENTS，
+     * 否则会被当成未安装而跳过（这正是「只有解冻的能恢复图标」的原因）。
+     * 固定动作由桌面弹确认框、无法静默批量，因此交给 ShortcutPin 串行队列逐个请求。
+     */
+    private int restoreShortcutPkgs(JSONArray arr) {
+        if (arr == null || arr.length() == 0) {
+            return 0;
+        }
+        Set<String> pinned = ShortcutPin.pinnedPackages(this);
+        android.content.pm.PackageManager pm = getPackageManager();
+        List<String> todo = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            String pkg = arr.optString(i, "").trim();
+            if (pkg.isEmpty() || pinned.contains(pkg)) {
+                continue;
+            }
+            try {
+                pm.getApplicationInfo(pkg,
+                        android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS);
+            } catch (Exception e) {
+                continue;
+            }
+            todo.add(pkg);
+        }
+        if (!todo.isEmpty()) {
+            ShortcutPin.pinAll(this, todo, null);
+        }
+        return todo.size();
+    }
+
+    /** 备份 JSON：与搞机助手同一套字段，freeze 段 + settings 段 + shortcuts 段。 */
     private String buildBackupJson() {
         try {
             JSONObject root = new JSONObject();
@@ -7660,6 +7747,18 @@ public class FreezeListActivity extends BaseActivity {
             freeze.put("default_tab", prefs().getString(KEY_DEFAULT_TAB, ""));
             freeze.put("tab_bar_hidden", prefs().getBoolean(KEY_HIDE_TAB_ROW, false));
             root.put("freeze", freeze);
+
+            // 桌面快捷方式：只记录备份时确实固定在桌面的包名，恢复时补桌面缺失的
+            JSONArray scArr = new JSONArray();
+            List<String> pinned = new ArrayList<>(ShortcutPin.pinnedPackages(this));
+            Collections.sort(pinned);
+            for (String p : pinned) {
+                scArr.put(p);
+            }
+            JSONObject shortcuts = new JSONObject();
+            shortcuts.put("count", scArr.length());
+            shortcuts.put("pkgs", scArr);
+            root.put("shortcuts", shortcuts);
 
             JSONObject settings = new JSONObject();
             for (Map.Entry<String, ?> en : prefs().getAll().entrySet()) {

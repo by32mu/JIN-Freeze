@@ -61,7 +61,7 @@ public final class JinModule extends XposedModule {
             try {
                 module.log(android.util.Log.INFO, "JinSwipeFreeze", message);
             } catch (Throwable ignored) {
-                android.util.Log.i("JinSwipeFreeze", message);
+                android.util.Log.w("JinSwipeFreeze", message);
             }
         }
     }

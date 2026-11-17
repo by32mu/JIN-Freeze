@@ -114,6 +114,11 @@
             android:name=".ui.ShortcutBatchService"
             android:exported="false" />
 
+        <!-- 批量添加桌面图标的结果回调：系统按 PendingIntent 投递，用于串行下一个 -->
+        <receiver
+            android:name=".ui.PinResultReceiver"
+            android:exported="false" />
+
         <!-- 老式快捷方式提供者：手势工具通过 ACTION_CREATE_SHORTCUT 枚举 -->
         <activity
             android:name=".ui.ShortcutProviderActivity"
