@@ -184,6 +184,60 @@
             android:scrollbars="none" />
     </LinearLayout>
 
+    <!-- 全屏空态：名单为空时居中提示，添加入口在右上角「+」，不再显示按钮 -->
+    <LinearLayout
+        android:id="@+id/panel_empty"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="28dp"
+        android:paddingEnd="28dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:alpha="0.35"
+            android:contentDescription="空名单"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_sc_freeze" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="名单为空"
+            android:textColor="@color/text_primary"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center"
+            android:text="点击右上角+号添加应用"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/empty_add"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center"
+            android:paddingStart="18dp"
+            android:paddingTop="9dp"
+            android:paddingEnd="18dp"
+            android:paddingBottom="9dp"
+            android:text="＋ 添加应用"
+            android:textColor="@color/blue"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
     <!-- 一键冻结：悬浮按钮，位置由布局设置里的两个滑块控制，滚动时保持可见 -->
     <LinearLayout
         android:id="@+id/fab_group"

@@ -103,6 +103,11 @@ public class FreezeListActivity extends BaseActivity {
         return userId == 0 ? pkg : instanceKey(pkg, userId);
     }
 
+    /** 多用户实例的名称后缀：999 是双开，其余（如 10）是分身。 */
+    private static String cloneTag(int userId) {
+        return userId == 999 ? "（双开）" : "（分身）";
+    }
+
     /**
      * 取纯包名：兼容本应用的「pkg@10」写法，以及系统/其他工具常见的
      * 「com.android.settings (10)」写法（用户号放在包名后的括号里）。
@@ -1984,6 +1989,8 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 选择应用页里也能改标签页，这里重读一次归属，否则返回列表后仍按旧内存数据分组
+        loadAppTabs();
         // 每次回到页面都重新读一次系统真值
         reload();
         // 授权管理器里点完「允许」回到凚时自动重测：失败缓存有 TTL，这里强制重来一次
@@ -2805,6 +2812,9 @@ public class FreezeListActivity extends BaseActivity {
             } catch (Exception e) {
                 it.label = pkg;
             }
+            if (userId != 0) {
+                it.label += cloneTag(userId);
+            }
             map.put(key, it);
         }
         List<Item> list = new ArrayList<>();
@@ -2887,6 +2897,9 @@ public class FreezeListActivity extends BaseActivity {
                     Set<String> cloneTruth = cloneDisabled.get(userId);
                     it.frozen = cloneTruth != null ? cloneTruth.contains(pkg)
                             : (ai != null && !ai.enabled);
+                }
+                if (userId != 0) {
+                    it.label += cloneTag(userId);
                 }
                 kept.add(key);
                 map.put(key, it);
@@ -3225,6 +3238,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         updateCount(shown);
         if (emptyState != null) {
+            // 当前标签（叠加搜索）为空就显示居中空态卡片；全屏与半屏口径一致
             emptyState.setVisibility(loadedOnce && shown.isEmpty() ? View.VISIBLE : View.GONE);
         }
         syncSpanCount();
@@ -3242,9 +3256,10 @@ public class FreezeListActivity extends BaseActivity {
         if (count != null) {
             String hint;
             if (items.isEmpty()) {
-                hint = "名单为空，点右上角「+」添加应用";
+                // 全屏改用居中的空态卡片提示，这行小字不再显示；半屏布局没有 count 视图，保持原样
+                hint = panelMode ? "名单为空，点右上角「+」添加应用" : null;
             } else if (empty) {
-                hint = "当前筛选下没有应用";
+                hint = panelMode ? "当前筛选下没有应用" : null;
             } else if (editMode) {
                 hint = "编辑模式：点图标右上角减号移出名单";
             } else if (selectMode) {
@@ -3803,29 +3818,27 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 长按不动松手：把应用移入另一个标签；一个应用只属于一个标签。 */
     private void showMoveDialog(Item it) {
-        final List<Tab> targets = new ArrayList<>();
-        String cur = tabIdOf(it);
-        for (Tab t : tabs) {
-            if (!t.id.equals(cur)) {
-                targets.add(t);
-            }
-        }
-        if (targets.isEmpty()) {
+        if (tabs.size() <= 1) {
             Toast.makeText(this, "只有一个标签，先在布局设置里新建标签", Toast.LENGTH_SHORT).show();
             return;
         }
-        String[] names = new String[targets.size()];
-        for (int i = 0; i < targets.size(); i++) {
-            Tab t = targets.get(i);
-            names[i] = t.visible ? t.name : t.name + "（已隐藏）";
+        String cur = tabIdOf(it);
+        List<MoveTabDialog.Tab> entries = new ArrayList<>();
+        for (Tab t : tabs) {
+            entries.add(new MoveTabDialog.Tab(t.id, t.name, t.visible, t.id.equals(cur)));
         }
-        AlertDialog pick = new AlertDialog.Builder(this)
-                .setTitle("移动「" + it.label + "」到…")
-                .setItems(names, (d, w) -> moveToTab(it, targets.get(w)))
-                .setNegativeButton("取消", null)
-                .create();
-        pick.show();
-        Ui.roundAlertDialog(pick);
+        MoveTabDialog.show(this, it.label, it.icon, entries, target -> {
+            Tab t = findTab(target.id);
+            if (t == null || target.current) {
+                return;
+            }
+            // 用户应用不允许进入内置的「系统应用」标签
+            if (!it.system && TAB_SYSTEM.equals(t.id)) {
+                Toast.makeText(this, "用户应用禁止移入系统应用标签", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            moveToTab(it, t);
+        });
     }
 
     private void moveToTab(Item it, Tab target) {
@@ -4363,6 +4376,16 @@ public class FreezeListActivity extends BaseActivity {
                 .setTitle("把 " + n + " 个应用移动到…")
                 .setItems(names, (d, w) -> {
                     Tab target = targets.get(w);
+                    // 用户应用不允许进入内置的「系统应用」标签
+                    if (TAB_SYSTEM.equals(target.id)) {
+                        for (Item it : batchTargets) {
+                            if (!it.system) {
+                                Toast.makeText(this, "用户应用禁止移入系统应用标签",
+                                        Toast.LENGTH_SHORT).show();
+                                return;
+                            }
+                        }
+                    }
                     int moved = 0;
                     for (Item it : batchTargets) {
                         appTabs.put(it.pkg, target.id);
@@ -6596,13 +6619,13 @@ public class FreezeListActivity extends BaseActivity {
         backupTitle.setPadding(0, Ui.dp(this, 12), 0, 0);
 
         TextView backupEntry = new TextView(this);
-        backupEntry.setText("备份（文件或文本）");
+        backupEntry.setText("备份");
         backupEntry.setTextSize(12);
         backupEntry.setTextColor(getColor(R.color.blue));
         backupEntry.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
 
         TextView restoreEntry = new TextView(this);
-        restoreEntry.setText("恢复（文件或文本）");
+        restoreEntry.setText("恢复");
         restoreEntry.setTextSize(12);
         restoreEntry.setTextColor(getColor(R.color.blue));
         restoreEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));

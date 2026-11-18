@@ -279,6 +279,11 @@ public class AppFreezeActivity extends BaseActivity {
         return userId == 0 ? pkg : instanceKey(pkg, userId);
     }
 
+    /** 多用户实例的名称后缀：999 是双开，其余（如 10）是分身。 */
+    private static String cloneTag(int userId) {
+        return userId == 999 ? "（双开）" : "（分身）";
+    }
+
     /** 判断名单/顺序里的一条记录是否就是当前这个应用实例。 */
     private static boolean sameInstance(String stored, String pkg, int userId) {
         return packagePart(stored).equals(pkg) && parseUserId(stored) == userId;
@@ -407,7 +412,7 @@ public class AppFreezeActivity extends BaseActivity {
                         // 只装在分身/工作空间里的应用：主用户的 PackageManager 查不到详情，
                         // 仍按包名录出来（名称暂用包名），保证能冻结/解冻。
                         App a = new App();
-                        a.label = pkg;
+                        a.label = pkg + cloneTag(userId);
                         a.pkg = pkg;
                         a.userId = userId;
                         a.system = false;
@@ -424,7 +429,10 @@ public class AppFreezeActivity extends BaseActivity {
                     a.label = pm.getApplicationLabel(ai).toString();
                     a.pkg = pi.packageName;
                     a.userId = userId;
-                    // 分身标识只拼在包名后面显示（com.foo (10)），应用名称保持原样
+                    if (userId != 0) {
+                        // 多用户实例标识加在应用名称后；包名行另带 (用户号)
+                        a.label += cloneTag(userId);
+                    }
                     a.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
                             | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
                     String key = instanceKey(a.pkg, userId);
@@ -915,6 +923,7 @@ public class AppFreezeActivity extends BaseActivity {
         SharedPreferences fp = listPrefs();
         List<String> ids = new ArrayList<>();
         List<String> names = new ArrayList<>();
+        List<Boolean> visibles = new ArrayList<>();
         try {
             JSONArray arr = new JSONArray(fp.getString("tabs", ""));
             for (int i = 0; i < arr.length(); i++) {
@@ -924,9 +933,10 @@ public class AppFreezeActivity extends BaseActivity {
                 }
                 String id = o.optString("id", "");
                 String name = o.optString("name", "");
-                if (!id.isEmpty() && !name.isEmpty()) {
+                if (!id.isEmpty() && !name.isEmpty() && !ids.contains(id)) {
                     ids.add(id);
                     names.add(name);
+                    visibles.add(o.optBoolean("visible", true));
                 }
             }
         } catch (Exception ignored) {
@@ -934,19 +944,23 @@ public class AppFreezeActivity extends BaseActivity {
         if (ids.isEmpty()) {
             ids.add("user");
             names.add("用户应用");
+            visibles.add(true);
             ids.add("system");
             names.add("系统应用");
+            visibles.add(true);
         } else {
             // 内置标签必须始终可选：旧数据里只存了自定义标签时，补上「用户应用 / 系统应用」，
             // 否则非系统应用会被一直挡在系统应用标签之外。
             if (!ids.contains("user")) {
                 ids.add(0, "user");
                 names.add(0, "用户应用");
+                visibles.add(0, true);
             }
             if (!ids.contains("system")) {
                 int at = Math.min(1, ids.size());
                 ids.add(at, "system");
                 names.add(at, "系统应用");
+                visibles.add(at, true);
             }
         }
         String cur = "";
@@ -955,34 +969,35 @@ public class AppFreezeActivity extends BaseActivity {
                     .optString(storageKey(a.pkg, a.userId), "");
         } catch (Exception ignored) {
         }
-        List<String> targetIds = new ArrayList<>();
-        List<String> targetNames = new ArrayList<>();
+        // 没有显式归属时按系统标记落回内置标签，当前项才不会标错
+        if (cur.isEmpty()) {
+            cur = a.system ? "system" : "user";
+        }
+        List<MoveTabDialog.Tab> entries = new ArrayList<>();
         for (int i = 0; i < ids.size(); i++) {
-            if (!ids.get(i).equals(cur)) {
-                targetIds.add(ids.get(i));
-                targetNames.add(names.get(i));
+            entries.add(new MoveTabDialog.Tab(ids.get(i), names.get(i), visibles.get(i),
+                    ids.get(i).equals(cur)));
+        }
+        final String key = storageKey(a.pkg, a.userId);
+        MoveTabDialog.show(this, a.label, a.icon, entries, target -> {
+            if (target.current) {
+                return;
             }
-        }
-        if (targetIds.isEmpty()) {
-            Toast.makeText(this, "只有一个标签，先在布局设置里新建标签", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        AlertDialog moveDlg = new AlertDialog.Builder(this)
-                .setTitle("移动「" + a.label + "」到…")
-                .setItems(targetNames.toArray(new String[0]), (d, w) -> {
-                    try {
-                        JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
-                        o.put(storageKey(a.pkg, a.userId), targetIds.get(w));
-                        fp.edit().putString("app_tabs", o.toString()).apply();
-                        Toast.makeText(this, "已移动到「" + targetNames.get(w) + "」",
-                                Toast.LENGTH_SHORT).show();
-                    } catch (Exception ignored) {
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .create();
-        moveDlg.show();
-        Ui.roundAlertDialog(moveDlg);
+            // 用户应用不允许进入内置的「系统应用」标签
+            if (!a.system && "system".equals(target.id)) {
+                Toast.makeText(this, "用户应用禁止移入系统应用标签",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            try {
+                JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
+                o.put(key, target.id);
+                fp.edit().putString("app_tabs", o.toString()).apply();
+                Toast.makeText(this, "已移动到「" + target.name + "」",
+                        Toast.LENGTH_SHORT).show();
+            } catch (Exception ignored) {
+            }
+        });
     }
 
     private void openAppSettings(String pkg) {
