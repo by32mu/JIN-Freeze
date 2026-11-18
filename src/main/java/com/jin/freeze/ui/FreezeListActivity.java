@@ -8772,13 +8772,20 @@ public class FreezeListActivity extends BaseActivity {
     private static final int RESTORE_FREEZE = 2;
     /** 只恢复桌面快捷方式：备份里有、当前桌面没有的，逐个重新请求固定。 */
     private static final int RESTORE_SHORTCUTS = 4;
-    /** 全部恢复：配置 + 冻结列表 + 桌面快捷方式。 */
-    private static final int RESTORE_ALL = 5;
+    /** 只恢复列表白名单：覆盖当前白名单。 */
+    private static final int RESTORE_WHITELIST = 8;
+    /** 只恢复关联应用（主副应用列表）：覆盖当前关联。 */
+    private static final int RESTORE_PAIRS = 16;
+    /** 全部恢复：配置 + 冻结列表 + 桌面快捷方式 + 白名单 + 关联应用。 */
+    private static final int RESTORE_ALL = RESTORE_SETTINGS | RESTORE_FREEZE | RESTORE_SHORTCUTS
+            | RESTORE_WHITELIST | RESTORE_PAIRS;
 
     /** 名单类键归 freeze 段，其余键归 settings 段，不重复备份。 */
     private static final String[] BACKUP_LIST_KEYS = {
             KEY_PKGS, KEY_ORDER, KEY_CUSTOM, KEY_APP_TABS, KEY_TABS,
-            KEY_CURRENT_TAB, KEY_DEFAULT_TAB, KEY_HIDE_TAB_ROW
+            KEY_CURRENT_TAB, KEY_DEFAULT_TAB, KEY_HIDE_TAB_ROW,
+            // 白名单与主副关联单独成段备份，不再混进「配置」
+            KEY_WHITELIST, KEY_SUB_PAIRS
     };
 
     /**
@@ -8813,6 +8820,8 @@ public class FreezeListActivity extends BaseActivity {
         final int listCount = items.size();
         final int settingCount = backupSettingCount();
         final int shortcutCount = ShortcutPin.pinnedPackages(this).size();
+        final int whiteCount = whitelistSet().size();
+        final int pairCount = allPairs().size();
         final AlertDialog[] ref = new AlertDialog[1];
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -8821,19 +8830,20 @@ public class FreezeListActivity extends BaseActivity {
                         + "时间.json），恢复时从文件列表选择");
         optFile.setOnClickListener(v -> {
             dismiss(ref);
-            saveBackupFile(json, listCount, settingCount, shortcutCount);
+            saveBackupFile(json, listCount, settingCount, shortcutCount, whiteCount, pairCount);
         });
         content.addView(optFile);
         LinearLayout optText = optionRowCompact("生成文本",
                 "生成一串压缩后的短文本（自动复制），可存到备忘录 / 聊天里；恢复时粘回来即可");
         optText.setOnClickListener(v -> {
             dismiss(ref);
-            showBackupText(json, listCount, settingCount, shortcutCount);
+            showBackupText(json, listCount, settingCount, shortcutCount, whiteCount, pairCount);
         });
         content.addView(optText, topMargin(6));
         ref[0] = compactCard("备份",
                 "冻结列表 " + listCount + " 个、设置 " + settingCount + " 项、桌面快捷方式 "
-                        + shortcutCount + " 个，会写进同一份备份",
+                        + shortcutCount + " 个、白名单 " + whiteCount + " 个、关联应用 "
+                        + pairCount + " 组，会写进同一份备份",
                 content, new String[]{"取消"}, new Runnable[]{null});
     }
 
@@ -8856,12 +8866,14 @@ public class FreezeListActivity extends BaseActivity {
             showRestorePaste();
         });
         content.addView(optText, topMargin(6));
-        ref[0] = compactCard("恢复", "先选备份来源，再决定恢复配置、冻结列表还是桌面快捷方式",
+        ref[0] = compactCard("恢复",
+                "先选备份来源，再决定恢复配置、冻结列表、白名单、关联应用还是桌面快捷方式",
                 content, new String[]{"取消"}, new Runnable[]{null});
     }
 
     /** 文本备份：压缩 + Base64 成尽量短的一串，进剪贴板并展示出来。 */
-    private void showBackupText(String json, int listCount, int settingCount, int shortcutCount) {
+    private void showBackupText(String json, int listCount, int settingCount, int shortcutCount,
+                                int whiteCount, int pairCount) {
         final String text = encodeBackupText(json);
         if (text == null) {
             Toast.makeText(this, "备份文本生成失败", Toast.LENGTH_SHORT).show();
@@ -8881,7 +8893,8 @@ public class FreezeListActivity extends BaseActivity {
         int pct = raw == 0 ? 100 : Math.round(text.length() * 100f / raw);
         compactCard("备份文本（已复制）",
                 "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项 + 快捷方式 "
-                        + shortcutCount + " 个\n"
+                        + shortcutCount + " 个 + 白名单 " + whiteCount + " 个 + 关联应用 "
+                        + pairCount + " 组\n"
                         + text.length() + " 字符（原始 " + raw + " 字符，约 " + pct + "%）",
                 sv, new String[]{"关闭", "再复制一次"}, new Runnable[]{null, () -> {
                     cm.setPrimaryClip(ClipData.newPlainText("凚备份", text));
@@ -8891,7 +8904,7 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 文件备份：内容与文本备份完全一致（JIN: 开头的压缩串），文件名沿用同一标识。 */
     private void saveBackupFile(final String json, final int listCount, final int settingCount,
-                                final int shortcutCount) {
+                                final int shortcutCount, final int whiteCount, final int pairCount) {
         final String text = encodeBackupText(json);
         if (text == null) {
             Toast.makeText(this, "备份内容生成失败", Toast.LENGTH_SHORT).show();
@@ -8928,7 +8941,8 @@ public class FreezeListActivity extends BaseActivity {
                 final String path = f.getAbsolutePath();
                 compactCard("备份完成",
                         "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项 + 快捷方式 "
-                                + shortcutCount + " 个\n" + path,
+                                + shortcutCount + " 个 + 白名单 " + whiteCount + " 个 + 关联应用 "
+                                + pairCount + " 组\n" + path,
                         null, new String[]{"关闭", "复制路径"}, new Runnable[]{null, () -> {
                             android.content.ClipboardManager cm = (android.content.ClipboardManager)
                                     getSystemService(CLIPBOARD_SERVICE);
@@ -9080,6 +9094,18 @@ public class FreezeListActivity extends BaseActivity {
             JSONArray arr = shortcuts.optJSONArray("pkgs");
             shortcutCount = arr == null ? shortcuts.optInt("count", 0) : arr.length();
         }
+        JSONObject whitelist = data.optJSONObject("whitelist");
+        int whiteCount = 0;
+        if (whitelist != null) {
+            JSONArray arr = whitelist.optJSONArray("keys");
+            whiteCount = arr == null ? whitelist.optInt("count", 0) : arr.length();
+        }
+        JSONObject pairsObj = data.optJSONObject("pairs");
+        int pairCount = 0;
+        if (pairsObj != null) {
+            JSONArray arr = pairsObj.optJSONArray("items");
+            pairCount = arr == null ? pairsObj.optInt("count", 0) : arr.length();
+        }
         StringBuilder desc = new StringBuilder("来源：").append(source);
         String created = data.optString("createdAt", "");
         String ver = data.optString("appVersion", "");
@@ -9106,6 +9132,22 @@ public class FreezeListActivity extends BaseActivity {
             applyRestore(data, RESTORE_FREEZE);
         });
         content.addView(onlyList, topMargin(6));
+        LinearLayout onlyWhite = optionRowCompact("只恢复列表白名单",
+                whiteCount == 0 ? "这份备份里没有白名单记录"
+                        : whiteCount + " 个应用，覆盖当前白名单，冻结列表与设置不动");
+        onlyWhite.setOnClickListener(v -> {
+            dismiss(ref);
+            applyRestore(data, RESTORE_WHITELIST);
+        });
+        content.addView(onlyWhite, topMargin(6));
+        LinearLayout onlyPairs = optionRowCompact("只恢复关联应用",
+                pairCount == 0 ? "这份备份里没有主副应用关联记录"
+                        : pairCount + " 组主副应用，覆盖当前关联，冻结列表与设置不动");
+        onlyPairs.setOnClickListener(v -> {
+            dismiss(ref);
+            applyRestore(data, RESTORE_PAIRS);
+        });
+        content.addView(onlyPairs, topMargin(6));
         LinearLayout onlyShortcuts = optionRowCompact("只恢复快捷方式",
                 shortcutCount == 0 ? "这份备份里没有桌面快捷方式记录"
                         : shortcutCount + " 个桌面图标，只补当前桌面缺少的，每个需在系统弹框确认");
@@ -9115,7 +9157,8 @@ public class FreezeListActivity extends BaseActivity {
         });
         content.addView(onlyShortcuts, topMargin(6));
         LinearLayout all = optionRowCompact("全部恢复",
-                "配置 " + setCount + " 项 + 冻结列表 " + listCount + " 个 + 快捷方式 "
+                "配置 " + setCount + " 项 + 冻结列表 " + listCount + " 个 + 白名单 "
+                        + whiteCount + " 个 + 关联应用 " + pairCount + " 组 + 快捷方式 "
                         + shortcutCount + " 个");
         all.setOnClickListener(v -> {
             dismiss(ref);
@@ -9131,14 +9174,18 @@ public class FreezeListActivity extends BaseActivity {
      * 也不主动调 SwipeFreeze 同步；插件名单由原有路径在下次进列表页时自然同步。
      */
     private void applyRestore(JSONObject data, int mode) {
-        boolean doSettings = mode == RESTORE_SETTINGS || mode == RESTORE_ALL;
-        boolean doFreeze = mode == RESTORE_FREEZE || mode == RESTORE_ALL;
-        boolean doShortcuts = mode == RESTORE_SHORTCUTS || mode == RESTORE_ALL;
+        boolean doSettings = (mode & RESTORE_SETTINGS) != 0;
+        boolean doFreeze = (mode & RESTORE_FREEZE) != 0;
+        boolean doShortcuts = (mode & RESTORE_SHORTCUTS) != 0;
+        boolean doWhitelist = (mode & RESTORE_WHITELIST) != 0;
+        boolean doPairs = (mode & RESTORE_PAIRS) != 0;
         int setCount = 0;
         int listCount = 0;
         int missing = 0;
         int shortcutTotal = 0;
         int shortcutRequested = 0;
+        int whiteCount = -1;
+        int pairCount = -1;
         if (doSettings) {
             setCount = writeBackupSettings(data.optJSONObject("settings"));
         }
@@ -9146,6 +9193,20 @@ public class FreezeListActivity extends BaseActivity {
             int[] r = writeBackupFreeze(data.optJSONObject("freeze"));
             listCount = r[0];
             missing = r[1];
+        }
+        if (doWhitelist) {
+            JSONObject obj = data.optJSONObject("whitelist");
+            // 旧备份没有独立白名单段时不去动当前白名单
+            if (obj != null) {
+                whiteCount = writeBackupWhitelist(obj);
+            }
+        }
+        if (doPairs) {
+            JSONObject obj = data.optJSONObject("pairs");
+            // 旧备份没有独立关联段时不去动当前关联
+            if (obj != null) {
+                pairCount = writeBackupPairs(obj);
+            }
         }
         if (doShortcuts) {
             JSONObject sc = data.optJSONObject("shortcuts");
@@ -9164,6 +9225,26 @@ public class FreezeListActivity extends BaseActivity {
             msg.append("冻结列表 ").append(listCount).append(" 个");
             if (missing > 0) {
                 msg.append("（跳过未安装 ").append(missing).append(" 个）");
+            }
+        }
+        if (doWhitelist) {
+            if (msg.length() > 0) {
+                msg.append('\n');
+            }
+            if (whiteCount < 0) {
+                msg.append("备份里没有白名单记录，当前白名单未改动");
+            } else {
+                msg.append("列表白名单 ").append(whiteCount).append(" 个");
+            }
+        }
+        if (doPairs) {
+            if (msg.length() > 0) {
+                msg.append('\n');
+            }
+            if (pairCount < 0) {
+                msg.append("备份里没有关联应用记录，当前关联未改动");
+            } else {
+                msg.append("关联应用 ").append(pairCount).append(" 组");
             }
         }
         if (doShortcuts) {
@@ -9261,6 +9342,32 @@ public class FreezeListActivity extends BaseActivity {
             freeze.put("default_tab", prefs().getString(KEY_DEFAULT_TAB, ""));
             freeze.put("tab_bar_hidden", prefs().getBoolean(KEY_HIDE_TAB_ROW, false));
             root.put("freeze", freeze);
+
+            // 列表白名单：单独成段，恢复时可以只恢复它
+            List<String> whiteKeys = new ArrayList<>(whitelistSet());
+            Collections.sort(whiteKeys);
+            JSONArray whiteArr = new JSONArray();
+            for (String k : whiteKeys) {
+                whiteArr.put(k);
+            }
+            JSONObject whitelist = new JSONObject();
+            whitelist.put("count", whiteArr.length());
+            whitelist.put("keys", whiteArr);
+            root.put("whitelist", whitelist);
+
+            // 主副应用关联：单独成段，恢复时可以只恢复它
+            JSONArray pairArr = new JSONArray();
+            for (Pair p : allPairs()) {
+                JSONObject one = new JSONObject();
+                one.put("main", p.main);
+                one.put("sub", p.sub);
+                one.put("enabled", p.enabled);
+                pairArr.put(one);
+            }
+            JSONObject pairs = new JSONObject();
+            pairs.put("count", pairArr.length());
+            pairs.put("items", pairArr);
+            root.put("pairs", pairs);
 
             // 桌面快捷方式：只记录备份时确实固定在桌面的包名，恢复时补桌面缺失的
             JSONArray scArr = new JSONArray();
@@ -9385,7 +9492,9 @@ public class FreezeListActivity extends BaseActivity {
         Iterator<String> it = settings.keys();
         while (it.hasNext()) {
             String key = it.next();
-            if (!ownSettingKey(key)) {
+            // 新备份把白名单/主副关联单独成段；旧备份里它们还在 settings 段，这里照样兼容写回
+            if (!ownSettingKey(key)
+                    && !KEY_WHITELIST.equals(key) && !KEY_SUB_PAIRS.equals(key)) {
                 continue;
             }
             JSONObject one = settings.optJSONObject(key);
@@ -9485,6 +9594,46 @@ public class FreezeListActivity extends BaseActivity {
         if (o.has(src) && !o.isNull(src)) {
             e.putString(key, o.optString(src, ""));
         }
+    }
+
+    /** 写回列表白名单：整体覆盖，返回写入个数。 */
+    private int writeBackupWhitelist(JSONObject whitelist) {
+        Set<String> next = new HashSet<>();
+        JSONArray arr = whitelist == null ? null : whitelist.optJSONArray("keys");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                String k = arr.optString(i, "");
+                if (!k.isEmpty()) {
+                    next.add(k);
+                }
+            }
+        }
+        prefs().edit().putStringSet(KEY_WHITELIST, next).apply();
+        refreshWhitelistEntry();
+        rebindCells();
+        return next.size();
+    }
+
+    /** 写回主副应用关联：整体覆盖，格式与 allPairs 的「主=副[|off]」一致。 */
+    private int writeBackupPairs(JSONObject pairs) {
+        List<Pair> list = new ArrayList<>();
+        JSONArray arr = pairs == null ? null : pairs.optJSONArray("items");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject one = arr.optJSONObject(i);
+                if (one == null) {
+                    continue;
+                }
+                String main = one.optString("main", "");
+                String sub = one.optString("sub", "");
+                if (main.isEmpty() || sub.isEmpty() || main.equals(sub)) {
+                    continue;
+                }
+                list.add(new Pair(main, sub, one.optBoolean("enabled", true)));
+            }
+        }
+        persistPairs(list);
+        return list.size();
     }
 
     private String appVersionName() {
