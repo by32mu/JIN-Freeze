@@ -2108,11 +2108,29 @@ public class FreezeListActivity extends BaseActivity {
         return Math.max(0, Math.min(GESTURE_DP_MAX, dp));
     }
 
-    /** 手势起点是否落在屏幕左右边缘区域（每侧 32dp）。 */
+    /**
+     * 手势起点是否落在屏幕左右边缘区域（每侧 32dp）。
+     * 起点要避开系统的返回手势区（systemGestures inset），否则贴边按下会被系统当成返回/回桌面，
+     * 应用根本收不到事件；所以真正的可触发区从系统手势区内侧再让 8dp 开始。
+     */
     private boolean atScreenEdge(float rawX) {
         int width = getResources().getDisplayMetrics().widthPixels;
         int edge = Ui.dp(this, GESTURE_EDGE_DP);
-        return rawX <= edge || rawX >= width - edge;
+        int margin = Ui.dp(this, 8);
+        int leftInset = 0;
+        int rightInset = 0;
+        androidx.core.view.WindowInsetsCompat insets =
+                androidx.core.view.ViewCompat.getRootWindowInsets(getWindow().getDecorView());
+        if (insets != null) {
+            androidx.core.graphics.Insets g = insets.getInsets(
+                    androidx.core.view.WindowInsetsCompat.Type.systemGestures());
+            leftInset = g.left;
+            rightInset = g.right;
+        }
+        int leftStart = leftInset + margin;
+        int rightEnd = width - rightInset - margin;
+        return (rawX >= leftStart && rawX <= leftStart + edge)
+                || (rawX >= rightEnd - edge && rawX <= rightEnd);
     }
 
     /**
