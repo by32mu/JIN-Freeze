@@ -2081,7 +2081,8 @@ public class FreezeListActivity extends BaseActivity {
         if (trigger) {
             if (!gestureEdgeOnly || atScreenEdge(scrubDownX)) {
                 cancelBlankScrub();
-                switchForm(!panelMode);
+                // toFull = 当前是不是半屏：半屏上滑进全屏、全屏下滑回半屏
+                switchForm(panelMode);
                 return;
             }
         }
@@ -2127,34 +2128,20 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 手势起点是否落在屏幕左右边缘触发区。
-     * 区域 = 从屏幕最外沿到「系统手势区 + 靠内宽度」这段；
-     * 最外沿那几毫米本来归系统返回手势，能不能收到取决于系统是否放行（见 applyEdgeGestureExclusion），
-     * 收到就按边缘触发处理，收不到也不会误伤其他逻辑。
+     * 手势起点是否落在左右边缘触发区。
+     * 「屏幕左/右边缘靠内触发手势距离」= 从屏幕边缘向里这段距离，整段都可触发：
+     * 左区 0..leftDp，右区 (屏宽-rightDp)..屏宽；滑块为 0 表示该侧不触发。
      */
     private boolean atScreenEdge(float rawX) {
         int width = getResources().getDisplayMetrics().widthPixels;
-        int margin = Ui.dp(this, 4);
-        int minInset = Ui.dp(this, 24);
-        int leftInset = 0;
-        int rightInset = 0;
-        androidx.core.view.WindowInsetsCompat insets =
-                androidx.core.view.ViewCompat.getRootWindowInsets(getWindow().getDecorView());
-        if (insets != null) {
-            androidx.core.graphics.Insets g = insets.getInsets(
-                    androidx.core.view.WindowInsetsCompat.Type.systemGestures());
-            leftInset = g.left;
-            rightInset = g.right;
-        }
-        int leftEnd = Math.max(leftInset, minInset) + margin + Ui.dp(this, gestureEdgeLeftDp);
-        int rightStart = width - Math.max(rightInset, minInset) - margin
-                - Ui.dp(this, gestureEdgeRightDp);
-        return (gestureEdgeLeftDp > 0 && rawX <= leftEnd)
-                || (gestureEdgeRightDp > 0 && rawX >= rightStart);
+        int leftWidth = Ui.dp(this, gestureEdgeLeftDp);
+        int rightWidth = Ui.dp(this, gestureEdgeRightDp);
+        return (leftWidth > 0 && rawX <= leftWidth)
+                || (rightWidth > 0 && rawX >= width - rightWidth);
     }
 
     /**
-     * 把左右边缘条带从系统返回手势区里「要回来」。
+     * 把左右边缘触发区从系统返回手势区里「要回来」。
      * Android 10+ 允许应用声明排除区（系统对单侧高度有上限），声明成功后贴边按下会先交给应用；
      * 关掉边缘触发时清空，恢复系统返回手势。
      */
@@ -2176,27 +2163,13 @@ public class FreezeListActivity extends BaseActivity {
             decor.post(this::applyEdgeGestureExclusion);
             return;
         }
-        int margin = Ui.dp(this, 4);
-        int minInset = Ui.dp(this, 24);
-        int leftInset = 0;
-        int rightInset = 0;
-        androidx.core.view.WindowInsetsCompat insets =
-                androidx.core.view.ViewCompat.getRootWindowInsets(decor);
-        if (insets != null) {
-            androidx.core.graphics.Insets g = insets.getInsets(
-                    androidx.core.view.WindowInsetsCompat.Type.systemGestures());
-            leftInset = g.left;
-            rightInset = g.right;
-        }
-        int leftW = Math.min(w, Math.max(leftInset, minInset) + margin
-                + Ui.dp(this, gestureEdgeLeftDp));
-        int rightW = Math.min(w, Math.max(rightInset, minInset) + margin
-                + Ui.dp(this, gestureEdgeRightDp));
+        int leftW = Math.min(w, Ui.dp(this, gestureEdgeLeftDp));
+        int rightW = Math.min(w, Ui.dp(this, gestureEdgeRightDp));
         java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>();
-        if (gestureEdgeLeftDp > 0) {
+        if (leftW > 0) {
             rects.add(new android.graphics.Rect(0, 0, leftW, h));
         }
-        if (gestureEdgeRightDp > 0) {
+        if (rightW > 0) {
             rects.add(new android.graphics.Rect(w - rightW, 0, w, h));
         }
         decor.setSystemGestureExclusionRects(rects);
