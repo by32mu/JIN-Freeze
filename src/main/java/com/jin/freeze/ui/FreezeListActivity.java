@@ -181,10 +181,14 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_TAB_SWIPE = "tab_swipe";
     /** 长按空白处左右滑翻标签时是否振动（直接走 Vibrator，不受系统触感开关影响）。 */
     private static final String KEY_SCRUB_VIBRATE = "scrub_vibrate";
-    /** 冻结应用是否用灰度图标显示；关掉后保持彩色，名称左侧加冻结雪花。 */
-    private static final String KEY_GRAY_ICON = "gray_icon";
-    /** 灰化方式：开=一半灰度一半彩色，关=整图灰度；仅在灰度图标开启时生效。 */
-    private static final String KEY_HALF_GRAY = "half_gray_icon";
+    /** 冻结图标样式：0=全彩，1..9=半灰半彩各方向与全灰（见 HalfGrayImageView.SPLIT_*）。 */
+    private static final String KEY_ICON_STYLE = "icon_style";
+    private static final String[] ICON_STYLE_NAMES = {
+            "全彩", "全灰", "左灰右彩", "右灰左彩", "上灰下彩", "下灰上彩",
+            "左上灰", "右上灰", "左下灰", "右下灰"
+    };
+    /** 与 ICON_STYLE_NAMES 一一对应的样式值（HalfGrayImageView.SPLIT_*，0=全彩）。 */
+    private static final int[] ICON_STYLE_VALUES = {0, 9, 1, 2, 3, 4, 5, 6, 7, 8};
     /** 主副应用映射：每行「主应用实例键=副应用实例键」。 */
     private static final String KEY_SUB_PAIRS = "sub_app_pairs";
     /** 隐藏标签文字：只收起标签名那一排，列表仍显示当前勾选的标签；仅勾选数为 1 时可用。 */
@@ -479,6 +483,8 @@ public class FreezeListActivity extends BaseActivity {
     private TextView layoutWpState;
     /** 设置面板里「主副应用关联」这一行，增删/暂停后即时刷新摘要。 */
     private TextView layoutPairEntry;
+    /** 设置页「冻结图标样式」这一行：选中后即时刷新显示的当前选项。 */
+    private TextView layoutIconStyleEntry;
     private WallpaperDrawable wallpaperDrawable;
     private boolean dismissAfterReload;
     /** 冻结成功后的提示开关；失败提示不受它影响。 */
@@ -487,10 +493,8 @@ public class FreezeListActivity extends BaseActivity {
     private boolean tabSwipeEnabled = true;
     /** 长按空白处左右滑翻标签时是否振动；布局设置可关。 */
     private boolean scrubVibrate = true;
-    /** 冻结应用是否灰化显示（设置页「列表图标」下的开关，默认关闭）。 */
-    private boolean grayIcon;
-    /** 灰化方式：一半灰度一半彩色（仅 grayIcon 开启时生效）。 */
-    private boolean halfGrayIcon;
+    /** 冻结图标样式：0=全彩，1..8=不同方向的半灰半彩。 */
+    private int iconStyle;
     /** 关闭凚时若下一层是桌面，用它回到上一个真正用过的应用（如头条），而不是停在桌面。 */
     private String previousAppPkg;
     /** 隐藏标签文字：只收起标签名那一排，列表与滑动手势照常工作。 */
@@ -546,16 +550,12 @@ public class FreezeListActivity extends BaseActivity {
     private final Runnable[] toneRetries = new Runnable[TONE_DELAYS_MS.length];
     private final Runnable toneAfterTouch = this::applyPanelBarState;
 
-    /** 已冻结灰度滤镜，和「应用冻结」页保持一致。 */
-    private static final android.graphics.ColorMatrixColorFilter GRAY;
-
-    /** 半灰半彩模式左半边用的滤镜：去饱和 + 0.45 透明度，与整图灰化的观感一致。 */
+    /** 半灰半彩模式灰化半边用的滤镜：去饱和 + 0.45 透明度。 */
     private static final android.graphics.ColorMatrixColorFilter GRAY_SOFT;
 
     static {
         android.graphics.ColorMatrix cm = new android.graphics.ColorMatrix();
         cm.setSaturation(0f);
-        GRAY = new android.graphics.ColorMatrixColorFilter(cm);
         android.graphics.ColorMatrix alpha = new android.graphics.ColorMatrix();
         alpha.setScale(1f, 1f, 1f, 0.45f);
         cm.postConcat(alpha);
@@ -769,8 +769,8 @@ public class FreezeListActivity extends BaseActivity {
         // 左右滑动切换标签固定开启（线上不再提供关闭入口），旧版本关过的用户也一并恢复
         tabSwipeEnabled = true;
         scrubVibrate = prefs().getBoolean(KEY_SCRUB_VIBRATE, true);
-        grayIcon = prefs().getBoolean(KEY_GRAY_ICON, false);
-        halfGrayIcon = prefs().getBoolean(KEY_HALF_GRAY, false);
+        // 冻结图标样式默认全彩；1..8 为不同方向的半灰半彩
+        iconStyle = clampInt(prefs().getInt(KEY_ICON_STYLE, 0), 0, ICON_STYLE_NAMES.length - 1);
         hideTabRow = prefs().getBoolean(KEY_HIDE_TAB_ROW, false);
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
         fabDy = clampInt(prefs().getInt(lk(KEY_FAB_DY),
@@ -4082,33 +4082,16 @@ public class FreezeListActivity extends BaseActivity {
         cell.badge.setVisibility(showBadge ? View.VISIBLE : View.GONE);
         // 暂停标识只跟随状态：正常 disable-user 冻结的图标不加任何标识
         cell.suspendBadge.setVisibility(it.suspended ? View.VISIBLE : View.GONE);
-        boolean halfGray = false;
-        if (it.frozen) {
-            if (grayIcon) {
-                if (halfGrayIcon) {
-                    // 半灰半彩：绘制时左半边套灰度，位图本身不动、不额外占用内存
-                    halfGray = true;
-                    cell.icon.clearColorFilter();
-                    cell.icon.setAlpha(1f);
-                } else {
-                    cell.icon.setColorFilter(GRAY);
-                    cell.icon.setAlpha(0.45f);
-                }
-            } else {
-                // 关掉灰度：保持彩色，在名称左侧补一个冻结小雪花
-                cell.icon.clearColorFilter();
-                cell.icon.setAlpha(1f);
-            }
-        } else {
-            cell.icon.clearColorFilter();
-            cell.icon.setAlpha(1f);
-        }
+        // 冻结图标样式：0=全彩（名称左侧补雪花），1..8=按方向灰化半边
+        int splitStyle = it.frozen ? iconStyle : 0;
+        cell.icon.clearColorFilter();
+        cell.icon.setAlpha(1f);
         if (cell.icon instanceof HalfGrayImageView) {
-            ((HalfGrayImageView) cell.icon).setHalfGray(halfGray);
+            ((HalfGrayImageView) cell.icon).setSplitStyle(splitStyle);
         }
         if (cell.snow != null) {
-            // 雪花与名称同一行居中，显隐只跟着「冻结且未灰化」
-            cell.snow.setVisibility(it.frozen && !grayIcon ? View.VISIBLE : View.GONE);
+            // 雪花与名称同一行居中，显隐只跟着「冻结且全彩」
+            cell.snow.setVisibility(it.frozen && splitStyle == 0 ? View.VISIBLE : View.GONE);
         }
         if (cell.name != null) {
             // 名称可用宽度跟着格子宽度走：过长省略，雪花始终贴着文字
@@ -5222,6 +5205,7 @@ public class FreezeListActivity extends BaseActivity {
                     showPmError("解冻失败", it, r, false);
                     return;
                 }
+                keepOrderBeforeUnfreeze();
                 it.frozen = false;
                 it.suspended = false;
                 rebindCells();
@@ -5501,6 +5485,16 @@ public class FreezeListActivity extends BaseActivity {
                 .putString(KEY_ORDER, sb.toString())
                 .putBoolean(KEY_CUSTOM, true)
                 .apply();
+    }
+
+    /**
+     * 解冻/打开前把当前顺序固化为自定义顺序：
+     * 冻结状态变化后列表不再按「已冻结在前、名称升序」重排，图标留在原处。
+     */
+    private void keepOrderBeforeUnfreeze() {
+        if (!customOrder()) {
+            persistOrder();
+        }
     }
 
     /** 每格宽度：按屏幕可用宽度均分，保证整行等宽、左右对称。 */
@@ -6764,32 +6758,6 @@ public class FreezeListActivity extends BaseActivity {
         if (dismissBox != null) {
             box.addView(dismissBox);
         }
-        // 灰化方式：半灰半彩只是整体灰化的一种画法，所以只在勾选灰度图标后才出现
-        CheckBox halfBox = new CheckBox(this);
-        halfBox.setText("冻结图标一半灰度一半彩色");
-        halfBox.setTextSize(12);
-        halfBox.setMinimumHeight(Ui.dp(this, 32));
-        halfBox.setChecked(halfGrayIcon);
-        halfBox.setVisibility(grayIcon ? View.VISIBLE : View.GONE);
-        halfBox.setOnCheckedChangeListener((b, on) -> {
-            halfGrayIcon = on;
-            prefs().edit().putBoolean(KEY_HALF_GRAY, on).apply();
-            rebindCells();
-        });
-        // 冻结应用的显示方式：开=灰化（整图或半灰半彩）；关=保持彩色，名称左侧加冻结雪花
-        CheckBox grayBox = new CheckBox(this);
-        grayBox.setText("冻结应用显示灰度图标");
-        grayBox.setTextSize(12);
-        grayBox.setMinimumHeight(Ui.dp(this, 32));
-        grayBox.setChecked(grayIcon);
-        grayBox.setOnCheckedChangeListener((b, on) -> {
-            grayIcon = on;
-            prefs().edit().putBoolean(KEY_GRAY_ICON, on).apply();
-            halfBox.setVisibility(on ? View.VISIBLE : View.GONE);
-            rebindCells();
-        });
-        box.addView(grayBox);
-        box.addView(halfBox);
         box.addView(tabOnlyBox);
 
         // 形态切换：选项永远显示「另一种形态」且不勾选，点一下即切过去
@@ -6942,6 +6910,15 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         ias.addView(iconAdjustTitle);
+        // 冻结图标样式：与「关联应用」那一行同字号的入口，点开选全彩 / 一半灰度一半彩色
+        final TextView iconStyleEntry = new TextView(this);
+        iconStyleEntry.setText(iconStyleEntryText());
+        iconStyleEntry.setTextSize(11);
+        iconStyleEntry.setTextColor(getColor(R.color.text_secondary));
+        iconStyleEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        iconStyleEntry.setOnClickListener(v -> showIconStyleDialog());
+        layoutIconStyleEntry = iconStyleEntry;
+        ias.addView(iconStyleEntry);
         ias.addView(colsValue);
         ias.addView(colsBar);
         ias.addView(sizeLabel);
@@ -7660,6 +7637,45 @@ public class FreezeListActivity extends BaseActivity {
         return text + "）";
     }
 
+    /** 「冻结图标样式」行显示的当前选项。 */
+    private String iconStyleEntryText() {
+        return "冻结图标样式：" + ICON_STYLE_NAMES[iconStyleIndex()];
+    }
+
+    /** 当前样式在选项列表里的位置。 */
+    private int iconStyleIndex() {
+        for (int i = 0; i < ICON_STYLE_VALUES.length; i++) {
+            if (ICON_STYLE_VALUES[i] == iconStyle) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    /** 「冻结图标样式」：全彩、全灰 + 八种方向的半灰半彩。 */
+    private void showIconStyleDialog() {
+        final AlertDialog[] holder = new AlertDialog[1];
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle("冻结图标样式")
+                .setSingleChoiceItems(ICON_STYLE_NAMES, iconStyleIndex(), (dialog, which) -> {
+                    iconStyle = ICON_STYLE_VALUES[which];
+                    prefs().edit().putInt(KEY_ICON_STYLE, iconStyle).apply();
+                    if (layoutIconStyleEntry != null) {
+                        layoutIconStyleEntry.setText(iconStyleEntryText());
+                    }
+                    rebindCells();
+                    if (holder[0] != null) {
+                        holder[0].dismiss();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        holder[0] = d;
+        d.show();
+        Ui.roundAlertDialog(d);
+        applySettingsAlignment(d);
+    }
+
     /** 「关联应用（点击看说明）」的说明弹窗，样式与标签说明一致。 */
     private void showPairHintDialog() {
         int padH = Ui.dp(this, 18);
@@ -7794,6 +7810,82 @@ public class FreezeListActivity extends BaseActivity {
         applySettingsAlignment(dialog);
     }
 
+    /**
+     * 主/副应用选择用的「图标 + 名称」列表。
+     * 图标直接取冻结列表已加载的 Item.icon（复制成独立 Drawable，避免与列表共用 bounds）；
+     * 行视图交给 ListView 回收复用，长名单也只创建可见的十几行。
+     */
+    private android.widget.ListView buildAppPickList(final List<Item> source,
+                                                     final String[] labels,
+                                                     final java.util.function.IntConsumer onPick) {
+        final int iconPx = Ui.dp(this, 28);
+        final android.util.TypedValue tv = new android.util.TypedValue();
+        getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+        android.widget.ListView lv = new android.widget.ListView(this);
+        lv.setDivider(null);
+        lv.setDividerHeight(0);
+        lv.setAdapter(new android.widget.BaseAdapter() {
+            @Override
+            public int getCount() {
+                return source.size();
+            }
+
+            @Override
+            public Object getItem(int position) {
+                return source.get(position);
+            }
+
+            @Override
+            public long getItemId(int position) {
+                return position;
+            }
+
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                LinearLayout row;
+                if (convertView instanceof LinearLayout) {
+                    row = (LinearLayout) convertView;
+                } else {
+                    row = new LinearLayout(FreezeListActivity.this);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    row.setPadding(Ui.dp(FreezeListActivity.this, 18), Ui.dp(FreezeListActivity.this, 8),
+                            Ui.dp(FreezeListActivity.this, 18), Ui.dp(FreezeListActivity.this, 8));
+                    row.setMinimumHeight(Ui.dp(FreezeListActivity.this, 48));
+                    row.setBackgroundResource(tv.resourceId);
+                    ImageView icon = new ImageView(FreezeListActivity.this);
+                    row.addView(icon, new LinearLayout.LayoutParams(iconPx, iconPx));
+                    TextView name = Ui.text(FreezeListActivity.this, "", 14, Ui.TEXT_PRIMARY, false);
+                    name.setSingleLine(true);
+                    name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
+                            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                    nameLp.leftMargin = Ui.dp(FreezeListActivity.this, 14);
+                    row.addView(name, nameLp);
+                }
+                Item it = source.get(position);
+                ImageView icon = (ImageView) row.getChildAt(0);
+                Drawable d = null;
+                if (it.icon != null && it.icon.getConstantState() != null) {
+                    d = it.icon.getConstantState().newDrawable(getResources()).mutate();
+                }
+                icon.setImageDrawable(d != null ? d
+                        : androidx.core.content.ContextCompat.getDrawable(FreezeListActivity.this,
+                        android.R.drawable.sym_def_app_icon));
+                ((TextView) row.getChildAt(1)).setText(labels[position]);
+                final int pos = position;
+                row.setOnClickListener(v -> onPick.accept(pos));
+                return row;
+            }
+        });
+        // 最多占屏幕 60%，超出的部分滚动查看
+        int maxH = Math.round(getResources().getDisplayMetrics().heightPixels * 0.6f);
+        int h = Math.min(Ui.dp(this, 48) * Math.max(1, source.size()), maxH);
+        lv.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, h));
+        return lv;
+    }
+
     /** 第一步：从冻结列表里选主应用；已配对的在名称后标出当前副应用。 */
     private void showPairMainPicker() {
         final List<Item> source = new ArrayList<>(items);
@@ -7802,17 +7894,24 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         Map<String, String> pairs = subPairs();
-        String[] names = new String[source.size()];
+        final String[] names = new String[source.size()];
         for (int i = 0; i < source.size(); i++) {
             Item it = source.get(i);
             String sub = pairs.get(it.pkg);
             names[i] = sub == null ? it.label : it.label + " → " + labelFor(sub);
         }
+        final AlertDialog[] holder = new AlertDialog[1];
         AlertDialog pick = new AlertDialog.Builder(this)
                 .setTitle("选择主应用")
-                .setItems(names, (d, w) -> showPairSubPicker(source.get(w)))
+                .setView(buildAppPickList(source, names, pos -> {
+                    if (holder[0] != null) {
+                        holder[0].dismiss();
+                    }
+                    showPairSubPicker(source.get(pos));
+                }))
                 .setNegativeButton("取消", null)
                 .create();
+        holder[0] = pick;
         pick.show();
         Ui.roundAlertDialog(pick);
         // 与「关联应用（点击看说明）」说明弹窗同一宽度
@@ -7831,19 +7930,23 @@ public class FreezeListActivity extends BaseActivity {
             Toast.makeText(this, "冻结列表里没有可选的副应用", Toast.LENGTH_SHORT).show();
             return;
         }
-        String[] names = new String[source.size()];
+        final String[] names = new String[source.size()];
         for (int i = 0; i < source.size(); i++) {
             names[i] = source.get(i).label;
         }
+        final AlertDialog[] holder = new AlertDialog[1];
         AlertDialog pick = new AlertDialog.Builder(this)
                 .setTitle("选择「" + main.label + "」的副应用")
-                .setItems(names, (d, w) -> {
-                    Item sub = source.get(w);
+                .setView(buildAppPickList(source, names, pos -> {
+                    if (holder[0] != null) {
+                        holder[0].dismiss();
+                    }
+                    Item sub = source.get(pos);
                     saveSubPair(main.pkg, sub.pkg);
                     Toast.makeText(this, "已关联：" + main.label + " → " + sub.label,
                             Toast.LENGTH_SHORT).show();
                     showPairManager();
-                })
+                }))
                 .setNeutralButton("清除关联", (d, w) -> {
                     saveSubPair(main.pkg, null);
                     Toast.makeText(this, "已清除 " + main.label + " 的副应用关联",
@@ -7852,6 +7955,7 @@ public class FreezeListActivity extends BaseActivity {
                 })
                 .setNegativeButton("取消", null)
                 .create();
+        holder[0] = pick;
         pick.show();
         Ui.roundAlertDialog(pick);
         applySettingsAlignment(pick);
@@ -9517,6 +9621,10 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         working = true;
+        // 一键解冻同样保持当前顺序，解冻完成后图标不在列表里跳动
+        if (!freeze) {
+            keepOrderBeforeUnfreeze();
+        }
         if (freeze) {
             startFreezeSpin();
         }
@@ -9794,6 +9902,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 it.frozen = false;
                 it.suspended = false;
+                keepOrderBeforeUnfreeze();
                 rebindCells();
                 launch(it);
                 reload();
