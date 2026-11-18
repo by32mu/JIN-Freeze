@@ -156,8 +156,12 @@ public class FreezeListActivity extends BaseActivity {
     /** 长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的触发距离（dp）。 */
     private static final String KEY_GESTURE_UP = "gesture_up_dp";
     private static final String KEY_GESTURE_DOWN = "gesture_down_dp";
+    /** 勾选后只有从屏幕左右边缘开始的长按滑动才切换形态。 */
+    private static final String KEY_GESTURE_EDGE_ONLY = "gesture_edge_only";
     private static final int GESTURE_DP_DEFAULT = 88;
     private static final int GESTURE_DP_MAX = 520;
+    /** 屏幕边缘判定宽度：左右各 32dp。 */
+    private static final int GESTURE_EDGE_DP = 32;
     /** 半屏专属：勾选后每个图标右上角常驻红色减号，点它即把该应用移出名单。 */
     private static final String KEY_PANEL_QUICK_REMOVE = "panel_quick_remove";
     /** 移动图标开关：打开后点图标选中、再点目标位置放下；全屏与半屏共用同一份状态。 */
@@ -533,6 +537,8 @@ public class FreezeListActivity extends BaseActivity {
     /** 长按空白后上滑 / 下滑切形态的触发距离（dp），设置页滑块实时生效。 */
     private int gestureUpDp = GESTURE_DP_DEFAULT;
     private int gestureDownDp = GESTURE_DP_DEFAULT;
+    /** 勾选后只在屏幕左右边缘区域长按滑动才切换形态。 */
+    private boolean gestureEdgeOnly;
     /** 已消耗位移的锚点：每翻一格就前移一格的距离，余量留给下一次。 */
     private float scrubAnchorX;
     private android.view.VelocityTracker scrubVelocity;
@@ -788,6 +794,7 @@ public class FreezeListActivity extends BaseActivity {
         iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL), false);
         gestureUpDp = clampGestureDp(prefs().getInt(KEY_GESTURE_UP, GESTURE_DP_DEFAULT));
         gestureDownDp = clampGestureDp(prefs().getInt(KEY_GESTURE_DOWN, GESTURE_DP_DEFAULT));
+        gestureEdgeOnly = prefs().getBoolean(KEY_GESTURE_EDGE_ONLY, false);
         showName = prefs().getBoolean(lk(KEY_SHOW_NAME), true);
         quickRemove = panelMode && prefs().getBoolean(KEY_PANEL_QUICK_REMOVE, false);
         // 移动图标改成一次性动作（长按操作单进入），启动时不再恢复上次状态
@@ -2052,17 +2059,18 @@ public class FreezeListActivity extends BaseActivity {
      */
     private void scrubByFinger(android.view.MotionEvent ev) {
         // 长按空白后上下滑切换形态：半屏只认上滑（进全屏），全屏只认下滑（回半屏）。
-        // 触发距离由设置页的「手势触发距离」两个滑块决定，实时生效。
+        // 触发距离由设置页的「手势触发距离」两个滑块决定，实时生效；
+        // 勾选「屏幕边缘触发上下滑动手势」后，只有从左右边缘开始的手势才切换形态。
         float dy = ev.getRawY() - scrubDownY;
-        if (panelMode && dy < -Ui.dp(this, gestureUpDp)) {
-            cancelBlankScrub();
-            switchForm(true);
-            return;
-        }
-        if (!panelMode && dy > Ui.dp(this, gestureDownDp)) {
-            cancelBlankScrub();
-            switchForm(false);
-            return;
+        boolean trigger = panelMode
+                ? dy < -Ui.dp(this, gestureUpDp)
+                : dy > Ui.dp(this, gestureDownDp);
+        if (trigger) {
+            if (!gestureEdgeOnly || atScreenEdge(scrubDownX)) {
+                cancelBlankScrub();
+                switchForm(!panelMode);
+                return;
+            }
         }
         if (scrubVelocity == null) {
             scrubVelocity = android.view.VelocityTracker.obtain();
@@ -2098,6 +2106,13 @@ public class FreezeListActivity extends BaseActivity {
     /** 手势触发距离限制在 0–520dp。 */
     private static int clampGestureDp(int dp) {
         return Math.max(0, Math.min(GESTURE_DP_MAX, dp));
+    }
+
+    /** 手势起点是否落在屏幕左右边缘区域（每侧 32dp）。 */
+    private boolean atScreenEdge(float rawX) {
+        int width = getResources().getDisplayMetrics().widthPixels;
+        int edge = Ui.dp(this, GESTURE_EDGE_DP);
+        return rawX <= edge || rawX >= width - edge;
     }
 
     /**
@@ -7242,6 +7257,18 @@ public class FreezeListActivity extends BaseActivity {
         gestureSec.addView(upBar);
         gestureSec.addView(downLabel);
         gestureSec.addView(downBar);
+
+        // 只在屏幕左右边缘区域长按滑动才切换形态，避免和列表里的滑动操作误触
+        CheckBox edgeBox = new CheckBox(this);
+        edgeBox.setText("屏幕边缘触发上下滑动手势");
+        edgeBox.setTextSize(12);
+        edgeBox.setMinimumHeight(Ui.dp(this, 32));
+        edgeBox.setChecked(gestureEdgeOnly);
+        edgeBox.setOnCheckedChangeListener((b, on) -> {
+            gestureEdgeOnly = on;
+            prefs().edit().putBoolean(KEY_GESTURE_EDGE_ONLY, on).apply();
+        });
+        gestureSec.addView(edgeBox);
 
         // 列数滑块：4–8 档，和上面几个滑块同一套样式。
         // 整块先收进 ias，最后整体插到「底部冻结按钮调节」上面
