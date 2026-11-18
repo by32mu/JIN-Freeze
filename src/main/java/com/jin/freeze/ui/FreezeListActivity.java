@@ -162,15 +162,15 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_FAB_DY = "fab_dy";
     private static final String KEY_FAB_SIZE = "fab_size";
     /** 全屏悬浮冻结按钮默认直径（dp），大小滑块与恢复默认都以它为准。 */
-    private static final int FAB_SIZE_DEFAULT = 38;
+    private static final int FAB_SIZE_DEFAULT = 39;
     private static final int FAB_SIZE_MIN = 32;
     private static final int FAB_SIZE_MAX = 64;
     /** 半屏形态的一键冻结按钮出厂值：直径 38dp、离底 5dp、底板不透明度 60%。 */
     private static final int PANEL_FAB_SIZE_DEFAULT = 38;
     private static final int PANEL_FAB_DY_DEFAULT = 5;
     private static final int PANEL_FAB_SURFACE_DEFAULT = 60;
-    /** 全屏形态「距底部」出厂值：首次安装或恢复默认时取 4dp。 */
-    private static final int FAB_DY_DEFAULT = 4;
+    /** 全屏形态「距底部」出厂值：首次安装或恢复默认时取 9dp。 */
+    private static final int FAB_DY_DEFAULT = 9;
     /** 标签：内置「用户应用 / 系统应用」+ 自定义；顺序、显隐、名称与每个应用的归属都落盘。 */
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
@@ -500,13 +500,13 @@ public class FreezeListActivity extends BaseActivity {
     private boolean swipeTracking;
     /** 标签滑动切页动画进行中：不接管新的横向手势，避免叠加。 */
     private boolean tabAnimating;
-    /** 长按空白处后左右滑快速翻标签：长按已到位 / 手势起点 / 步进锚点。 */
+    /** 长按空白处后左右滑快速翻标签：长按是否已到位 / 手势起点 / 位移锚点。 */
     private boolean scrubArmed;
     private float scrubDownX;
     private float scrubDownY;
+    /** 已消耗位移的锚点：每翻一格就前移一格的距离，余量留给下一次。 */
     private float scrubAnchorX;
-    /** 上一次因长按滑动切标签的时间：用来做 90ms 节流，避免一划就飞过好几个标签。 */
-    private long scrubLastSwitchAt;
+    private android.view.VelocityTracker scrubVelocity;
     private final Runnable scrubArmRunnable = () -> {
         scrubArmed = true;
         // 只在手势触发（长按到位）时震一下；与长按图标的反馈完全同一套
@@ -1962,7 +1962,8 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 长按列表空白处不松手再左右滑：按位移逐格翻标签。
+     * 长按列表空白处不松手再左右滑：按手指滑动速度翻标签。
+     * 划得快就翻得快、慢慢拖就一格一格慢慢翻，速度直接跟随手指。
      * 和「左右滑动切换标签」并存，但长按手势优先；返回 true 表示本次事件已被这个手势消费。
      */
     private boolean handleBlankScrub(android.view.MotionEvent ev) {
@@ -1975,7 +1976,6 @@ public class FreezeListActivity extends BaseActivity {
                     scrubDownX = ev.getRawX();
                     scrubDownY = ev.getRawY();
                     scrubAnchorX = ev.getRawX();
-                    scrubLastSwitchAt = 0;
                     getWindow().getDecorView().postDelayed(scrubArmRunnable,
                             android.view.ViewConfiguration.getLongPressTimeout());
                 }
@@ -1990,18 +1990,7 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     return false;
                 }
-                // 长按已到位：位移超过一格才切；每次只切一格并按 90ms 节流。
-                // 小幅拖动慢慢翻，快速大幅拖动也不会一瞬飞过好几个标签，翻页更优雅
-                float step = Ui.dp(this, 22);
-                float dx = ev.getRawX() - scrubAnchorX;
-                if (Math.abs(dx) >= step) {
-                    long now = android.os.SystemClock.uptimeMillis();
-                    if (now - scrubLastSwitchAt >= 90) {
-                        scrubLastSwitchAt = now;
-                        scrubSwitchTab(dx > 0 ? -1 : 1);
-                        scrubAnchorX = ev.getRawX();
-                    }
-                }
+                scrubByFinger(ev);
                 return true;
             case android.view.MotionEvent.ACTION_UP:
             case android.view.MotionEvent.ACTION_CANCEL:
@@ -2013,8 +2002,40 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
+    /**
+     * 长按到位后的滑动：位移按「每格所需距离」折算成翻页格数。
+     * 手指越快，每格所需距离越小（慢拖约 22dp/格，快划最密约 12dp/格），
+     * 所以慢慢拖一格一格走，快速划过则连续翻过多格。
+     */
+    private void scrubByFinger(android.view.MotionEvent ev) {
+        if (scrubVelocity == null) {
+            scrubVelocity = android.view.VelocityTracker.obtain();
+        }
+        scrubVelocity.addMovement(ev);
+        scrubVelocity.computeCurrentVelocity(1000);
+        float speed = Math.abs(scrubVelocity.getXVelocity());
+        float dx = ev.getRawX() - scrubAnchorX;
+        if (Math.abs(dx) < Ui.dp(this, 6)) {
+            return;
+        }
+        float step = Ui.dp(this, 22) * 1000f / Math.max(speed, 450f);
+        step = Math.max(Ui.dp(this, 12), Math.min(Ui.dp(this, 90), step));
+        int turns = (int) (Math.abs(dx) / step);
+        if (turns <= 0) {
+            return;
+        }
+        // 单次事件最多翻 4 格，避免一帧跳太多；剩下的位移留给后续事件继续翻
+        turns = Math.min(turns, 4);
+        scrubAnchorX += Math.signum(dx) * turns * step;
+        scrubSwitchTabs(dx > 0 ? -1 : 1, turns);
+    }
+
     private void cancelBlankScrub() {
         scrubArmed = false;
+        if (scrubVelocity != null) {
+            scrubVelocity.recycle();
+            scrubVelocity = null;
+        }
         getWindow().getDecorView().removeCallbacks(scrubArmRunnable);
     }
 
@@ -2059,9 +2080,9 @@ public class FreezeListActivity extends BaseActivity {
                 && rawY >= ip[1] && rawY < ip[1] + icon.getHeight();
     }
 
-    /** 长按手势切标签：在可见标签里循环前后翻，首尾相接。 */
-    private void scrubSwitchTab(int dir) {
-        if (tabAnimating || working) {
+    /** 长按手势切标签：一次可跨多格，按可见标签顺序前后翻，到头停住。 */
+    private void scrubSwitchTabs(int dir, int count) {
+        if (tabAnimating || working || count <= 0) {
             return;
         }
         List<Tab> visible = new ArrayList<>();
@@ -2080,13 +2101,12 @@ public class FreezeListActivity extends BaseActivity {
                 break;
             }
         }
-        int next = idx + dir;
-        // 到头就停住，不再循环回首/尾标签
-        if (next < 0 || next >= visible.size()) {
+        int next = Math.max(0, Math.min(visible.size() - 1, idx + dir * count));
+        if (next == idx) {
             return;
         }
         selectTab(visible.get(next).id);
-        // 滑到每个标签都震一下（与触发长按那一震同一套忽略系统触感开关的口径）
+        // 每翻一格都震一下（与触发长按那一震同一套忽略系统触感开关的口径）
         if (scrubVibrate) {
             View target = grid != null ? grid : getWindow().getDecorView();
             target.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK,
@@ -7795,6 +7815,8 @@ public class FreezeListActivity extends BaseActivity {
                 .create();
         pick.show();
         Ui.roundAlertDialog(pick);
+        // 与「关联应用（点击看说明）」说明弹窗同一宽度
+        applySettingsAlignment(pick);
     }
 
     /** 第二步：选副应用（同样从冻结列表里选，排除主应用本身）。 */
@@ -7832,6 +7854,7 @@ public class FreezeListActivity extends BaseActivity {
                 .create();
         pick.show();
         Ui.roundAlertDialog(pick);
+        applySettingsAlignment(pick);
     }
 
     /** 捐赠开发者：整图按屏幕宽度 65% 展示，圆角卡片承载，可保存到相册。 */
