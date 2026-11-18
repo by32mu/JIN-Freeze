@@ -148,8 +148,6 @@ public class FreezeListActivity extends BaseActivity {
     private static final int COLUMNS = 5;
     /** 半屏内容区默认高度（dp，不含把手）：按当前版本实测值固化，新装/恢复默认都用它。 */
     private static final int PANEL_CONTENT_DEFAULT_DP = 544;
-    /** 布局设置弹窗默认高度（dp）：新装/重置取 520dp，手动调过的沿用记忆值。 */
-    private static final int LAYOUT_DIALOG_DEFAULT_DP = 520;
     /** 自定义布局：列数 + 图标大小，间距由列宽自动均分。 */
     private static final String KEY_COLUMNS = "grid_columns";
     private static final String KEY_ICON_DP = "grid_icon_dp";
@@ -198,15 +196,14 @@ public class FreezeListActivity extends BaseActivity {
     /** 布局设置弹窗的拖动偏移（相对默认位置），与半屏高度分开存。 */
     private static final String KEY_LAYOUT_DX = "layout_dialog_dx";
     private static final String KEY_LAYOUT_DY = "layout_dialog_dy";
-    /** 布局设置弹窗打开时的高度（dp）：「布局面板高度」滑块记忆，绝不覆盖半屏。 */
+    /** 全屏未展开高度（dp）：0 表示自适应，手动拖过滑块才记忆。 */
     private static final String KEY_LAYOUT_OPEN_H = "layout_dialog_open_h";
-    /** 布局设置弹窗点 ▼ 展开时的高度（dp）：「展开高度」滑块记忆，允许覆盖半屏。 */
-    private static final String KEY_LAYOUT_EXPAND_H = "layout_dialog_expand_h";
-    /** 旧版单一弹窗高度键：只在升级后首次读取时迁移成「布局面板高度」。 */
-    private static final String KEY_LAYOUT_H_LEGACY = "layout_dialog_h";
-    /** 两条高度滑块的量程（dp）。 */
+    /** 未展开时的高度上限（dp）：自适应可用空间，且不覆盖半屏列表。 */
     private static final int LAYOUT_OPEN_MAX_DP = 520;
-    private static final int LAYOUT_EXPAND_MAX_DP = 888;
+    /** 点 ▼ 展开后的固定高度（dp）；实际按底部底栏上沿收窄，不覆盖底栏。 */
+    private static final int LAYOUT_EXPAND_DEFAULT_DP = 727;
+    /** 底部冻结按钮「距底部」可调范围上限（dp）。 */
+    private static final int FAB_DY_MAX = 14;
     /** 半屏顶部小白条开关：关掉后隐藏把手、高度沿用记住的值。 */
     private static final String KEY_PANEL_HANDLE = "panel_handle_enabled";
     /** 冻结成功后是否自动收起列表（全屏/半屏各自记忆，回到进入前的应用）。 */
@@ -413,11 +410,12 @@ public class FreezeListActivity extends BaseActivity {
     private View emptyState;
     /** 本次选应用从哪个标签点「+」进来：新加入的应用落到该标签（用户应用进系统标签会被拒绝）。 */
     private String pickerTargetTab;
-    /** 布局设置里「展开范围」滑块的运行期引用：冻结按钮位置/大小变化时实时重算上限。 */
-    private SeekBar layoutExpandBar;
-    private TextView layoutExpandValue;
     private android.app.Dialog layoutDialog;
     private int layoutShadowPad;
+    /** 布局设置弹窗当前是否处于 ▼ 展开态：底部按钮位置/大小变化时要同步收放高度。 */
+    private boolean layoutExpanded;
+    /** 半屏本次打开时手动调短的未展开高度（dp）：-1 表示用最大值，不落盘。 */
+    private int panelOpenHeightDp = -1;
     private boolean loadedOnce;
     /** 打开选应用页期间不让「隐藏半屏后台」把面板收掉，否则回传结果没人接。 */
     private boolean pickerOpen;
@@ -497,8 +495,6 @@ public class FreezeListActivity extends BaseActivity {
     private String previousAppPkg;
     /** 隐藏标签文字：只收起标签名那一排，列表与滑动手势照常工作。 */
     private boolean hideTabRow;
-    /** 布局设置里高度块正在做显隐过渡：期间忽略滚动回调的重复切换。 */
-    private boolean heightRowAnimating;
     private float swipeDownX;
     private float swipeDownY;
     private boolean swipeTracking;
@@ -777,7 +773,8 @@ public class FreezeListActivity extends BaseActivity {
         halfGrayIcon = prefs().getBoolean(KEY_HALF_GRAY, false);
         hideTabRow = prefs().getBoolean(KEY_HIDE_TAB_ROW, false);
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
-        fabDy = prefs().getInt(lk(KEY_FAB_DY), panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT);
+        fabDy = clampInt(prefs().getInt(lk(KEY_FAB_DY),
+                panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT), 0, FAB_DY_MAX);
         fabSizeDp = prefs().getInt(lk(KEY_FAB_SIZE),
                 panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT);
         if (fabSizeDp < FAB_SIZE_MIN || fabSizeDp > FAB_SIZE_MAX) {
@@ -3809,8 +3806,6 @@ public class FreezeListActivity extends BaseActivity {
                 startDrag(box, cell.item);
                 return;
             }
-            box.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
-                    android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
             if (selectMode) {
                 // 多选态：长按已圈选的图标 → 弹批量操作单；长按未选的 → 先圈上
                 if (selectedPkgs.contains(cell.item.pkg)) {
@@ -4232,8 +4227,6 @@ public class FreezeListActivity extends BaseActivity {
         draggingPkg = it.pkg;
         dragMoved = false;
         selectedPkg = null;
-        cell.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
-                android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
         itemTouchHelper.startDrag(vh);
     }
 
@@ -5598,8 +5591,8 @@ public class FreezeListActivity extends BaseActivity {
             }
             int maxX = Math.max(0, (w - fabGroup.getWidth()) / 2 - Ui.dp(this, 8));
             int x = Math.max(-maxX, Math.min(maxX, Ui.dp(this, fabDx)));
-            // 只允许往上抬，最多抬到标签条下方，避免挡住内容
-            int maxUp = Ui.dp(this, 120);
+            // 只允许往上抬，范围受 0-14dp 限制
+            int maxUp = Ui.dp(this, FAB_DY_MAX);
             int y = Math.max(-maxUp, Math.min(0, -Ui.dp(this, fabDy)));
             fabGroup.setTranslationX(x);
             fabGroup.setTranslationY(y);
@@ -6281,7 +6274,7 @@ public class FreezeListActivity extends BaseActivity {
         // 顶部操作提示：紧贴标题下方、与标题成一组，不随内容滚动
         TextView gestureHint = new TextView(this);
         android.text.SpannableStringBuilder hintText = new android.text.SpannableStringBuilder(
-                "长按设置移动位置，点击 ");
+                panelMode ? "点击 " : "长按设置移动位置，点击 ");
         Drawable chevron = getDrawable(R.drawable.ic_chevron_down);
         if (chevron != null) {
             // 直接复用右上角那个倒三角 drawable，保证和收起按钮是同一个图形
@@ -6294,7 +6287,7 @@ public class FreezeListActivity extends BaseActivity {
                             android.text.style.ImageSpan.ALIGN_CENTER),
                     start, hintText.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
-        hintText.append(" 调节高度与展开");
+        hintText.append(" 展开最大范围");
         gestureHint.setText(hintText);
         gestureHint.setTextSize(11);
         gestureHint.setTextColor(getColor(R.color.text_secondary));
@@ -6349,7 +6342,7 @@ public class FreezeListActivity extends BaseActivity {
 
         // 「半屏高度调节」勾选瞬间要收起布局弹窗，先把实例留个引用
         final android.app.Dialog[] dialogRef = new android.app.Dialog[1];
-        // 打开移动模式时收起底部倒三角展开的高度块（列表本身不动），引用在弹窗建好后填
+        // 打开移动模式/快捷移除时收起已展开的面板（列表本身不动），引用在弹窗建好后填
         final Runnable[] collapseHeightRow = new Runnable[1];
 
         // 移动图标不再放设置里：入口改到长按图标弹出的操作单（多选上方），见 showAppSheet
@@ -6471,7 +6464,7 @@ public class FreezeListActivity extends BaseActivity {
             quickRemoveBox.setOnCheckedChangeListener((btn, on) -> {
                 quickRemove = on;
                 prefs().edit().putBoolean(KEY_PANEL_QUICK_REMOVE, on).apply();
-                // 与「移动图标」一致：勾选时收起展开的高度块，设置入口与列表都保持可见
+                // 勾选时收起已展开的面板，设置入口与列表都保持可见
                 if (on && collapseHeightRow[0] != null) {
                     collapseHeightRow[0].run();
                 }
@@ -6484,7 +6477,7 @@ public class FreezeListActivity extends BaseActivity {
         final float density = getResources().getDisplayMetrics().density;
         final int xMinDp = Math.round((fabInsetPx() - fabCenterX()) / density);
         final int xMaxDp = Math.round((fabMaxX() - fabCenterX()) / density);
-        final int maxLiftDp = Math.round(fabMaxLiftPx() / density);
+        final int maxLiftDp = Math.min(FAB_DY_MAX, Math.round(fabMaxLiftPx() / density));
 
         TextView fabTitle = new TextView(this);
         fabTitle.setText("底部冻结按钮");
@@ -7312,6 +7305,18 @@ public class FreezeListActivity extends BaseActivity {
         donateEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
         box.addView(donateEntry);
 
+        // 捐赠入口下方显示当前版本号
+        TextView versionText = Ui.text(this, "", 11, Ui.TEXT_SECONDARY, false);
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0);
+            versionText.setText("版本号：" + pi.versionName);
+        } catch (Exception e) {
+            versionText.setVisibility(View.GONE);
+        }
+        box.addView(versionText, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         // 自定义底板：宽度收窄、固定高度内滚动、真圆角裁切（全屏与半屏共用同一套尺寸）
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -7359,22 +7364,6 @@ public class FreezeListActivity extends BaseActivity {
         root.addView(gestureHint, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // 点右侧箭头才展开的高度滑块：只改弹窗自身高度，和半屏高度、坐标分开存
-        LinearLayout heightRow = new LinearLayout(this);
-        heightRow.setOrientation(LinearLayout.VERTICAL);
-        heightRow.setPadding(pad, 0, pad, Ui.dp(this, 2));
-        heightRow.setVisibility(View.GONE);
-        final TextView openValue = Ui.text(this, "设置面板未展开范围", 11, Ui.TEXT_SECONDARY, false);
-        final SeekBar openBar = new SeekBar(this);
-        final TextView expandValue = Ui.text(this, "设置面板展开范围", 11, Ui.TEXT_SECONDARY, false);
-        final SeekBar expandBar = new SeekBar(this);
-        heightRow.addView(openValue);
-        heightRow.addView(openBar);
-        heightRow.addView(expandValue);
-        heightRow.addView(expandBar);
-        root.addView(heightRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
         android.widget.ScrollView dialogScroll = new android.widget.ScrollView(this);
         dialogScroll.setClipToPadding(false);
         dialogScroll.setFillViewport(true);
@@ -7382,6 +7371,17 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(dialogScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // 「设置面板未展开范围」滑块：放在设置列表下方（全屏/半屏都有，半屏仍受面板上沿限制）
+        LinearLayout heightRow = new LinearLayout(this);
+        heightRow.setOrientation(LinearLayout.VERTICAL);
+        heightRow.setPadding(pad, 0, pad, Ui.dp(this, 2));
+        final TextView openValue = Ui.text(this, "设置面板未展开范围", 11, Ui.TEXT_SECONDARY, false);
+        final SeekBar openBar = new SeekBar(this);
+        heightRow.addView(openValue);
+        heightRow.addView(openBar);
+        root.addView(heightRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         View divider = new View(this);
         divider.setBackgroundColor(getColor(R.color.divider));
@@ -7437,105 +7437,113 @@ public class FreezeListActivity extends BaseActivity {
             dialog.dismiss();
             showDonateDialog();
         });
-        // 滚动显隐的防抖状态：程序化改弹窗高度也会触发 onScrollChange，
-        // 因此这里留一个抑制窗口，避免点开 ▼ 后滑块被自己造成的滚动立刻收掉。
-        // fingerDown：只有手指真的按住（DOWN/MOVE）时才算用户手势
-        final boolean[] fingerDown = {false};
-        final long[] suppressUntil = {0};
-        // 只有 ▼ 展开过才参与滚动显隐；滚动收起时只藏内容，保留占位高度，面板不动
+
+        // 未展开范围滑块：半屏固定显示「不侵入半屏」的最大值；全屏可手动调节并记忆
+        final int[] openMaxDp = {openSliderMaxDp()};
+        openBar.setMax(openMaxDp[0]);
+        openBar.setProgress(Math.min(openSliderDp(), openMaxDp[0]));
+        openValue.setText("设置面板未展开范围：" + openBar.getProgress() + "dp");
+        openBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                int dp = clampInt(p, 0, openMaxDp[0]);
+                if (!panelMode) {
+                    prefs().edit().putInt(lk(KEY_LAYOUT_OPEN_H), dp).apply();
+                }
+                openValue.setText("设置面板未展开范围：" + dp + "dp");
+                if (panelMode) {
+                    // 半屏：只本次调短，不落盘；面板始终贴半屏上沿
+                    panelOpenHeightDp = dp;
+                    relayoutPanelDialog(dialog);
+                } else {
+                    applyDialogHeight(dialog, openDialogHeightPx(), shadowPad);
+                }
+                dialog.getWindow().getDecorView().post(() ->
+                        enforceDialogBottomLimit(dialog, openBottomLimitPx(), shadowPad));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+
+        // ▼ / ▲：在「未展开高度」与「展开 727dp」之间切换，展开时按底栏上沿收窄
         final boolean[] rowExpanded = {false};
-        final boolean[] rowSpaceHidden = {false};
-        final int[] rowFullH = {0};
-        final Runnable resetRowHeight = () -> {
-            ViewGroup.LayoutParams lp = heightRow.getLayoutParams();
-            lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
-            heightRow.setLayoutParams(lp);
-        };
-        // 重新露出滑块：占位由滚动区自己让出，窗口高度全程没变，只需把行放回来
-        final Runnable showRowSpace = () -> {
-            if (!rowExpanded[0] || !rowSpaceHidden[0]) {
+        final boolean[] rowHidden = {false};
+        collapseHeightRow[0] = () -> {
+            if (!rowExpanded[0]) {
                 return;
             }
-            rowSpaceHidden[0] = false;
+            rowExpanded[0] = false;
+            rowHidden[0] = false;
+            layoutExpanded = false;
+            sizeToggle.setImageResource(R.drawable.ic_chevron_down);
             heightRow.animate().cancel();
-            resetRowHeight.run();
+            heightRow.setAlpha(1f);
+            heightRow.setVisibility(View.VISIBLE);
+            gestureHint.setVisibility(View.VISIBLE);
+            applyDialogHeight(dialog, openDialogHeightPx(), shadowPad);
+            dialog.getWindow().getDecorView().post(() ->
+                    enforceDialogBottomLimit(dialog, openBottomLimitPx(), shadowPad));
+        };
+        toggleRow.setOnClickListener(v -> {
+            boolean show = !rowExpanded[0];
+            rowExpanded[0] = show;
+            layoutExpanded = show;
+            sizeToggle.setImageResource(show
+                    ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down);
+            // 展开态不显示「未展开范围」滑块与展开提示，收起后恢复
+            rowHidden[0] = false;
+            heightRow.animate().cancel();
+            heightRow.setAlpha(1f);
+            heightRow.setVisibility(show ? View.GONE : View.VISIBLE);
+            gestureHint.setVisibility(show ? View.GONE : View.VISIBLE);
+            int desired = show ? expandDialogHeightPx() : openDialogHeightPx();
+            int limit = show ? bottomBarTopPx() : openBottomLimitPx();
+            applyDialogHeight(dialog, desired, shadowPad);
+            dialog.getWindow().getDecorView().post(() ->
+                    enforceDialogBottomLimit(dialog, limit, shadowPad));
+        });
+
+        // 滑动隐藏沿用之前的规则：往下滑就收起「未展开范围」行，只有回到顶部才重新显示；
+        // 窗口高度与位置全程不动。
+        final boolean[] fingerDown = {false};
+        final long[] suppressUntil = {0};
+        final Runnable showToggleRow = () -> {
+            if (!rowHidden[0] || layoutExpanded) {
+                return;
+            }
+            rowHidden[0] = false;
+            heightRow.animate().cancel();
             heightRow.setVisibility(View.VISIBLE);
             heightRow.setAlpha(0f);
             heightRow.animate().alpha(1f).setDuration(120).start();
             suppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
         };
-        // 滚动收起滑块：行直接 GONE，把占位空间让给列表内容（顶部不留白、多显示一行）；
-        // 窗口高度与位置一律不动，不调用 applyDialogHeight
-        final Runnable hideRowSpace = () -> {
-            if (!rowExpanded[0] || rowSpaceHidden[0]) {
+        final Runnable hideToggleRow = () -> {
+            if (rowHidden[0]) {
                 return;
             }
-            int h = heightRow.getHeight();
-            if (h > 0) {
-                rowFullH[0] = h;
-            }
-            rowSpaceHidden[0] = true;
-            resetRowHeight.run();
+            rowHidden[0] = true;
             heightRow.animate().cancel();
             heightRow.animate().alpha(0f).setDuration(100)
                     .withEndAction(() -> heightRow.setVisibility(View.GONE))
                     .start();
             suppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
         };
-        collapseHeightRow[0] = () -> {
-            if (!rowExpanded[0]) {
-                return;
-            }
-            rowExpanded[0] = false;
-            rowSpaceHidden[0] = false;
-            heightRow.animate().cancel();
-            heightRowAnimating = false;
-            heightRow.setAlpha(1f);
-            heightRow.setTranslationY(0f);
-            resetRowHeight.run();
-            heightRow.setVisibility(View.GONE);
-            sizeToggle.setImageResource(R.drawable.ic_chevron_down);
-            applyDialogHeight(dialog, openDialogHeightPx(), shadowPad);
-            suppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
-        };
-        toggleRow.setOnClickListener(v -> {
-            boolean show = !rowExpanded[0];
-            rowExpanded[0] = show;
-            rowSpaceHidden[0] = false;
-            heightRow.animate().cancel();
-            heightRowAnimating = false;
-            heightRow.setAlpha(1f);
-            heightRow.setTranslationY(0f);
-            resetRowHeight.run();
-            heightRow.setVisibility(show ? View.VISIBLE : View.GONE);
-            sizeToggle.setImageResource(show
-                    ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down);
-            // 展开按「展开高度」记忆值，收起回「布局面板高度」记忆值；不再回默认自适应
-            applyDialogHeight(dialog, show ? expandDialogHeightPx() : openDialogHeightPx(), shadowPad);
-            // 显式点了 ▼：重置锁定，并抑制这次改高度引起的滚动回调
-            suppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
-            if (show) {
-                // 布局完成后记下真实行高，滚动收起/展开都以它为准
-                heightRow.post(() -> {
-                    int h = heightRow.getHeight();
-                    if (h > 0) {
-                        rowFullH[0] = h;
-                    }
-                });
-            }
-        });
-
-        // 高度滑块那两行的显隐规则（用户最终口径，别再改回阈值/速度判定）：
-        // 1. 只要列表开始往下滑（scrollY 增大）就立刻收起，慢滑、小幅也收，不看位移阈值与速度；
-        // 2. 收起后一直保持隐藏：中途任何普通上滑、滚动停住、惯性结束都不显示；
-        // 3. 只有列表真的滑到最顶部（canScrollVertically(-1) 为 false）才重新显示；
-        // 4. 面板高度、位置全程不变：收起只把滑块藏起来，占位高度原样保留，不收缩窗口。
         dialogScroll.setOnTouchListener((tv, e) -> {
             switch (e.getActionMasked()) {
                 case android.view.MotionEvent.ACTION_DOWN:
                 case android.view.MotionEvent.ACTION_MOVE:
-                    // 起点落在可点击子 View（开关/滑块）上时 DOWN 会被子 View 吃掉、
-                    // 这里收不到；只要真的在动就同样算「手指按住」
+                    // 起点落在可点击子 View 上时 DOWN 会被子 View 吃掉，这里收不到；
+                    // 只要真的在动就同样算「手指按住」
                     fingerDown[0] = true;
                     break;
                 case android.view.MotionEvent.ACTION_UP:
@@ -7549,43 +7557,60 @@ public class FreezeListActivity extends BaseActivity {
         });
         dialogScroll.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
             int dy = scrollY - oldScrollY;
-            if (dy == 0 || !rowExpanded[0]) {
+            if (dy == 0) {
                 return;
             }
             // 弹窗自身改高度/换尺寸引起的滚动不算用户动作，直接忽略
             if (android.os.SystemClock.uptimeMillis() < suppressUntil[0]) {
                 return;
             }
-            boolean shown = !rowSpaceHidden[0];
-            if (shown) {
-                // 往下滑一丁点就收起，不做累计、不等阈值；
-                // 只是把滑块藏起来，面板仍是展开高度，箭头保持朝上不动
+            if (!rowHidden[0]) {
                 if (dy > 0) {
-                    hideRowSpace.run();
+                    hideToggleRow.run();
                 }
                 return;
             }
-            // 已收起：普通上滑不显示，只有真正到达顶部才恢复（手指按住时判定，
-            // 避免弹窗改高度导致的滚动回调把滑块自己放出来）
+            // 已收起：只有真正回到顶部（手指按住时判定）才重新显示
             if (fingerDown[0] && !dialogScroll.canScrollVertically(-1)) {
-                showRowSpace.run();
+                showToggleRow.run();
             }
         });
+
         dialog.setOnShowListener(d -> {
             android.view.Window w = dialog.getWindow();
             if (w == null) {
                 return;
             }
             // 首帧兜底：万一参数在 show 前没生效，这里再压一次同样的值，避免露默认位
-            applyDialogGeometry(dialog, w, root, title, heightRow, openBar, openValue, expandBar,
-                    expandValue, defaultDialogWidth(), shadowPad);
+            applyDialogGeometry(dialog, w, root, title, defaultDialogWidth(), shadowPad);
+            // 布局落地后重新算「不侵入半屏」的最大值：半屏直接按最大值显示
+            w.getDecorView().post(() -> {
+                int maxDp = openSliderMaxDp();
+                openMaxDp[0] = maxDp;
+                if (openBar.getMax() != maxDp) {
+                    openBar.setMax(maxDp);
+                }
+                int cur = panelMode ? maxDp : Math.min(openBar.getProgress(), maxDp);
+                if (cur != openBar.getProgress()) {
+                    openBar.setProgress(cur);
+                }
+                openValue.setText("设置面板未展开范围：" + cur + "dp");
+                if (panelMode) {
+                    relayoutPanelDialog(dialog);
+                }
+                enforceDialogBottomLimit(dialog, openBottomLimitPx(), shadowPad);
+            });
         });
         // 在 show 之前就把坐标与高度写进窗口参数：第一帧直接落在记忆位置，不再先默认后跳
         android.view.Window pre = dialog.getWindow();
         if (pre != null) {
-            applyDialogGeometry(dialog, pre, root, title, heightRow, openBar, openValue, expandBar,
-                    expandValue, defaultDialogWidth(), shadowPad);
+            applyDialogGeometry(dialog, pre, root, title, defaultDialogWidth(), shadowPad);
         }
+        dialog.setOnDismissListener(d -> {
+            layoutExpanded = false;
+            layoutDialog = null;
+            panelOpenHeightDp = -1;
+        });
         dialog.show();
         // 记住设置面板卡片的真实左边缘，供二级弹窗对齐（面板可能被拖动过）
         android.view.Window shown = dialog.getWindow();
@@ -7965,11 +7990,9 @@ public class FreezeListActivity extends BaseActivity {
         w.setAttributes(lp);
     }
 
-    /** 把记忆坐标、记忆高度一次性写进窗口参数；show 前调用即首帧到位，show 后再调一次做兜底。 */
+    /** 把记忆坐标、自适应高度一次性写进窗口参数；show 前调用即首帧到位，show 后再调一次做兜底。 */
     private void applyDialogGeometry(android.app.Dialog dialog, android.view.Window w,
-                                     final View root, final View title, final View heightRow,
-                                     final SeekBar openBar, final TextView openValue,
-                                     final SeekBar expandBar, final TextView expandValue,
+                                     final View root, final View title,
                                      int width, int shadowPad) {
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
@@ -7977,211 +8000,211 @@ public class FreezeListActivity extends BaseActivity {
         int insetDp = Math.round((screenW - width) / density);
         final int defaultX = (screenW - width) / 2 - shadowPad;
         final int defaultY = Ui.dp(this, 8) - shadowPad;
-        // 点开时按「布局面板高度」记忆值，且绝不覆盖半屏面板
+        // 未展开时高度自适应可用空间，且绝不覆盖半屏列表
         int height = openDialogHeightPx();
+
+        int lpX;
+        int lpY;
+        if (panelMode) {
+            // 半屏：不跟手拖动、不记偏移，水平居中；顶边按「最大高度」定位，调短时从底部往上缩
+            lpX = defaultX;
+            lpY = panelDialogY(shadowPad);
+        } else {
+            lpX = clampInt(defaultX + prefs().getInt(lk(KEY_LAYOUT_DX), 0),
+                    -shadowPad, Math.max(-shadowPad, screenW - width - shadowPad));
+            lpY = clampInt(defaultY + prefs().getInt(lk(KEY_LAYOUT_DY), 0),
+                    -shadowPad, Math.max(-shadowPad, screenH - height - shadowPad));
+        }
 
         Ui.roundDialog(dialog, root, insetDp, height);
         android.view.WindowManager.LayoutParams lp = w.getAttributes();
         lp.width = width + shadowPad * 2;
         lp.height = height + shadowPad * 2;
         lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = clampInt(defaultX + prefs().getInt(lk(KEY_LAYOUT_DX), 0),
-                -shadowPad, Math.max(-shadowPad, screenW - width - shadowPad));
-        lp.y = clampInt(defaultY + prefs().getInt(lk(KEY_LAYOUT_DY), 0),
-                -shadowPad, Math.max(-shadowPad, screenH - height - shadowPad));
+        lp.x = lpX;
+        lp.y = lpY;
         w.setAttributes(lp);
 
-        // 滑块 1：设置面板范围 0–520dp，记忆下次点开布局设置时的高度，超出可用空间自动收窄
-        openBar.setMax(LAYOUT_OPEN_MAX_DP);
-        openBar.setProgress(openDialogDp());
-        openValue.setText(heightLabel("设置面板未展开范围", openDialogDp(),
-                clampedOpenHeightPx(openDialogDp())));
-        openBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                if (!fromUser) {
-                    return;
-                }
-                int dp = clampInt(p, 0, LAYOUT_OPEN_MAX_DP);
-                prefs().edit().putInt(lk(KEY_LAYOUT_OPEN_H), dp).apply();
-                openValue.setText(heightLabel("设置面板未展开范围", dp, clampedOpenHeightPx(dp)));
-                // 拖动即时预览：直接按未展开档位改弹窗高度（原来这里被可见性判断挡住，导致拖了没反应）
-                applyDialogHeight(dialog, clampedOpenHeightPx(dp), shadowPad);
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar sb) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar sb) {
-            }
-        });
-
-        // 滑块 2：设置面板展开范围 —— 上限直接取到底部冻结按钮上沿，按钮在哪就最多到哪
-        int expandMaxDp = Math.max(1, Math.round(expandHeightMaxPx()
-                / getResources().getDisplayMetrics().density));
-        int expandStart = Math.min(expandDialogDp(), expandMaxDp);
-        expandBar.setMax(expandMaxDp);
-        expandBar.setProgress(expandStart);
-        expandValue.setText(heightLabel("设置面板展开范围", expandStart,
-                clampedExpandHeightPx(expandStart)));
-        expandBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                if (!fromUser) {
-                    return;
-                }
-                int dp = clampInt(p, 0, expandMaxDp);
-                prefs().edit().putInt(lk(KEY_LAYOUT_EXPAND_H), dp).apply();
-                expandValue.setText(heightLabel("设置面板展开范围", dp,
-                        clampedExpandHeightPx(dp)));
-                applyDialogHeight(dialog, clampedExpandHeightPx(dp), shadowPad);
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar sb) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar sb) {
-            }
-        });
-        attachDialogDrag(w, title, defaultX, defaultY, width, height, shadowPad);
-        // 留给「底部冻结按钮调节」的滑块：按钮一动就实时重算展开范围
-        layoutExpandBar = expandBar;
-        layoutExpandValue = expandValue;
+        // 半屏不允许拖动，位置由「贴半屏上沿 + 居中」决定
+        if (!panelMode) {
+            attachDialogDrag(w, title, defaultX, defaultY, width, height, shadowPad);
+        }
         layoutDialog = dialog;
         layoutShadowPad = shadowPad;
     }
 
-    /** 冻结按钮位置/大小变化后：重算展开范围上限，滑块与当前展开高度一起收放。 */
-    private void refreshExpandRange() {
-        SeekBar bar = layoutExpandBar;
-        if (bar == null) {
+    /** 半屏下弹窗的窗口 y：按最大高度定位，底部正好停在半屏面板上沿之外，调短时底边往上缩。 */
+    private int panelDialogY(int shadowPad) {
+        int panelTop = openBottomLimitPx();
+        if (panelTop <= 0) {
+            return Ui.dp(this, 8) - shadowPad;
+        }
+        int maxH = Ui.dp(this, openSliderMaxDp());
+        int y = panelTop - Ui.dp(this, 8) - maxH - statusBarHeightPx() - shadowPad;
+        return Math.max(-shadowPad, y);
+    }
+
+    /** 滑块改高度后重新定位（半屏用）：顶边不动，只改高度。 */
+    private void relayoutPanelDialog(android.app.Dialog dialog) {
+        if (!panelMode || dialog == null) {
             return;
         }
-        int maxDp = Math.max(1, Math.round(expandHeightMaxPx()
-                / getResources().getDisplayMetrics().density));
-        if (bar.getMax() != maxDp) {
-            bar.setMax(maxDp);
+        android.view.Window w = dialog.getWindow();
+        if (w == null) {
+            return;
         }
-        int cur = Math.min(bar.getProgress(), maxDp);
-        if (cur != bar.getProgress()) {
-            bar.setProgress(cur);
-            prefs().edit().putInt(lk(KEY_LAYOUT_EXPAND_H), cur).apply();
-            if (layoutDialog != null) {
-                applyDialogHeight(layoutDialog, clampedExpandHeightPx(cur), layoutShadowPad);
+        int shadowPad = layoutShadowPad;
+        int height = openDialogHeightPx();
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        lp.height = height + shadowPad * 2;
+        lp.y = panelDialogY(shadowPad);
+        w.setAttributes(lp);
+    }
+
+    /** 冻结按钮位置/大小变化后：展开态的高度随按钮上沿实时收放，绝不盖住按钮。 */
+    private void refreshExpandRange() {
+        if (!layoutExpanded || layoutDialog == null) {
+            return;
+        }
+        applyDialogHeight(layoutDialog, expandDialogHeightPx(), layoutShadowPad);
+        layoutDialog.getWindow().getDecorView().post(() ->
+                enforceDialogBottomLimit(layoutDialog, bottomBarTopPx(), layoutShadowPad));
+    }
+
+    /** 未展开高度（px）：半屏用本次调短的值（默认最大值）；全屏按记忆值，未存过 520dp。 */
+    private int openDialogHeightPx() {
+        int maxDp = openSliderMaxDp();
+        if (panelMode) {
+            int dp = panelOpenHeightDp >= 0 ? panelOpenHeightDp : maxDp;
+            dp = clampInt(dp, 0, maxDp);
+            return clampInt(Ui.dp(this, dp), Ui.dp(this, 170), Ui.dp(this, maxDp));
+        }
+        // -1 表示从未调过；0 是合法值（高度按下限 170dp 落地）
+        int saved = prefs().getInt(lk(KEY_LAYOUT_OPEN_H), -1);
+        int dp = clampInt(saved >= 0 ? saved : LAYOUT_OPEN_MAX_DP, 0, maxDp);
+        return clampInt(Ui.dp(this, dp), Ui.dp(this, 170), Ui.dp(this, maxDp));
+    }
+
+    /** 未展开范围滑块当前值（dp）：半屏本次调短过的值，否则最大值；全屏按记忆值。 */
+    private int openSliderDp() {
+        if (panelMode) {
+            int maxDp = openSliderMaxDp();
+            return panelOpenHeightDp >= 0 ? clampInt(panelOpenHeightDp, 0, maxDp) : maxDp;
+        }
+        int saved = prefs().getInt(lk(KEY_LAYOUT_OPEN_H), -1);
+        return clampInt(saved >= 0 ? saved : openSliderMaxDp(), 0, openSliderMaxDp());
+    }
+
+    /** 未展开范围滑块最大值（dp）：半屏以「不侵入半屏」的可用高度为上限，全屏 520dp。 */
+    private int openSliderMaxDp() {
+        int maxPx = openHeightMaxPx();
+        if (panelMode) {
+            int limit = openBottomLimitPx();
+            if (limit > 0) {
+                maxPx = Math.min(maxPx,
+                        limit - statusBarHeightPx() - Ui.dp(this, 24) - Ui.dp(this, 8));
             }
         }
-        if (layoutExpandValue != null) {
-            layoutExpandValue.setText(heightLabel("设置面板展开范围", cur,
-                    clampedExpandHeightPx(cur)));
-        }
+        int dp = Math.round(maxPx / getResources().getDisplayMetrics().density);
+        return clampInt(dp, 170, LAYOUT_OPEN_MAX_DP);
     }
 
-    /** 「布局面板高度」记忆值（dp）：升级后首次读取时从旧版单一高度键迁移。 */
-    private int openDialogDp() {
-        String key = lk(KEY_LAYOUT_OPEN_H);
-        if (!prefs().contains(key)) {
-            int legacy = prefs().getInt(lk(KEY_LAYOUT_H_LEGACY), -1);
-            return clampInt(legacy >= 0 ? legacy : LAYOUT_DIALOG_DEFAULT_DP, 0, LAYOUT_OPEN_MAX_DP);
-        }
-        return clampInt(prefs().getInt(key, LAYOUT_DIALOG_DEFAULT_DP), 0, LAYOUT_OPEN_MAX_DP);
-    }
-
-    /** 「展开高度」记忆值（dp）：新装/重置默认 888dp，手动调过的沿用记忆值。 */
-    private int expandDialogDp() {
-        return clampInt(prefs().getInt(lk(KEY_LAYOUT_EXPAND_H), LAYOUT_EXPAND_MAX_DP),
-                0, LAYOUT_EXPAND_MAX_DP);
-    }
-
-    /** 点开布局设置时的高度（px）：取「布局面板高度」记忆值，且绝不覆盖半屏界面。 */
-    private int openDialogHeightPx() {
-        return clampedOpenHeightPx(openDialogDp());
-    }
-
-    /** 点 ▼ 展开时的高度（px）：取「展开高度」记忆值，允许覆盖半屏区域。 */
+    /** 点 ▼ 展开时的高度（px）：默认 727dp，超过底部底栏上沿时自动收窄。 */
     private int expandDialogHeightPx() {
-        return clampedExpandHeightPx(expandDialogDp());
+        return clampedExpandHeightPx(LAYOUT_EXPAND_DEFAULT_DP);
     }
 
-    /** 「布局面板高度」实际可用高度：上下限同时夹紧，确保不越界、不压半屏。 */
-    private int clampedOpenHeightPx(int dp) {
-        int max = openHeightMaxPx();
-        return clampInt(Ui.dp(this, dp), Math.min(Ui.dp(this, 170), max), max);
-    }
-
-    /** 「展开高度」实际可用高度：允许覆盖半屏，受屏幕、888dp 与冻结按钮位置共同限制。 */
+    /** 展开高度实际可用值：目标高度与底部底栏上沿取小，底栏不可覆盖。 */
     private int clampedExpandHeightPx(int dp) {
         int max = expandHeightMaxPx();
         return clampInt(Ui.dp(this, dp), Math.min(Ui.dp(this, 170), max), max);
     }
 
-    /** 滑块标签：实际高度被可用空间收窄时，把实际值一并标出来。 */
-    private String heightLabel(String name, int dp, int appliedPx) {
-        int appliedDp = Math.round(appliedPx / getResources().getDisplayMetrics().density);
-        return name + "：" + dp + "dp" + (appliedDp != dp ? "（实际 " + appliedDp + "dp）" : "");
-    }
-
-    /** 布局面板高度上限：半屏形态停半屏面板上沿之上，绝不允许覆盖半屏。 */
+    /** 未展开高度上限（px）：只按屏幕可用高度算；半屏/底栏限制由显示后的真实位置夹紧。 */
     private int openHeightMaxPx() {
         int pad = Ui.dp(this, 12);
         int screenH = getResources().getDisplayMetrics().heightPixels;
         int max = screenH - statusBarHeightPx() - pad * 2 - Ui.dp(this, 8);
-        if (panelMode) {
-            View panel = findViewById(R.id.panel);
-            if (panel != null) {
-                int[] loc = new int[2];
-                panel.getLocationOnScreen(loc);
-                max = Math.min(max, loc[1] - statusBarHeightPx() - Ui.dp(this, 16));
-            }
-        }
         max = Math.min(max, Ui.dp(this, LAYOUT_OPEN_MAX_DP));
         return Math.max(0, max);
     }
 
-    /** 展开高度上限：屏幕可用高度与 888dp 取小，再按底部冻结按钮的当前实际上沿夹紧。
-     * 按钮位置受「按钮大小 / 距底部 / 左右偏移」影响，这里一律按运行期的屏幕坐标实时取，
-     * 保证展开后的面板永远停在按钮上方，不会把按钮盖住。
-     */
+    /** 展开高度上限：可用屏幕高度，再以底部底栏上沿夹紧（半屏/全屏一致），绝不覆盖底栏。 */
     private int expandHeightMaxPx() {
         int pad = Ui.dp(this, 12);
         int screenH = getResources().getDisplayMetrics().heightPixels;
         int max = screenH - statusBarHeightPx() - pad * 2 - Ui.dp(this, 8);
-        max = Math.min(max, Ui.dp(this, LAYOUT_EXPAND_MAX_DP));
-        int fabTop = freezeButtonTopPx();
-        if (!panelMode) {
-            // 全屏直接用按钮参数推算上沿：不受布局/动画时序影响，拖动「距底部」「按钮大小」时能立刻重算
-            fabTop = screenH - Ui.dp(this, fabDy) - Ui.dp(this, fabSizeDp) - Ui.dp(this, 4);
-        }
-        if (fabTop > 0) {
-            // 弹窗内容顶边 = 默认 8dp + 记忆的拖动偏移，与 applyDialogGeometry 的定位口径一致
-            int dialogTop = Ui.dp(this, 8) + prefs().getInt(lk(KEY_LAYOUT_DY), 0);
-            max = Math.min(max, fabTop - dialogTop - Ui.dp(this, 12));
+        int barTop = bottomBarTopPx();
+        if (barTop > 0) {
+            max = Math.min(max, barTop - statusBarHeightPx() - pad * 2 - Ui.dp(this, 12));
         }
         return Math.max(0, max);
     }
 
-    /** 底部冻结按钮当前的上沿 y（屏幕坐标）；未加载/不可见时返回 -1。 */
-    private int freezeButtonTopPx() {
-        if (freezeBtn == null || freezeBtn.getVisibility() != View.VISIBLE
-                || freezeBtn.getWidth() == 0) {
+    /** 未展开时内容底边不得越过的 y：半屏取半屏面板上沿，其它形态不额外限制（返回 -1）。 */
+    private int openBottomLimitPx() {
+        if (!panelMode) {
+            return -1;
+        }
+        View panel = findViewById(R.id.panel);
+        if (panel == null || panel.getHeight() == 0) {
             return -1;
         }
         int[] loc = new int[2];
-        freezeBtn.getLocationOnScreen(loc);
+        panel.getLocationOnScreen(loc);
         return loc[1];
     }
 
-    /** 布局弹窗当前内容高度（px，不含阴影留白）；未知时按 0 处理。 */
-    private int dialogContentHeightPx(android.app.Dialog dialog, int shadowPad) {
+    /** 按窗口真实位置把弹窗底边夹到 limitY 之上：优先整体上移，实在放不下才收高度。 */
+    private void enforceDialogBottomLimit(android.app.Dialog dialog, int limitY, int shadowPad) {
+        if (dialog == null || limitY <= 0) {
+            return;
+        }
         android.view.Window w = dialog.getWindow();
         if (w == null) {
-            return 0;
+            return;
         }
-        int h = w.getAttributes().height;
-        return Math.max(0, h - shadowPad * 2);
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        int[] loc = new int[2];
+        w.getDecorView().getLocationOnScreen(loc);
+        int contentTop = loc[1] + shadowPad;
+        int contentH = Math.max(0, lp.height - shadowPad * 2);
+        int maxBottom = limitY - Ui.dp(this, 8);
+        if (contentTop + contentH <= maxBottom) {
+            return;
+        }
+        // 先整体往上挪，保持高度；挪到顶仍放不下再收高度
+        int shift = contentTop + contentH - maxBottom;
+        int newY = lp.y - shift;
+        if (newY >= -shadowPad) {
+            lp.y = newY;
+        } else {
+            int newContentTop = contentTop - (lp.y + shadowPad);
+            lp.y = -shadowPad;
+            int newH = Math.max(Ui.dp(this, 170), maxBottom - newContentTop);
+            lp.height = newH + shadowPad * 2;
+        }
+        w.setAttributes(lp);
+    }
+
+    /** 底部底栏的上沿 y（屏幕坐标）；未加载时返回 -1。
+     * 半屏取 54dp 状态条，全屏取列表底部预留的同高区域。
+     */
+    private int bottomBarTopPx() {
+        int[] loc = new int[2];
+        if (panelMode) {
+            View bar = findViewById(R.id.panel_bottom_bar);
+            if (bar != null && bar.getHeight() > 0) {
+                bar.getLocationOnScreen(loc);
+                return loc[1];
+            }
+            return -1;
+        }
+        if (grid != null && grid.getHeight() > 0) {
+            grid.getLocationOnScreen(loc);
+            return loc[1] + grid.getHeight() - grid.getPaddingBottom();
+        }
+        return -1;
     }
 
     /** 只改布局弹窗高度，坐标不动；变高后别顶出屏幕下沿。 */
@@ -8247,12 +8270,18 @@ public class FreezeListActivity extends BaseActivity {
                         lp.y = clampInt(startY + Math.round(e.getRawY() - downRawY),
                                 -pad, Math.max(-pad, screenH - curH - pad));
                         w.setAttributes(lp);
+                        // 拖动时同样限制：未展开不能压到半屏列表，展开不能压到底栏
+                        enforceDialogBottomLimit(layoutDialog,
+                                layoutExpanded ? bottomBarTopPx() : openBottomLimitPx(), pad);
+                        lp = w.getAttributes();
                         return true;
                     case android.view.MotionEvent.ACTION_UP:
                     case android.view.MotionEvent.ACTION_CANCEL:
                         h.removeCallbacks(activate);
                         if (dragging) {
                             handle.setAlpha(1f);
+                            // 以夹紧后的真实位置落盘，下次打开不会再越界
+                            lp = w.getAttributes();
                             prefs().edit()
                                     .putInt(lk(KEY_LAYOUT_DX), lp.x - baseX)
                                     .putInt(lk(KEY_LAYOUT_DY), lp.y - baseY)

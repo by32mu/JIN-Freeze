@@ -132,6 +132,7 @@
 
         <!-- 最底状态条：搜索入口（进添加应用页）+ 布局设置 -->
         <LinearLayout
+            android:id="@+id/panel_bottom_bar"
             android:layout_width="match_parent"
             android:layout_height="54dp"
             android:gravity="center_vertical"
