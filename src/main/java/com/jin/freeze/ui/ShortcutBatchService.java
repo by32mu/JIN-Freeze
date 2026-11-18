@@ -42,17 +42,22 @@ public class ShortcutBatchService extends Service {
     }
 
     private void runBatch(boolean freeze) {
-        Set<String> pkgs = new HashSet<>(getSharedPreferences("freeze_list", MODE_PRIVATE)
-                .getStringSet("pkgs", new HashSet<>()));
+        android.content.SharedPreferences sp = getSharedPreferences("freeze_list", MODE_PRIVATE);
+        Set<String> pkgs = new HashSet<>(sp.getStringSet("pkgs", new HashSet<>()));
         if (pkgs.isEmpty()) {
             toast("冻结名单为空");
             return;
         }
+        // 冻结白名单：快捷方式的一键冻结同样不处理白名单里的应用
+        Set<String> whitelist = freeze ? sp.getStringSet("freeze_whitelist", null) : null;
         PackageManager pm = getPackageManager();
         // 暂停态对「冻结」来说等同于已到位；对「解冻」来说必须再撤一次暂停
         Set<String> suspendedBefore = SuspendSupport.suspendedAmong(SuspendSupport.cached(this));
         List<String> todo = new ArrayList<>();
         for (String pkg : pkgs) {
+            if (whitelist != null && whitelist.contains(pkg)) {
+                continue;
+            }
             boolean suspended = suspendedBefore.contains(pkg);
             // 已经是目标状态的不再执行 pm：重复整批调用是原来耗时的主要来源之一
             Boolean enabled = enabledOf(pm, pkg);
