@@ -158,10 +158,14 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_GESTURE_DOWN = "gesture_down_dp";
     /** 勾选后只有从屏幕左右边缘开始的长按滑动才切换形态。 */
     private static final String KEY_GESTURE_EDGE_ONLY = "gesture_edge_only";
+    /** 左右两侧「靠内」的边缘触发区宽度（dp，0–100），两边分开设置。 */
+    private static final String KEY_GESTURE_EDGE_LEFT = "gesture_edge_left_dp";
+    private static final String KEY_GESTURE_EDGE_RIGHT = "gesture_edge_right_dp";
     private static final int GESTURE_DP_DEFAULT = 88;
     private static final int GESTURE_DP_MAX = 520;
-    /** 屏幕边缘判定宽度：左右各 32dp。 */
-    private static final int GESTURE_EDGE_DP = 32;
+    /** 边缘触发区默认宽度与上限。 */
+    private static final int GESTURE_EDGE_DP_DEFAULT = 32;
+    private static final int GESTURE_EDGE_DP_MAX = 100;
     /** 半屏专属：勾选后每个图标右上角常驻红色减号，点它即把该应用移出名单。 */
     private static final String KEY_PANEL_QUICK_REMOVE = "panel_quick_remove";
     /** 移动图标开关：打开后点图标选中、再点目标位置放下；全屏与半屏共用同一份状态。 */
@@ -539,6 +543,9 @@ public class FreezeListActivity extends BaseActivity {
     private int gestureDownDp = GESTURE_DP_DEFAULT;
     /** 勾选后只在屏幕左右边缘区域长按滑动才切换形态。 */
     private boolean gestureEdgeOnly;
+    /** 左右边缘触发区宽度（dp，0–100），可分开调节。 */
+    private int gestureEdgeLeftDp = GESTURE_EDGE_DP_DEFAULT;
+    private int gestureEdgeRightDp = GESTURE_EDGE_DP_DEFAULT;
     /** 已消耗位移的锚点：每翻一格就前移一格的距离，余量留给下一次。 */
     private float scrubAnchorX;
     private android.view.VelocityTracker scrubVelocity;
@@ -795,6 +802,10 @@ public class FreezeListActivity extends BaseActivity {
         gestureUpDp = clampGestureDp(prefs().getInt(KEY_GESTURE_UP, GESTURE_DP_DEFAULT));
         gestureDownDp = clampGestureDp(prefs().getInt(KEY_GESTURE_DOWN, GESTURE_DP_DEFAULT));
         gestureEdgeOnly = prefs().getBoolean(KEY_GESTURE_EDGE_ONLY, false);
+        gestureEdgeLeftDp = clampEdgeDp(
+                prefs().getInt(KEY_GESTURE_EDGE_LEFT, GESTURE_EDGE_DP_DEFAULT));
+        gestureEdgeRightDp = clampEdgeDp(
+                prefs().getInt(KEY_GESTURE_EDGE_RIGHT, GESTURE_EDGE_DP_DEFAULT));
         showName = prefs().getBoolean(lk(KEY_SHOW_NAME), true);
         quickRemove = panelMode && prefs().getBoolean(KEY_PANEL_QUICK_REMOVE, false);
         // 移动图标改成一次性动作（长按操作单进入），启动时不再恢复上次状态
@@ -2020,9 +2031,11 @@ public class FreezeListActivity extends BaseActivity {
         switch (ev.getActionMasked()) {
             case android.view.MotionEvent.ACTION_DOWN:
                 cancelBlankScrub();
+                // 边缘触发模式：左右边缘条带内即使压着图标也交给这个手势，否则长按永远起不来
+                boolean edgeStart = edgeReserved(ev.getRawX(), ev.getRawY());
                 // 移动/编辑/多选/执行中不启用，留给原有手势与操作
                 if (!moveMode && !editMode && !selectMode && !working
-                        && inBlankListArea(ev.getRawX(), ev.getRawY())) {
+                        && (inBlankListArea(ev.getRawX(), ev.getRawY()) || edgeStart)) {
                     scrubDownX = ev.getRawX();
                     scrubDownY = ev.getRawY();
                     scrubAnchorX = ev.getRawX();
@@ -2108,14 +2121,19 @@ public class FreezeListActivity extends BaseActivity {
         return Math.max(0, Math.min(GESTURE_DP_MAX, dp));
     }
 
+    /** 边缘触发区宽度限制在 0–100dp。 */
+    private static int clampEdgeDp(int dp) {
+        return Math.max(0, Math.min(GESTURE_EDGE_DP_MAX, dp));
+    }
+
     /**
-     * 手势起点是否落在屏幕左右边缘区域（每侧 32dp）。
+     * 手势起点是否落在屏幕左右边缘触发区。
      * 起点要避开系统的返回手势区（systemGestures inset），否则贴边按下会被系统当成返回/回桌面，
-     * 应用根本收不到事件；所以真正的可触发区从系统手势区内侧再让 8dp 开始。
+     * 应用根本收不到事件；所以可触发区从系统手势区内侧再让 8dp 开始，
+     * 靠内宽度由「屏幕左/右边缘靠内触发手势距离」两个滑块分别决定（0–100dp）。
      */
     private boolean atScreenEdge(float rawX) {
         int width = getResources().getDisplayMetrics().widthPixels;
-        int edge = Ui.dp(this, GESTURE_EDGE_DP);
         int margin = Ui.dp(this, 8);
         int leftInset = 0;
         int rightInset = 0;
@@ -2129,8 +2147,10 @@ public class FreezeListActivity extends BaseActivity {
         }
         int leftStart = leftInset + margin;
         int rightEnd = width - rightInset - margin;
-        return (rawX >= leftStart && rawX <= leftStart + edge)
-                || (rawX >= rightEnd - edge && rawX <= rightEnd);
+        int leftWidth = Ui.dp(this, gestureEdgeLeftDp);
+        int rightWidth = Ui.dp(this, gestureEdgeRightDp);
+        return (leftWidth > 0 && rawX >= leftStart && rawX <= leftStart + leftWidth)
+                || (rightWidth > 0 && rawX >= rightEnd - rightWidth && rawX <= rightEnd);
     }
 
     /**
@@ -2154,8 +2174,8 @@ public class FreezeListActivity extends BaseActivity {
         finish();
     }
 
-    /** 手势起点是否落在列表的空白处（没压到应用图标本身，格子留白与名称行都算空白）。 */
-    private boolean inBlankListArea(float rawX, float rawY) {
+    /** 触点是否落在列表格子区域内（不区分图标/留白）。 */
+    private boolean inGridArea(float rawX, float rawY) {
         if (grid == null || grid.getVisibility() != View.VISIBLE) {
             return false;
         }
@@ -2163,10 +2183,17 @@ public class FreezeListActivity extends BaseActivity {
         grid.getLocationOnScreen(loc);
         float x = rawX - loc[0];
         float y = rawY - loc[1];
-        if (x < 0 || y < 0 || x >= grid.getWidth() || y >= grid.getHeight()) {
-            return false;
-        }
-        return !onAppIcon(rawX, rawY);
+        return x >= 0 && y >= 0 && x < grid.getWidth() && y < grid.getHeight();
+    }
+
+    /** 手势起点是否落在列表的空白处（没压到应用图标本身，格子留白与名称行都算空白）。 */
+    private boolean inBlankListArea(float rawX, float rawY) {
+        return inGridArea(rawX, rawY) && !onAppIcon(rawX, rawY);
+    }
+
+    /** 边缘触发模式下的专属条带：这里的长按交给切形态手势，不再弹图标操作单。 */
+    private boolean edgeReserved(float rawX, float rawY) {
+        return gestureEdgeOnly && inGridArea(rawX, rawY) && atScreenEdge(rawX);
     }
 
     /** 触点是否压在真正的图标方块上：只有这里长按才弹操作单，其他位置留给长按滑标签。 */
@@ -4010,8 +4037,9 @@ public class FreezeListActivity extends BaseActivity {
                     cell.lastY = cell.downY;
                     // 不抢父容器的事件：RecyclerView 需要正常收到滑动才能滚动列表；
                     // 手指移动超过系统触摸抖动阈值时下面会取消长按计时，避免误弹菜单。
-                    // 只有按在图标方块上才计长按；格子留白/名称行长按留给「长按空白滑动切标签」
-                    if (onAppIcon(cell.downX, cell.downY)) {
+                    // 只有按在图标方块上才计长按；格子留白/名称行长按留给「长按空白滑动切标签」；
+                    // 勾了边缘触发后，边缘条带内的长按让给切形态手势，不弹图标操作单
+                    if (onAppIcon(cell.downX, cell.downY) && !edgeReserved(cell.downX, cell.downY)) {
                         v.postDelayed(cell.longPress, LONG_PRESS_MS);
                     }
                     break;
@@ -7277,6 +7305,68 @@ public class FreezeListActivity extends BaseActivity {
         gestureSec.addView(downBar);
 
         // 只在屏幕左右边缘区域长按滑动才切换形态，避免和列表里的滑动操作误触
+        final LinearLayout edgeLeftBox = new LinearLayout(this);
+        edgeLeftBox.setOrientation(LinearLayout.VERTICAL);
+        final TextView edgeLeftLabel = new TextView(this);
+        edgeLeftLabel.setTextSize(11);
+        edgeLeftLabel.setTextColor(getColor(R.color.text_secondary));
+        edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + gestureEdgeLeftDp + "dp");
+        SeekBar edgeLeftBar = new SeekBar(this);
+        edgeLeftBar.setMax(GESTURE_EDGE_DP_MAX);
+        edgeLeftBar.setProgress(gestureEdgeLeftDp);
+        edgeLeftBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                gestureEdgeLeftDp = p;
+                prefs().edit().putInt(KEY_GESTURE_EDGE_LEFT, p).apply();
+                edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + p + "dp");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+        edgeLeftBox.addView(edgeLeftLabel);
+        edgeLeftBox.addView(edgeLeftBar);
+
+        final LinearLayout edgeRightBox = new LinearLayout(this);
+        edgeRightBox.setOrientation(LinearLayout.VERTICAL);
+        final TextView edgeRightLabel = new TextView(this);
+        edgeRightLabel.setTextSize(11);
+        edgeRightLabel.setTextColor(getColor(R.color.text_secondary));
+        edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + gestureEdgeRightDp + "dp");
+        SeekBar edgeRightBar = new SeekBar(this);
+        edgeRightBar.setMax(GESTURE_EDGE_DP_MAX);
+        edgeRightBar.setProgress(gestureEdgeRightDp);
+        edgeRightBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                gestureEdgeRightDp = p;
+                prefs().edit().putInt(KEY_GESTURE_EDGE_RIGHT, p).apply();
+                edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + p + "dp");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+        edgeRightBox.addView(edgeRightLabel);
+        edgeRightBox.addView(edgeRightBar);
+
         CheckBox edgeBox = new CheckBox(this);
         edgeBox.setText("屏幕边缘触发上下滑动手势");
         edgeBox.setTextSize(12);
@@ -7285,8 +7375,16 @@ public class FreezeListActivity extends BaseActivity {
         edgeBox.setOnCheckedChangeListener((b, on) -> {
             gestureEdgeOnly = on;
             prefs().edit().putBoolean(KEY_GESTURE_EDGE_ONLY, on).apply();
+            int vis = on ? View.VISIBLE : View.GONE;
+            edgeLeftBox.setVisibility(vis);
+            edgeRightBox.setVisibility(vis);
         });
         gestureSec.addView(edgeBox);
+        gestureSec.addView(edgeLeftBox);
+        gestureSec.addView(edgeRightBox);
+        int edgeVis = gestureEdgeOnly ? View.VISIBLE : View.GONE;
+        edgeLeftBox.setVisibility(edgeVis);
+        edgeRightBox.setVisibility(edgeVis);
 
         // 列数滑块：4–8 档，和上面几个滑块同一套样式。
         // 整块先收进 ias，最后整体插到「底部冻结按钮调节」上面
