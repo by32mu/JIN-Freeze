@@ -2041,18 +2041,23 @@ public class FreezeListActivity extends BaseActivity {
      * 所以慢慢拖一格一格走，快速划过则连续翻过多格。
      */
     private void scrubByFinger(android.view.MotionEvent ev) {
-        // 长按空白后上下滑切换形态：半屏只认上滑（进全屏），全屏只认下滑（回半屏）
+        // 长按空白后上下滑切换形态：半屏只认上滑（进全屏），全屏只认下滑（回半屏）。
+        // 触发距离放大到 90dp，且要求纵向位移明显大于横向（2 倍以上），
+        // 避免左右滑翻标签时手指带一点上下就误切成另一种形态。
         float dy = ev.getRawY() - scrubDownY;
-        int switchSlop = Ui.dp(this, 42);
-        if (panelMode && dy < -switchSlop) {
-            cancelBlankScrub();
-            switchForm(true);
-            return;
-        }
-        if (!panelMode && dy > switchSlop) {
-            cancelBlankScrub();
-            switchForm(false);
-            return;
+        float dxDown = Math.abs(ev.getRawX() - scrubDownX);
+        int switchSlop = Ui.dp(this, 90);
+        if (Math.abs(dy) > switchSlop && Math.abs(dy) > dxDown * 2f) {
+            if (panelMode && dy < 0) {
+                cancelBlankScrub();
+                switchForm(true);
+                return;
+            }
+            if (!panelMode && dy > 0) {
+                cancelBlankScrub();
+                switchForm(false);
+                return;
+            }
         }
         if (scrubVelocity == null) {
             scrubVelocity = android.view.VelocityTracker.obtain();
@@ -6938,7 +6943,7 @@ public class FreezeListActivity extends BaseActivity {
 
         // 长按空白处左右滑翻标签时的振动：直接走 Vibrator，不受系统触感开关限制
         CheckBox scrubVibBox = new CheckBox(this);
-        scrubVibBox.setText("长按空白处滑动标签震动反馈");
+        scrubVibBox.setText("长按空白处手势震动反馈");
         scrubVibBox.setTextSize(12);
         scrubVibBox.setMinimumHeight(Ui.dp(this, 32));
         scrubVibBox.setChecked(scrubVibrate);
