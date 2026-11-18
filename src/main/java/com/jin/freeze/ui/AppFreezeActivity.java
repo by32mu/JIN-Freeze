@@ -54,6 +54,10 @@ public class AppFreezeActivity extends BaseActivity {
 
     private static final String PREFS = "app_freeze";
     private static final String KEY_SKIP_CONFIRM = "skip_confirm";
+    /** 系统应用提示是否已被「不再提醒」关掉。 */
+    private static final String KEY_SYS_HINT_HIDDEN = "hide_sys_hint";
+    /** 选择页「点击应用后右上角确定」提示是否已被「不再提醒」关掉。 */
+    private static final String KEY_PICK_HINT_HIDDEN = "hide_pick_hint";
     /** 选择模式：作为「冻结列表」的选应用页，勾选后回传包名，不执行冻结操作。 */
     public static final String EXTRA_PICK = "pick_mode";
     public static final String EXTRA_PICKED = "picked";
@@ -99,7 +103,10 @@ public class AppFreezeActivity extends BaseActivity {
     /** 冻结状态筛选：0=全部、1=已冻结、2=未冻结；只在本次页面内有效，重进回到全部。 */
     private int stateFilter;
     private TextView sysHint;
+    private View sysHintRow;
     private TextView rootState;
+    private View rootStateRow;
+    private TextView rootStateDismiss;
     private TextView viewModeBtn;    private TextView batchBtn;
     private LinearLayout batchBar;
     private TextView freezeBtn;
@@ -109,10 +116,15 @@ public class AppFreezeActivity extends BaseActivity {
     private boolean root;
     private boolean loaded;
     private boolean loading;
-    /** 上一次没读到完整应用列表（多半是「获取应用列表」还没放行）：回前台时补拉。 */
-    private boolean permissionRetry;
-    /** 首屏加载完成后只自动补拉一次，避免权限被拒时反复空转。 */
-    private boolean autoRetried;
+    /** 上次加载时系统实际可见的包数：授权「获取应用列表」后这个数会变大，用它判断是否要重读。 */
+    private int visibleCount;
+    /** 授权观察轮询是否已在跑：避免重复排队多条链。 */
+    private boolean watchScheduled;
+    private int watchTicks;
+    /** 页面是否刚失去过窗口焦点（多半是弹出了系统授权弹窗）。 */
+    private boolean lostFocus;
+    /** 授权回来时正在加载：等这一轮结束后立刻再读一次。 */
+    private boolean reloadPending;
     private boolean batchMode;
     private boolean working;
     private boolean refreshing;
@@ -147,7 +159,23 @@ public class AppFreezeActivity extends BaseActivity {
         stateFrozen = findViewById(R.id.state_frozen);
         stateUnfrozen = findViewById(R.id.state_unfrozen);
         sysHint = findViewById(R.id.sys_hint);
+        sysHintRow = findViewById(R.id.sys_hint_row);
+        View sysHintDismiss = findViewById(R.id.sys_hint_dismiss);
+        if (sysHintDismiss != null) {
+            sysHintDismiss.setOnClickListener(v -> {
+                prefs().edit().putBoolean(KEY_SYS_HINT_HIDDEN, true).apply();
+                applySysHintVisibility();
+            });
+        }
         rootState = findViewById(R.id.root_state);
+        rootStateRow = findViewById(R.id.root_state_row);
+        rootStateDismiss = findViewById(R.id.root_state_dismiss);
+        if (rootStateDismiss != null) {
+            rootStateDismiss.setOnClickListener(v -> {
+                prefs().edit().putBoolean(KEY_PICK_HINT_HIDDEN, true).apply();
+                applyPickHintVisibility();
+            });
+        }
         batchBtn = findViewById(R.id.batch);
         batchBar = findViewById(R.id.batch_bar);
         freezeBtn = findViewById(R.id.btn_freeze);
@@ -171,8 +199,7 @@ public class AppFreezeActivity extends BaseActivity {
         });
 
         batchBtn.setText(pickMode ? "确定" : "批量");
-        // 选择页改成点图标直接加入，不再需要「确定」
-        batchBtn.setVisibility(pickMode ? View.GONE : View.VISIBLE);
+        batchBtn.setVisibility(View.VISIBLE);
         batchBar.setVisibility(View.GONE);
         batchBtn.setOnClickListener(v -> {
             if (pickMode) {
@@ -253,24 +280,92 @@ public class AppFreezeActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 首次授权同意、被拒后重新授权、从系统设置授权返回都会回到这里：
-        // 只要上次没读全，就主动补拉一次，不必退出页面再进来
-        if (loaded && !loading && permissionRetry) {
-            loadApps();
+        // 授权弹窗（如 MIUI 安全中心的「始终允许」）关掉后会回到这里：
+        // 立即重读一次，同时开观察兜住「权限晚几秒才真正生效」的机型
+        if (loaded) {
+            if (loading) {
+                reloadPending = true;
+            } else {
+                loadApps();
+            }
+            startVisibilityWatch();
         }
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        // 部分 ROM 的「获取应用列表」弹窗是悬浮窗，不会触发 onResume，用焦点恢复兜底
-        if (hasFocus && loaded && !loading && permissionRetry) {
-            main.postDelayed(() -> {
-                if (!isFinishing() && !isDestroyed() && loaded && !loading && permissionRetry) {
+        if (!hasFocus) {
+            lostFocus = true;
+            return;
+        }
+        // 弹窗关闭、焦点回到页面：马上重读，不等可见包数轮询
+        if (loaded && lostFocus) {
+            lostFocus = false;
+            if (loading) {
+                reloadPending = true;
+            } else {
+                loadApps();
+            }
+            startVisibilityWatch();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // 页面退到后台就停掉观察，回来时 onResume 再开
+        stopVisibilityWatch();
+    }
+
+    /**
+     * 授权后自动刷新观察：前 20 秒每半秒对比一次系统可见包数，之后每秒一次，
+     * 一直观察到页面退到后台。只在数量变多（权限刚放行）时整体重读。
+     */
+    private void startVisibilityWatch() {
+        if (watchScheduled) {
+            return;
+        }
+        watchScheduled = true;
+        watchTicks = 0;
+        main.postDelayed(visibilityWatchTask, 300L);
+    }
+
+    private void stopVisibilityWatch() {
+        watchScheduled = false;
+        main.removeCallbacks(visibilityWatchTask);
+    }
+
+    private final Runnable visibilityWatchTask = new Runnable() {
+        @Override
+        public void run() {
+            if (isFinishing() || isDestroyed()) {
+                watchScheduled = false;
+                return;
+            }
+            if (!loading) {
+                checkVisibilityChanged();
+            }
+            watchTicks++;
+            // 刚授权时权限可能晚一点才生效：前 5 秒 250ms 一次，接着 500ms，之后 1s
+            long delay = watchTicks <= 20 ? 250L : watchTicks <= 60 ? 500L : 1000L;
+            main.postDelayed(this, delay);
+        }
+    };
+
+    /** 后台数一下当前可见包；比上次多就说明权限刚放行，直接整体重读。 */
+    private void checkVisibilityChanged() {
+        IO.execute(() -> {
+            int now = getPackageManager().getInstalledPackages(0).size();
+            main.post(() -> {
+                if (isFinishing() || isDestroyed() || loading) {
+                    return;
+                }
+                if (now > visibleCount) {
                     loadApps();
                 }
-            }, 300);
-        }
+            });
+        });
     }
 
     private static String instanceKey(String pkg, int userId) {
@@ -408,6 +503,8 @@ public class AppFreezeActivity extends BaseActivity {
 
             List<App> apps = new ArrayList<>();
             PackageManager pm = getPackageManager();
+            // 记录系统当前真正对外的可见包数：授权前后对比它就能知道列表是否已放行
+            final int visibleNow = pm.getInstalledPackages(0).size();
             List<Integer> userIds = hasPriv ? discoverUsers() : Collections.singletonList(0);
             // 每个分身用户单独读一次停用真值与系统包集合，避免把主用户的状态套到分身上
             Map<Integer, Set<String>> userDisabled = new HashMap<>();
@@ -489,26 +586,26 @@ public class AppFreezeActivity extends BaseActivity {
                     return;
                 }
                 root = hasPriv;
+                // 说明文字统一左对齐
+                rootState.setGravity(android.view.Gravity.START);
                 rootState.setText(pickMode
-                        ? "点击图标勾选加入名单；长按可运行 / 冻结 / 解冻 / 移除列表"
+                        ? "点击应用后右上角确定"
                         : hasPriv
                         ? "已通过 " + PrivShell.label() + " 执行：点击图标打开应用，长按冻结/解冻"
                         : "未获得 root 或 Shizuku 权限：冻结/解冻不可用，请在半屏布局设置里授权");
+                applyPickHintVisibility();
                 all.clear();
                 all.addAll(shownApps);
                 loaded = true;
-                // 只剩自己或完全为空，基本可判定系统还没允许读取应用列表，留待回前台再补
-                permissionRetry = shownApps.size() <= 1;
+                visibleCount = visibleNow;
                 render(search.getText().toString().trim());
-                // 用户可能在这次读取还没结束时就点了同意：此时 onResume 已经错过，
-                // 只要窗口已重新拿到焦点，就再补一次（只补一次，防权限被拒时空转）
-                if (permissionRetry && !autoRetried && hasWindowFocus()) {
-                    autoRetried = true;
-                    main.postDelayed(() -> {
-                        if (!isFinishing() && !isDestroyed() && loaded && !loading && permissionRetry) {
-                            loadApps();
-                        }
-                    }, 300);
+                // 每次读完都观察一阵：用户点「允许」/「始终允许」后可见包数变大，自动重读
+                if (reloadPending) {
+                    // 授权弹窗在加载途中就点掉了：这一轮数据是旧的，马上补读
+                    reloadPending = false;
+                    loadApps();
+                } else {
+                    startVisibilityWatch();
                 }
             });
         });
@@ -522,9 +619,30 @@ public class AppFreezeActivity extends BaseActivity {
         filterUser.setTextColor(system ? getColor(R.color.blue) : 0xFFFFFFFF);
         filterSystem.setBackgroundResource(system ? R.drawable.bg_btn_blue : R.drawable.bg_btn_white);
         filterSystem.setTextColor(system ? 0xFFFFFFFF : getColor(R.color.blue));
-        sysHint.setVisibility(system ? View.VISIBLE : View.GONE);
+        sysHintRow.setVisibility(system && !prefs().getBoolean(KEY_SYS_HINT_HIDDEN, false)
+                ? View.VISIBLE : View.GONE);
         render(search.getText().toString().trim());
         refreshFrozen();
+    }
+
+    private void applySysHintVisibility() {
+        if (sysHintRow == null) {
+            return;
+        }
+        sysHintRow.setVisibility(showSystem && !prefs().getBoolean(KEY_SYS_HINT_HIDDEN, false)
+                ? View.VISIBLE : View.GONE);
+    }
+
+    /** 选择页的「点击应用后右上角确定」提示：可点「不再提醒」永久收起。 */
+    private void applyPickHintVisibility() {
+        if (rootStateRow == null) {
+            return;
+        }
+        boolean hidden = prefs().getBoolean(KEY_PICK_HINT_HIDDEN, false);
+        rootStateRow.setVisibility(pickMode && hidden ? View.GONE : View.VISIBLE);
+        if (rootStateDismiss != null) {
+            rootStateDismiss.setVisibility(pickMode ? View.VISIBLE : View.GONE);
+        }
     }
 
     /** 冻结状态分段选择：只重排当前内存里的列表，不重新拉全量数据。 */
@@ -781,17 +899,8 @@ public class AppFreezeActivity extends BaseActivity {
     /** 网格/列表共用的点击与长按行为。 */
     private void bindActions(App a, Cell cell, View target) {
         target.setOnClickListener(v -> {
-            if (pickMode) {
-                // 点击图标即加入名单并返回列表，不再走勾选 + 确定
-                Intent data = new Intent();
-                ArrayList<String> picked = new ArrayList<>();
-                picked.add(instanceKey(a.pkg, a.userId));
-                data.putStringArrayListExtra(EXTRA_PICKED, picked);
-                setResult(RESULT_OK, data);
-                finish();
-                return;
-            }
-            if (batchMode) {
+            if (pickMode || batchMode) {
+                // 选择页保持 v2.9 的交互：点一下选中，右上角「确定」再加入列表
                 String key = instanceKey(a.pkg, a.userId);
                 if (selected.contains(key)) {
                     selected.remove(key);
@@ -885,6 +994,11 @@ public class AppFreezeActivity extends BaseActivity {
 
             @Override
             public boolean pinHomeEnabled() {
+                return false;
+            }
+
+            @Override
+            public boolean listRemoveEnabled() {
                 return false;
             }
         });
@@ -1080,7 +1194,7 @@ public class AppFreezeActivity extends BaseActivity {
             cell.icon.clearColorFilter();
             cell.icon.setAlpha(1f);
         }
-        boolean sel = batchMode && selected.contains(instanceKey(a.pkg, a.userId));
+        boolean sel = (batchMode || pickMode) && selected.contains(instanceKey(a.pkg, a.userId));
         cell.root.setBackgroundResource(sel
                 ? R.drawable.bg_card_selected : R.drawable.bg_card);
     }

@@ -51,6 +51,11 @@ public final class AppActionSheet {
             return true;
         }
 
+        /** 是否显示「从列表移除 / 移除列表并解冻」：选择应用页只保留运行、冻结/解冻、应用配置。 */
+        default boolean listRemoveEnabled() {
+            return true;
+        }
+
         /** 是否显示多选按钮：只有真正支持多选批量操作的页面才 override 返回 true。 */
         default boolean multiSelectEnabled() {
             return false;
@@ -102,9 +107,10 @@ public final class AppActionSheet {
         final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
         final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);
         final int lineColor = onWallpaper ? 0x33FFFFFF : Ui.color(c, R.color.divider);
-        // 外层留边、内层圆角：左右 12dp，底部留出明显余量，卡片浮在中间偏下而不是贴着屏幕底
+        // 外层留边、内层圆角：左右 26dp；底部贴着半屏面板底边，
+        // 卡片下沿略低于底部冻结按钮区域，视觉上从面板底部掀起
         android.widget.FrameLayout outer = new android.widget.FrameLayout(c);
-        outer.setPadding(Ui.dp(c, 12), 0, Ui.dp(c, 12), Ui.dp(c, 56));
+        outer.setPadding(Ui.dp(c, 26), 0, Ui.dp(c, 26), Ui.dp(c, 2));
 
         // 底色/壁纸按宿主页的背景透明度一起淡出：0 = 全透明，100 = 实心
         final int bgAlpha = Math.round(255f * Math.max(0, Math.min(100, bgAlphaPct)) / 100f);
@@ -128,22 +134,22 @@ public final class AppActionSheet {
             }
         });
         content.setClipToOutline(true);
-        content.setPadding(0, Ui.dp(c, 4), 0, Ui.dp(c, 8));
+        content.setPadding(0, Ui.dp(c, 2), 0, Ui.dp(c, 6));
         outer.addView(content, new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         LinearLayout header = new LinearLayout(c);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(Ui.dp(c, 18), Ui.dp(c, 12), Ui.dp(c, 18), Ui.dp(c, 10));
+        header.setPadding(Ui.dp(c, 15), Ui.dp(c, 9), Ui.dp(c, 15), Ui.dp(c, 7));
         ImageView headIcon = new ImageView(c);
         if (icon != null) {
             headIcon.setImageDrawable(icon);
         } else {
             headIcon.setImageResource(android.R.drawable.sym_def_app_icon);
         }
-        header.addView(headIcon, new LinearLayout.LayoutParams(Ui.dp(c, 34), Ui.dp(c, 34)));
-        TextView headName = Ui.text(c, label, 15, fg, true);
+        header.addView(headIcon, new LinearLayout.LayoutParams(Ui.dp(c, 28), Ui.dp(c, 28)));
+        TextView headName = Ui.text(c, label, 14, fg, true);
         headName.setSingleLine(true);
         headName.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
@@ -174,7 +180,7 @@ public final class AppActionSheet {
         if (actions.pinHomeEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
         }
-        if (actions.inList()) {
+        if (actions.listRemoveEnabled() && actions.inList()) {
             addItem(c, content, sheet, R.drawable.ic_minus, "从列表移除",
                     actions::removeFromList, fg, iconFg);
             divider(c, content, 18, lineColor);
@@ -217,18 +223,18 @@ public final class AppActionSheet {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(Ui.dp(c, 12), 0, Ui.dp(c, 12), 0);
+        row.setPadding(Ui.dp(c, 10), 0, Ui.dp(c, 10), 0);
         // 条目按压高亮也走圆角，避免方角盖住卡片圆角
         row.setBackgroundResource(R.drawable.bg_menu_item);
         row.setClickable(true);
         ImageView ic = new ImageView(c);
         ic.setImageResource(iconRes);
         ic.setImageTintList(ColorStateList.valueOf(iconFg));
-        row.addView(ic, new LinearLayout.LayoutParams(Ui.dp(c, 20), Ui.dp(c, 20)));
+        row.addView(ic, new LinearLayout.LayoutParams(Ui.dp(c, 18), Ui.dp(c, 18)));
         TextView label = Ui.text(c, text, 13, fg, false);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        lp.leftMargin = Ui.dp(c, 12);
+        lp.leftMargin = Ui.dp(c, 10);
         row.addView(label, lp);
         row.setOnClickListener(v -> {
             sheet.dismiss();
@@ -239,9 +245,9 @@ public final class AppActionSheet {
 
     private static LinearLayout.LayoutParams rowLp(Context c) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 46));
-        lp.leftMargin = Ui.dp(c, 5);
-        lp.rightMargin = Ui.dp(c, 5);
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 40));
+        lp.leftMargin = Ui.dp(c, 4);
+        lp.rightMargin = Ui.dp(c, 4);
         return lp;
     }
 

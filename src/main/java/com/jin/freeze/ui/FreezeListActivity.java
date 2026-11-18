@@ -862,7 +862,8 @@ public class FreezeListActivity extends BaseActivity {
         if (!panelMode) {
             return;
         }
-        int pct = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 25)));
+        // 默认 20：滑块显示 80% 透明度
+        int pct = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 20)));
         View scrim = findViewById(R.id.panel_scrim);
         if (scrim != null) {
             // 原遮罩 #33000000：按比例缩放到 0（全透明）→ 原值
@@ -6073,7 +6074,7 @@ public class FreezeListActivity extends BaseActivity {
         final int maxLiftDp = Math.round(fabMaxLiftPx() / density);
 
         TextView fabTitle = new TextView(this);
-        fabTitle.setText("底部冻结按钮调节");
+        fabTitle.setText("底部冻结按钮");
         fabTitle.setTextSize(12);
         fabTitle.setTextColor(getColor(R.color.text_primary));
         fabTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
@@ -6439,7 +6440,7 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout ias = new LinearLayout(this);
         ias.setOrientation(LinearLayout.VERTICAL);
         TextView iconAdjustTitle = new TextView(this);
-        iconAdjustTitle.setText("列表图标调整");
+        iconAdjustTitle.setText("列表图标");
         iconAdjustTitle.setTextSize(12);
         iconAdjustTitle.setTextColor(getColor(R.color.text_primary));
         iconAdjustTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
@@ -6601,7 +6602,7 @@ public class FreezeListActivity extends BaseActivity {
 
             final SeekBar blurBar = new SeekBar(this);
             blurBar.setMax(100);
-            int blurAlpha = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 25)));
+            int blurAlpha = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 20)));
             int blurPct = 100 - blurAlpha;
             blurBar.setProgress(blurPct);
             blurLabel.setText("半屏外背景：" + blurPct + "%");
@@ -6611,7 +6612,7 @@ public class FreezeListActivity extends BaseActivity {
                     if (!fromUser) {
                         return;
                     }
-                    // 滑块值 = 透明度：0 不透明（原观感），100 全透明
+                    // 滑块值 = 透明度：0 最模糊（不透明），越大越透明
                     prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
                     blurLabel.setText("半屏外背景：" + p + "%");
                     applyBackdropStrength();
