@@ -206,6 +206,20 @@
         android:scaleType="fitCenter"
         android:src="@drawable/ic_sc_unfreeze"
         android:visibility="gone" />
+
+    <!-- 移动图标模式：覆盖在底部冻结按钮上的「完成」勾选，点一下退出移动模式 -->
+    <ImageButton
+        android:id="@+id/btn_move_done"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_gravity="top|start"
+        android:background="@drawable/bg_fab_group"
+        android:contentDescription="完成移动图标"
+        android:elevation="25dp"
+        android:padding="10dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_check_badge"
+        android:visibility="gone" />
     <!-- 启动/收起过渡：由 playIntro 置为可见并从透明压暗，未播放时保持不可见 -->
     <View
         android:id="@+id/panel_intro_scrim"

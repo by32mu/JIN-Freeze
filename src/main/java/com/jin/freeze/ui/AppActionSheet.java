@@ -66,6 +66,36 @@ public final class AppActionSheet {
             return false;
         }
 
+        /** 是否显示冻结白名单入口：只有冻结列表需要。 */
+        default boolean whitelistEnabled() {
+            return false;
+        }
+
+        /** 当前应用是否已在冻结白名单里：决定显示「添加到白名单」还是「移出白名单」。 */
+        default boolean whitelisted() {
+            return false;
+        }
+
+        /** 加入或移出冻结白名单（按当前状态取反）。 */
+        default void toggleWhitelist() {
+            // 默认空实现：不涉及白名单的页面不用 override
+        }
+
+        /** 是否显示「快捷移除图标」：只有半屏面板需要。 */
+        default boolean quickRemoveEnabled() {
+            return false;
+        }
+
+        /** 当前是否已打开快捷移除：决定显示「快捷移除图标」还是「退出快捷移除」。 */
+        default boolean quickRemoveOn() {
+            return false;
+        }
+
+        /** 打开 / 关闭快捷移除（按当前状态取反）。 */
+        default void toggleQuickRemove() {
+            // 默认空实现
+        }
+
         /** 进入移动图标模式（点一下选中、再点目标位置放置）。 */
         default void startMoveMode() {
             // 默认空实现：不支持排序的页面不用 override
@@ -179,6 +209,22 @@ public final class AppActionSheet {
         addItem(c, content, sheet, R.drawable.ic_action_app_info, "在其他应用中配置", actions::appSettings, fg, iconFg);
         if (actions.pinHomeEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
+        }
+        // 冻结白名单：在「添加到桌面」下面；已在白名单时改成「移出白名单」
+        if (actions.whitelistEnabled()) {
+            boolean inWhite = actions.whitelisted();
+            addItem(c, content, sheet,
+                    inWhite ? R.drawable.ic_minus : R.drawable.ic_action_whitelist,
+                    inWhite ? "移出白名单" : "添加到白名单",
+                    actions::toggleWhitelist, fg, iconFg);
+        }
+        // 批量移除应用（原快捷移除）：半屏专属，放在「从列表移除」上面，
+        // 打开后图标常驻红标、底部冻结按钮变成「完成」勾选
+        if (actions.quickRemoveEnabled()) {
+            boolean on = actions.quickRemoveOn();
+            addItem(c, content, sheet, R.drawable.ic_action_batch_remove,
+                    on ? "退出批量移除" : "批量移除应用",
+                    actions::toggleQuickRemove, fg, iconFg);
         }
         if (actions.listRemoveEnabled() && actions.inList()) {
             addItem(c, content, sheet, R.drawable.ic_minus, "从列表移除",

@@ -165,9 +165,11 @@ public class FreezeListActivity extends BaseActivity {
     private static final int FAB_SIZE_DEFAULT = 39;
     private static final int FAB_SIZE_MIN = 32;
     private static final int FAB_SIZE_MAX = 64;
-    /** 半屏形态的一键冻结按钮出厂值：直径 38dp、离底 5dp、底板不透明度 60%。 */
-    private static final int PANEL_FAB_SIZE_DEFAULT = 38;
-    private static final int PANEL_FAB_DY_DEFAULT = 5;
+    /** 半屏形态的一键冻结按钮出厂值：直径 39dp、离底 4dp、底板不透明度 60%。 */
+    private static final int PANEL_FAB_SIZE_DEFAULT = 39;
+    private static final int PANEL_FAB_DY_DEFAULT = 4;
+    /** 半屏冻结按钮出厂值从 38/5 调整为 39/4 的一次性迁移标记。 */
+    private static final String KEY_PANEL_FAB_SEED_39 = "panel_fab_seed_39";
     private static final int PANEL_FAB_SURFACE_DEFAULT = 60;
     /** 全屏形态「距底部」出厂值：首次安装或恢复默认时取 9dp。 */
     private static final int FAB_DY_DEFAULT = 9;
@@ -191,6 +193,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final int[] ICON_STYLE_VALUES = {0, 9, 1, 2, 3, 4, 5, 6, 7, 8};
     /** 主副应用映射：每行「主应用实例键=副应用实例键」。 */
     private static final String KEY_SUB_PAIRS = "sub_app_pairs";
+    /** 冻结白名单：名单里的实例键一律不参与冻结（单冻 / 一键冻结 / 多选冻结 / 副应用联动都跳过）。 */
+    private static final String KEY_WHITELIST = "freeze_whitelist";
     /** 隐藏标签文字：只收起标签名那一排，列表仍显示当前勾选的标签；仅勾选数为 1 时可用。 */
     private static final String KEY_HIDE_TAB_ROW = "hide_tab_row";
     /** 全屏系统应用页的提示是否已被「不再提醒」关掉。 */
@@ -399,6 +403,8 @@ public class FreezeListActivity extends BaseActivity {
     private LinearLayout fabGroup;
     /** 长按冻结按钮浮出的一键解冻小图标。 */
     private View unfreezeFab;
+    /** 移动图标模式覆盖在冻结按钮上的「完成」勾选。 */
+    private View moveDoneFab;
     private boolean fabExpanded;
     /** 冻结执行中的雪花旋转动画，执行完停止并复位。 */
     private android.animation.ObjectAnimator freezeSpin;
@@ -483,6 +489,13 @@ public class FreezeListActivity extends BaseActivity {
     private TextView layoutWpState;
     /** 设置面板里「主副应用关联」这一行，增删/暂停后即时刷新摘要。 */
     private TextView layoutPairEntry;
+    /** 设置面板里「冻结白名单 → 白名单列表」这一行。 */
+    private TextView layoutWhitelistEntry;
+    /** 主副关联 / 列表白名单的管理弹窗：添加应用的手势返回要能回到这一页。 */
+    private AlertDialog pairManagerDialog;
+    private AlertDialog whitelistManagerDialog;
+    /** 管理弹窗上面叠的添加选择页，逐层返回时统一关闭。 */
+    private final List<AlertDialog> pairPickers = new ArrayList<>();
     /** 设置页「冻结图标样式」这一行：选中后即时刷新显示的当前选项。 */
     private TextView layoutIconStyleEntry;
     private WallpaperDrawable wallpaperDrawable;
@@ -772,6 +785,7 @@ public class FreezeListActivity extends BaseActivity {
         // 冻结图标样式默认全彩；1..8 为不同方向的半灰半彩
         iconStyle = clampInt(prefs().getInt(KEY_ICON_STYLE, 0), 0, ICON_STYLE_NAMES.length - 1);
         hideTabRow = prefs().getBoolean(KEY_HIDE_TAB_ROW, false);
+        seedPanelFabDefaults();
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
         fabDy = clampInt(prefs().getInt(lk(KEY_FAB_DY),
                 panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT), 0, FAB_DY_MAX);
@@ -785,6 +799,7 @@ public class FreezeListActivity extends BaseActivity {
         setupGrid();
         applyFabSize();
         setupUnfreezeFab();
+        setupMoveDoneFab();
         panelDismissAfterFreeze = prefs().getBoolean(lk(KEY_PANEL_DISMISS), true);
         panelHideRecents = prefs().getBoolean(lk(KEY_PANEL_HIDE_RECENTS), false);
         keepLauncherIcon = prefs().getBoolean(KEY_KEEP_LAUNCHER_ICON, false);
@@ -855,6 +870,20 @@ public class FreezeListActivity extends BaseActivity {
         if (savedInstanceState == null && consumeCheckRequest()) {
             checkPrivilegeOnStart();
         }
+    }
+
+    /** 半屏出厂值升级：旧默认 38/5 → 39/4，只替换仍是旧默认值的设备，用户调过的不动。 */
+    private void seedPanelFabDefaults() {
+        if (prefs().getBoolean(KEY_PANEL_FAB_SEED_39, false)) {
+            return;
+        }
+        if (prefs().getInt("panel_" + KEY_FAB_SIZE, PANEL_FAB_SIZE_DEFAULT) == 38) {
+            prefs().edit().putInt("panel_" + KEY_FAB_SIZE, PANEL_FAB_SIZE_DEFAULT).apply();
+        }
+        if (prefs().getInt("panel_" + KEY_FAB_DY, PANEL_FAB_DY_DEFAULT) == 5) {
+            prefs().edit().putInt("panel_" + KEY_FAB_DY, PANEL_FAB_DY_DEFAULT).apply();
+        }
+        prefs().edit().putBoolean(KEY_PANEL_FAB_SEED_39, true).apply();
     }
 
     /** 半屏浮层形态：圆角面板默认占屏幕约七成，拖把手可改高度，上方透出桌面。 */
@@ -2848,7 +2877,7 @@ public class FreezeListActivity extends BaseActivity {
                         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                 // 只在非首个标签上加左间距，避免末尾多出一截导致整体看起来偏左
                 if (!firstPanelTab) {
-                    lp.leftMargin = Ui.dp(this, 18);
+                    lp.leftMargin = Ui.dp(this, 10);
                 }
                 firstPanelTab = false;
                 tabBar.addView(item, lp);
@@ -3041,6 +3070,50 @@ public class FreezeListActivity extends BaseActivity {
 
         TextView body = new TextView(this);
         body.setText("勾选标签，则显示勾选的冻结列表；\n取消勾选，则不显示该标签冻结列表；\n点击设为默认，每次启动显示默认标签。");
+        body.setTextSize(13);
+        body.setTextColor(getColor(R.color.text_primary));
+        card.addView(body, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView ok = new TextView(this);
+        ok.setText("知道了");
+        ok.setTextSize(13);
+        ok.setGravity(Gravity.CENTER);
+        ok.setMinHeight(Ui.dp(this, 44));
+        ok.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
+        ok.setTextColor(getColor(R.color.blue));
+        ok.setTypeface(null, android.graphics.Typeface.BOLD);
+        android.util.TypedValue tv = new android.util.TypedValue();
+        getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, tv, true);
+        ok.setBackgroundResource(tv.resourceId);
+        btnRow.addView(ok, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(btnRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setView(card)
+                .create();
+        d.show();
+        Ui.roundAlertDialog(d);
+        applySettingsAlignment(d);
+        ok.setOnClickListener(v -> d.dismiss());
+    }
+
+    /** 列表白名单标题点开的说明卡片：与「标签（点击看说明）」同一套尺寸，只有「知道了」一个按钮。 */
+    private void showWhitelistHintDialog() {
+        int padH = Ui.dp(this, 18);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 6));
+
+        TextView body = new TextView(this);
+        body.setText("添加白名单的应用，无法被冻结，\n"
+                + "可在白名单列表进行添加与移除，\n"
+                + "长按标签页图标或多选，添加移除");
         body.setTextSize(13);
         body.setTextColor(getColor(R.color.text_primary));
         card.addView(body, new LinearLayout.LayoutParams(
@@ -4512,6 +4585,41 @@ public class FreezeListActivity extends BaseActivity {
             }
 
             @Override
+            public boolean whitelistEnabled() {
+                return true;
+            }
+
+            @Override
+            public boolean whitelisted() {
+                return isWhitelisted(it.pkg);
+            }
+
+            @Override
+            public void toggleWhitelist() {
+                boolean add = !isWhitelisted(it.pkg);
+                setWhitelisted(it.pkg, add);
+                refreshWhitelistEntry();
+                Toast.makeText(FreezeListActivity.this,
+                        (add ? "已加入冻结白名单：" : "已移出冻结白名单：") + it.label,
+                        Toast.LENGTH_SHORT).show();
+            }
+
+            @Override
+            public boolean quickRemoveEnabled() {
+                return panelMode;
+            }
+
+            @Override
+            public boolean quickRemoveOn() {
+                return quickRemove;
+            }
+
+            @Override
+            public void toggleQuickRemove() {
+                setQuickRemove(!quickRemove);
+            }
+
+            @Override
             public boolean inList() {
                 return true;
             }
@@ -4627,6 +4735,18 @@ public class FreezeListActivity extends BaseActivity {
         batchDivider(content, lineColor);
         batchItem(R.drawable.ic_action_tag, "更改标签页", () -> batchMoveTab(), sheet, fg, iconFg, content, true);
         batchItem(R.drawable.ic_action_home, "添加到桌面", () -> batchPinHome(), sheet, fg, iconFg, content, true);
+        // 冻结白名单：选中项全在白名单时显示「移出白名单」，否则「添加到白名单」
+        boolean whiteAll = true;
+        for (Item it : batchTargets) {
+            if (!isWhitelisted(it.pkg)) {
+                whiteAll = false;
+                break;
+            }
+        }
+        final boolean allWhite = whiteAll;
+        batchItem(allWhite ? R.drawable.ic_minus : R.drawable.ic_action_whitelist,
+                allWhite ? "移出白名单" : "添加到白名单",
+                () -> batchWhitelist(!allWhite), sheet, fg, iconFg, content, true);
         batchItem(R.drawable.ic_minus, "从列表移除", () -> batchRemove(false), sheet, fg, iconFg, content, true);
         batchDivider(content, lineColor);
         batchItem(R.drawable.ic_action_circle_unlock, "移除列表并解冻", () -> batchRemove(true), sheet, fg, iconFg, content, true);
@@ -4698,11 +4818,22 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         List<Item> todo = new ArrayList<>();
+        int whiteSkipped = 0;
         for (Item it : batchTargets) {
-            if (!it.frozen) todo.add(it);
+            if (it.frozen) {
+                continue;
+            }
+            if (isWhitelisted(it.pkg)) {
+                whiteSkipped++;
+                continue;
+            }
+            todo.add(it);
         }
         if (todo.isEmpty()) {
-            Toast.makeText(this, "选中项都已经是冻结状态", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, whiteSkipped > 0
+                            ? "选中项都在冻结白名单中，不会冻结"
+                            : "选中项都已经是冻结状态",
+                    Toast.LENGTH_SHORT).show();
             exitSelectMode();
             return;
         }
@@ -5003,6 +5134,58 @@ public class FreezeListActivity extends BaseActivity {
         refreshPairEntry();
     }
 
+    // ---------------- 冻结白名单 ----------------
+
+    /** 白名单里的实例键集合（主用户纯包名、分身带 @用户）。 */
+    private Set<String> whitelistSet() {
+        Set<String> raw = prefs().getStringSet(KEY_WHITELIST, null);
+        return raw == null ? new HashSet<>() : new HashSet<>(raw);
+    }
+
+    private boolean isWhitelisted(String key) {
+        return key != null && whitelistSet().contains(key);
+    }
+
+    private void setWhitelisted(String key, boolean on) {
+        if (key == null) {
+            return;
+        }
+        Set<String> cur = whitelistSet();
+        if (on) {
+            cur.add(key);
+        } else {
+            cur.remove(key);
+        }
+        prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+    }
+
+    /** 多选批量加入 / 移出白名单；列表图标本身不变，取消靠长按菜单或白名单列表。 */
+    private void batchWhitelist(boolean add) {
+        Set<String> cur = whitelistSet();
+        int n = 0;
+        for (Item it : batchTargets) {
+            if (add) {
+                if (cur.add(it.pkg)) {
+                    n++;
+                }
+            } else {
+                if (cur.remove(it.pkg)) {
+                    n++;
+                }
+            }
+        }
+        prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+        refreshWhitelistEntry();
+        Toast.makeText(this, (add ? "已加入白名单 " : "已移出白名单 ") + n + " 个应用",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void refreshWhitelistEntry() {
+        if (layoutWhitelistEntry != null) {
+            layoutWhitelistEntry.setText("白名单列表");
+        }
+    }
+
     /** 只返回生效中的映射：暂停的关联在这里查不到，冻结/解冻联动自然不触发。 */
     private Map<String, String> subPairs() {
         Map<String, String> map = new LinkedHashMap<>();
@@ -5065,18 +5248,29 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 实例键对应的显示名：优先用列表里的名称，不在列表里就按包名 + 分身后缀兜底。 */
+    /** 实例键对应的显示名：优先用列表里的名称，不在列表里就问系统要应用名。 */
     private String labelFor(String key) {
         for (Item it : items) {
             if (it.pkg.equals(key)) {
                 return it.label;
             }
         }
-        return packagePart(key) + cloneTag(userIdPart(key));
+        int uid = userIdPart(key);
+        String suffix = uid == 0 ? "" : cloneTag(uid);
+        try {
+            ApplicationInfo ai = getPackageManager().getApplicationInfo(packagePart(key), 0);
+            return getPackageManager().getApplicationLabel(ai) + suffix;
+        } catch (Exception ignored) {
+        }
+        return packagePart(key) + suffix;
     }
 
     /** 联动冻结副应用：静默执行，成败以随后 reload 的真值为准。 */
     private void freezeQuiet(String key) {
+        // 白名单里的副应用不参与联动冻结
+        if (isWhitelisted(key)) {
+            return;
+        }
         int uid = userIdPart(key);
         if (keepLauncherIcon && uid == 0) {
             SuspendSupport.suspend(this, packagePart(key), key);
@@ -5102,6 +5296,11 @@ public class FreezeListActivity extends BaseActivity {
     /** 只冻结当前应用；已冻结时直接提示，不重复执行。成功静默，失败给 pm 真实输出。 */
     private void freezeSingle(Item it) {
         if (working) {
+            return;
+        }
+        if (isWhitelisted(it.pkg)) {
+            Toast.makeText(this, "「" + it.label + "」在冻结白名单中，不会冻结",
+                    Toast.LENGTH_SHORT).show();
             return;
         }
         if (it.frozen) {
@@ -5590,6 +5789,7 @@ public class FreezeListActivity extends BaseActivity {
         fabGroup.setLayoutParams(lp);
         // 等这一轮 layout 落地后再贴解冻图标，避免用到旧的 left/top
         fabGroup.post(this::positionUnfreezeFab);
+        fabGroup.post(this::positionMoveDoneFab);
     }
 
     /** 半屏形态的雪花按钮：底部居中为基准，再按各自落盘的偏移平移。 */
@@ -5611,6 +5811,7 @@ public class FreezeListActivity extends BaseActivity {
             fabGroup.setTranslationX(x);
             fabGroup.setTranslationY(y);
             positionUnfreezeFab();
+            positionMoveDoneFab();
         });
     }
 
@@ -5646,12 +5847,68 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 移动模式的唯一开关口：所有入口都走这里，保证模式和持久化不会脱节。 */
+    /** 移动模式：点一下选中（高亮），再点目标项即插到它前面并立即落盘。 */
     private void setMoveMode(boolean on) {
         moveMode = on;
         selectedPkg = null;
         prefs().edit().putBoolean(lk(KEY_MOVE_MODE), on).apply();
         render();
+        updateFabDone();
+    }
+
+    /** 半屏快捷移除：打开后图标右上角常驻红标，点红标移除；再点底部「完成」勾选退出。 */
+    private void setQuickRemove(boolean on) {
+        quickRemove = panelMode && on;
+        prefs().edit().putBoolean(KEY_PANEL_QUICK_REMOVE, quickRemove).apply();
+        rebindCells();
+        updateFabDone();
+    }
+
+    /** 移动模式 / 快捷移除共用的「完成」勾选：盖在底部冻结按钮上，点一下结束当前状态。 */
+    private void setupMoveDoneFab() {
+        moveDoneFab = findViewById(R.id.btn_move_done);
+        if (moveDoneFab == null) {
+            return;
+        }
+        moveDoneFab.setOnClickListener(v -> {
+            if (moveMode) {
+                setMoveMode(false);
+            } else if (panelMode && quickRemove) {
+                setQuickRemove(false);
+            }
+        });
+        updateFabDone();
+    }
+
+    private void updateFabDone() {
+        if (moveDoneFab == null) {
+            return;
+        }
+        boolean show = moveMode || (panelMode && quickRemove);
+        moveDoneFab.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (show) {
+            moveDoneFab.post(this::positionMoveDoneFab);
+            if (fabGroup != null) {
+                fabGroup.post(this::positionMoveDoneFab);
+            }
+        }
+    }
+
+    /** 把「完成」勾选正中对齐到冻结按钮中心，跟随悬浮按钮的偏移与半屏位移。 */
+    private void positionMoveDoneFab() {
+        if (moveDoneFab == null || fabGroup == null
+                || moveDoneFab.getVisibility() != View.VISIBLE
+                || !(fabGroup.getParent() instanceof View)) {
+            return;
+        }
+        int w = moveDoneFab.getWidth() > 0 ? moveDoneFab.getWidth() : Ui.dp(this, 44);
+        int h = moveDoneFab.getHeight() > 0 ? moveDoneFab.getHeight() : Ui.dp(this, 44);
+        int x = fabGroup.getLeft() + Math.round(fabGroup.getTranslationX())
+                + (fabGroup.getWidth() - w) / 2;
+        int y = fabGroup.getTop() + Math.round(fabGroup.getTranslationY())
+                + (fabGroup.getHeight() - h) / 2;
+        moveDoneFab.setTranslationX(x);
+        moveDoneFab.setTranslationY(y);
     }
 
     /**
@@ -6413,7 +6670,6 @@ public class FreezeListActivity extends BaseActivity {
         // 半屏专属：顶部小白条是否允许拖动改高度（开关与高度值分开存）
         CheckBox handleBox = null;
         CheckBox hideStatusBarBox = null;
-        CheckBox quickRemoveBox = null;
         CheckBox dismissBox = new CheckBox(this);
         dismissBox.setText("点击底部冻结后退出列表");
         dismissBox.setTextSize(12);
@@ -6467,22 +6723,6 @@ public class FreezeListActivity extends BaseActivity {
                 prefs().edit().putBoolean(KEY_PANEL_HIDE_STATUS_BAR, on).apply();
                 // 隐藏时不再反色；取消勾选立刻按壁纸亮度补一次
                 applyPanelBarState();
-            });
-
-            // 快捷移除：图标右上角常驻红色减号，点它等同长按菜单里的「从列表移除」
-            quickRemoveBox = new CheckBox(this);
-            quickRemoveBox.setText("快捷移除图标");
-            quickRemoveBox.setTextSize(12);
-            quickRemoveBox.setMinimumHeight(Ui.dp(this, 32));
-            quickRemoveBox.setChecked(quickRemove);
-            quickRemoveBox.setOnCheckedChangeListener((btn, on) -> {
-                quickRemove = on;
-                prefs().edit().putBoolean(KEY_PANEL_QUICK_REMOVE, on).apply();
-                // 勾选时收起已展开的面板，设置入口与列表都保持可见
-                if (on && collapseHeightRow[0] != null) {
-                    collapseHeightRow[0].run();
-                }
-                render();
             });
 
         }
@@ -6752,7 +6992,6 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(personalTitle);
         box.addView(nameBox);
         box.addView(tipBox);
-        box.addView(keepIconBox);
         box.addView(scrubVibBox);
         box.addView(longPressBox);
         if (dismissBox != null) {
@@ -6794,9 +7033,6 @@ public class FreezeListActivity extends BaseActivity {
         if (hideStatusBarBox != null) {
             box.addView(hideStatusBarBox);
         }
-        if (quickRemoveBox != null) {
-            box.addView(quickRemoveBox);
-        }
         if (hideRowBox != null) {
             box.addView(hideRowBox);
         }
@@ -6809,6 +7045,8 @@ public class FreezeListActivity extends BaseActivity {
         // 两个 LSPosed 冻结开关统一排在「隐藏半屏标签文字」下面
         addSwipeFreezeSection(box);
         addLockFreezeSection(box);
+        // 「留桌面图标（转暂停模式）」紧跟锁屏冻结下面
+        box.addView(keepIconBox);
         box.addView(tabTitle);
         box.addView(tabList);
         box.addView(newTab);
@@ -7038,6 +7276,25 @@ public class FreezeListActivity extends BaseActivity {
         pairSec.addView(pairTitle);
         pairSec.addView(layoutPairEntry);
         box.addView(pairSec, Math.max(0, box.indexOfChild(ias)));
+
+        // 冻结白名单：紧跟关联应用下面；标题 + 与主副应用关联同字号的「白名单列表」入口
+        LinearLayout wlSec = new LinearLayout(this);
+        wlSec.setOrientation(LinearLayout.VERTICAL);
+        TextView wlTitle = new TextView(this);
+        wlTitle.setText("列表白名单（点击看说明）");
+        wlTitle.setTextSize(12);
+        wlTitle.setTextColor(getColor(R.color.text_primary));
+        wlTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
+        wlTitle.setOnClickListener(v -> showWhitelistHintDialog());
+        layoutWhitelistEntry = new TextView(this);
+        layoutWhitelistEntry.setText("白名单列表");
+        layoutWhitelistEntry.setTextSize(11);
+        layoutWhitelistEntry.setTextColor(getColor(R.color.text_secondary));
+        layoutWhitelistEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        layoutWhitelistEntry.setOnClickListener(v -> showWhitelistManager());
+        wlSec.addView(wlTitle);
+        wlSec.addView(layoutWhitelistEntry);
+        box.addView(wlSec, Math.max(0, box.indexOfChild(pairSec) + 1));
 
         // 整块插到「标签（点击看说明）」下面：就在列表图标调整之前
         box.addView(wps, Math.max(0, box.indexOfChild(ias)));
@@ -7788,12 +8045,7 @@ public class FreezeListActivity extends BaseActivity {
         add.setTextColor(getColor(R.color.text_primary));
         add.setGravity(Gravity.CENTER);
         add.setPadding(0, Ui.dp(this, 14), 0, Ui.dp(this, 14));
-        add.setOnClickListener(v -> {
-            if (holder[0] != null) {
-                holder[0].dismiss();
-            }
-            showPairMainPicker();
-        });
+        add.setOnClickListener(v -> showPairMainPicker());
         col.addView(add);
 
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
@@ -7805,6 +8057,12 @@ public class FreezeListActivity extends BaseActivity {
                 .setNegativeButton("关闭", null)
                 .create();
         holder[0] = dialog;
+        pairManagerDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (pairManagerDialog == dialog) {
+                pairManagerDialog = null;
+            }
+        });
         dialog.show();
         Ui.roundAlertDialog(dialog);
         applySettingsAlignment(dialog);
@@ -7903,19 +8161,34 @@ public class FreezeListActivity extends BaseActivity {
         final AlertDialog[] holder = new AlertDialog[1];
         AlertDialog pick = new AlertDialog.Builder(this)
                 .setTitle("选择主应用")
-                .setView(buildAppPickList(source, names, pos -> {
-                    if (holder[0] != null) {
-                        holder[0].dismiss();
-                    }
-                    showPairSubPicker(source.get(pos));
-                }))
+                .setView(buildAppPickList(source, names, pos -> showPairSubPicker(source.get(pos))))
                 .setNegativeButton("取消", null)
                 .create();
         holder[0] = pick;
+        trackPairPicker(pick);
         pick.show();
         Ui.roundAlertDialog(pick);
         // 与「关联应用（点击看说明）」说明弹窗同一宽度
         applySettingsAlignment(pick);
+    }
+
+    /** 管理弹窗上的添加选择页：登记进来，手势返回只关这一页，完成添加后再整条链一起刷新。 */
+    private void trackPairPicker(final AlertDialog pick) {
+        pairPickers.add(pick);
+        pick.setOnDismissListener(d -> pairPickers.remove(pick));
+    }
+
+    /** 添加流程结束：关掉选择页与管理弹窗，再按最新数据重开管理弹窗。 */
+    private void closePairFlow() {
+        for (AlertDialog d : new ArrayList<>(pairPickers)) {
+            d.dismiss();
+        }
+        pairPickers.clear();
+        if (pairManagerDialog != null) {
+            pairManagerDialog.dismiss();
+            pairManagerDialog = null;
+        }
+        showPairManager();
     }
 
     /** 第二步：选副应用（同样从冻结列表里选，排除主应用本身）。 */
@@ -7938,26 +8211,193 @@ public class FreezeListActivity extends BaseActivity {
         AlertDialog pick = new AlertDialog.Builder(this)
                 .setTitle("选择「" + main.label + "」的副应用")
                 .setView(buildAppPickList(source, names, pos -> {
-                    if (holder[0] != null) {
-                        holder[0].dismiss();
-                    }
                     Item sub = source.get(pos);
                     saveSubPair(main.pkg, sub.pkg);
                     Toast.makeText(this, "已关联：" + main.label + " → " + sub.label,
                             Toast.LENGTH_SHORT).show();
-                    showPairManager();
+                    closePairFlow();
                 }))
                 .setNeutralButton("清除关联", (d, w) -> {
                     saveSubPair(main.pkg, null);
                     Toast.makeText(this, "已清除 " + main.label + " 的副应用关联",
                             Toast.LENGTH_SHORT).show();
-                    showPairManager();
+                    closePairFlow();
                 })
+                .setNegativeButton("取消", null)
+                .create();
+        holder[0] = pick;
+        trackPairPicker(pick);
+        pick.show();
+        Ui.roundAlertDialog(pick);
+        applySettingsAlignment(pick);
+    }
+
+    /** 冻结白名单 → 白名单列表：已加入的应用 + 勾选批量移除 + 添加应用。 */
+    private void showWhitelistManager() {
+        final Set<String> set = whitelistSet();
+        final List<String> keys = new ArrayList<>(set);
+        Collections.sort(keys, (a, b) -> labelFor(a).compareToIgnoreCase(labelFor(b)));
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int side = Ui.dp(this, 16);
+        col.setPadding(side, Ui.dp(this, 2), side, Ui.dp(this, 2));
+
+        if (keys.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("白名单为空，点下面添加");
+            empty.setTextSize(12);
+            empty.setTextColor(getColor(R.color.text_secondary));
+            empty.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
+            col.addView(empty);
+        }
+
+        final Set<String> checked = new HashSet<>();
+        final AlertDialog[] holder = new AlertDialog[1];
+        final int iconPx = Ui.dp(this, 28);
+        for (String key : keys) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, Ui.dp(this, 3), 0, Ui.dp(this, 3));
+
+            final CheckBox cb = new CheckBox(this);
+            cb.setClickable(false);
+            cb.setFocusable(false);
+            row.addView(cb, new LinearLayout.LayoutParams(Ui.dp(this, 36), Ui.dp(this, 36)));
+
+            ImageView icon = new ImageView(this);
+            Drawable d = null;
+            try {
+                ApplicationInfo ai = getPackageManager()
+                        .getApplicationInfo(packagePart(key), 0);
+                d = AppIconCache.load(this, packagePart(key), ai);
+            } catch (Exception ignored) {
+            }
+            icon.setImageDrawable(d != null ? d
+                    : androidx.core.content.ContextCompat.getDrawable(this,
+                    android.R.drawable.sym_def_app_icon));
+            row.addView(icon, new LinearLayout.LayoutParams(iconPx, iconPx));
+
+            TextView name = new TextView(this);
+            name.setText(labelFor(key));
+            name.setTextSize(13);
+            name.setTextColor(getColor(R.color.text_primary));
+            name.setSingleLine(true);
+            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            nlp.leftMargin = Ui.dp(this, 10);
+            row.addView(name, nlp);
+
+            row.setOnClickListener(v -> {
+                if (checked.contains(key)) {
+                    checked.remove(key);
+                } else {
+                    checked.add(key);
+                }
+                cb.setChecked(checked.contains(key));
+            });
+            col.addView(row);
+        }
+
+        TextView add = new TextView(this);
+        add.setText("＋ 添加应用");
+        add.setTextSize(13);
+        add.setTextColor(getColor(R.color.text_primary));
+        add.setGravity(Gravity.CENTER);
+        add.setPadding(0, Ui.dp(this, 14), 0, Ui.dp(this, 14));
+        add.setOnClickListener(v -> showWhitelistAddPicker());
+        col.addView(add);
+
+        if (!keys.isEmpty()) {
+            TextView del = new TextView(this);
+            del.setText("移除选中");
+            del.setTextSize(13);
+            del.setTextColor(getColor(R.color.danger));
+            del.setGravity(Gravity.CENTER);
+            del.setPadding(0, 0, 0, Ui.dp(this, 14));
+            del.setOnClickListener(v -> {
+                if (checked.isEmpty()) {
+                    Toast.makeText(this, "先勾选要移出的应用", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Set<String> cur = whitelistSet();
+                cur.removeAll(checked);
+                prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+                refreshWhitelistEntry();
+                Toast.makeText(this, "已移出白名单 " + checked.size() + " 个应用",
+                        Toast.LENGTH_SHORT).show();
+                if (holder[0] != null) {
+                    holder[0].dismiss();
+                }
+                showWhitelistManager();
+            });
+            col.addView(del);
+        }
+
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.addView(col);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("白名单列表")
+                .setView(sv)
+                .setNegativeButton("关闭", null)
+                .create();
+        holder[0] = dialog;
+        whitelistManagerDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (whitelistManagerDialog == dialog) {
+                whitelistManagerDialog = null;
+            }
+        });
+        dialog.show();
+        Ui.roundAlertDialog(dialog);
+        applySettingsAlignment(dialog);
+    }
+
+    /** 白名单添加应用：与「主副应用关联」选主应用同一种「图标 + 名称」列表。 */
+    private void showWhitelistAddPicker() {
+        final Set<String> white = whitelistSet();
+        final List<Item> source = new ArrayList<>();
+        for (Item it : items) {
+            if (!white.contains(it.pkg)) {
+                source.add(it);
+            }
+        }
+        if (source.isEmpty()) {
+            Toast.makeText(this, "冻结列表里没有可加入的应用", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String[] names = new String[source.size()];
+        for (int i = 0; i < source.size(); i++) {
+            names[i] = source.get(i).label;
+        }
+        final AlertDialog[] holder = new AlertDialog[1];
+        AlertDialog pick = new AlertDialog.Builder(this)
+                .setTitle("添加白名单应用")
+                .setView(buildAppPickList(source, names, pos -> {
+                    Item it = source.get(pos);
+                    setWhitelisted(it.pkg, true);
+                    refreshWhitelistEntry();
+                    Toast.makeText(this, "已加入白名单：" + it.label,
+                            Toast.LENGTH_SHORT).show();
+                    // 完成添加：关掉选择页与管理弹窗，再按最新白名单重开管理弹窗
+                    if (holder[0] != null) {
+                        holder[0].dismiss();
+                    }
+                    if (whitelistManagerDialog != null) {
+                        whitelistManagerDialog.dismiss();
+                        whitelistManagerDialog = null;
+                    }
+                    showWhitelistManager();
+                }))
                 .setNegativeButton("取消", null)
                 .create();
         holder[0] = pick;
         pick.show();
         Ui.roundAlertDialog(pick);
+        // 与关联应用的说明/选择弹窗同一宽度
         applySettingsAlignment(pick);
     }
 
@@ -9567,10 +10007,16 @@ public class FreezeListActivity extends BaseActivity {
         }
         final List<Item> targets = new ArrayList<>();
         int skippedCount = 0;
+        int whiteSkipped = 0;
         for (Item it : shown) {
             // 已经到位的直接跳过，不发起 pm 调用，也不算失败
             if (freeze == it.frozen) {
                 skippedCount++;
+                continue;
+            }
+            // 冻结白名单：任何冻结入口都不动它
+            if (freeze && isWhitelisted(it.pkg)) {
+                whiteSkipped++;
                 continue;
             }
             targets.add(it);
@@ -9584,7 +10030,7 @@ public class FreezeListActivity extends BaseActivity {
             List<Item> extra = new ArrayList<>();
             for (Item it : shown) {
                 String subKey = subOf(it.pkg);
-                if (subKey == null || have.contains(subKey)) {
+                if (subKey == null || have.contains(subKey) || isWhitelisted(subKey)) {
                     continue;
                 }
                 have.add(subKey);
@@ -9604,9 +10050,10 @@ public class FreezeListActivity extends BaseActivity {
         final int skippedFinal = skippedCount;
         if (targets.isEmpty()) {
             if (freeze) {
-                // 一键冻结没有可处理的目标（名单为空 / 全部已冻结）：
+                // 一键冻结没有可处理的目标（名单为空 / 全部已冻结 / 全部在冻结白名单）：
                 // 用和「已冻结」完全同一套自绘提示，只换文案
-                FrozenTip.show(this, "无需冻结");
+                FrozenTip.show(this, whiteSkipped > 0 && skippedCount == 0
+                        ? "白名单应用不冻结" : "无需冻结");
             } else if (skippedCount == 0) {
                 Toast.makeText(this, "没有需要处理的应用", Toast.LENGTH_SHORT).show();
             }
