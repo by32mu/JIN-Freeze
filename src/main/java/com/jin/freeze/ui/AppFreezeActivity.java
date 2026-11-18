@@ -83,6 +83,10 @@ public class AppFreezeActivity extends BaseActivity {
     private static final class Cell {
         LinearLayout root;
         ImageView icon;
+        TextView name;
+        /** 网格模式：名称行与左侧冻结雪花（整行居中，雪花贴着文字）。 */
+        LinearLayout nameRow;
+        ImageView snow;
     }
 
     // 进程内共用一个后台线程：不再每开一次页面就新建一个永不回收的线程
@@ -116,15 +120,13 @@ public class AppFreezeActivity extends BaseActivity {
     private boolean root;
     private boolean loaded;
     private boolean loading;
-    /** 上次加载时系统实际可见的包数：授权「获取应用列表」后这个数会变大，用它判断是否要重读。 */
+    /** 上次加载时系统实际可见的包数：授权后这个数会变大，用来触发刷新提示。 */
     private int visibleCount;
-    /** 授权观察轮询是否已在跑：避免重复排队多条链。 */
+    /** 授权观察轮询是否已在跑。 */
     private boolean watchScheduled;
     private int watchTicks;
-    /** 页面是否刚失去过窗口焦点（多半是弹出了系统授权弹窗）。 */
-    private boolean lostFocus;
-    /** 授权回来时正在加载：等这一轮结束后立刻再读一次。 */
-    private boolean reloadPending;
+    /** 本次进入页面是否已经弹过刷新提示，避免反复弹。 */
+    private boolean refreshPromptShown;
     private boolean batchMode;
     private boolean working;
     private boolean refreshing;
@@ -280,92 +282,101 @@ public class AppFreezeActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 授权弹窗（如 MIUI 安全中心的「始终允许」）关掉后会回到这里：
-        // 立即重读一次，同时开观察兜住「权限晚几秒才真正生效」的机型
         if (loaded) {
-            if (loading) {
-                reloadPending = true;
-            } else {
-                loadApps();
-            }
-            startVisibilityWatch();
+            startPermissionWatch();
         }
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (!hasFocus) {
-            lostFocus = true;
-            return;
-        }
-        // 弹窗关闭、焦点回到页面：马上重读，不等可见包数轮询
-        if (loaded && lostFocus) {
-            lostFocus = false;
-            if (loading) {
-                reloadPending = true;
-            } else {
-                loadApps();
-            }
-            startVisibilityWatch();
+        if (hasFocus && loaded) {
+            startPermissionWatch();
         }
     }
 
     @Override
-    protected void onPause() {
-        super.onPause();
-        // 页面退到后台就停掉观察，回来时 onResume 再开
-        stopVisibilityWatch();
+    protected void onStop() {
+        super.onStop();
+        stopPermissionWatch();
+        // 下次回到页面时允许再提示一次
+        refreshPromptShown = false;
     }
 
     /**
-     * 授权后自动刷新观察：前 20 秒每半秒对比一次系统可见包数，之后每秒一次，
-     * 一直观察到页面退到后台。只在数量变多（权限刚放行）时整体重读。
+     * 授权观察：后台每秒数一次系统可见包数，比加载时多就说明「获取应用列表」刚放行，
+     * 这时弹一次刷新提示，由用户点「刷新」再重读，不自动刷新。
+     * 不依赖授权弹窗是否触发 pause/焦点变化，各 ROM 都能兜住。
      */
-    private void startVisibilityWatch() {
+    private void startPermissionWatch() {
         if (watchScheduled) {
             return;
         }
         watchScheduled = true;
         watchTicks = 0;
-        main.postDelayed(visibilityWatchTask, 300L);
+        main.postDelayed(permissionWatchTask, 400L);
     }
 
-    private void stopVisibilityWatch() {
+    private void stopPermissionWatch() {
         watchScheduled = false;
-        main.removeCallbacks(visibilityWatchTask);
+        main.removeCallbacks(permissionWatchTask);
     }
 
-    private final Runnable visibilityWatchTask = new Runnable() {
+    private final Runnable permissionWatchTask = new Runnable() {
         @Override
         public void run() {
             if (isFinishing() || isDestroyed()) {
                 watchScheduled = false;
                 return;
             }
-            if (!loading) {
-                checkVisibilityChanged();
+            if (!loading && !refreshPromptShown) {
+                checkPermissionGrowth();
             }
             watchTicks++;
-            // 刚授权时权限可能晚一点才生效：前 5 秒 250ms 一次，接着 500ms，之后 1s
-            long delay = watchTicks <= 20 ? 250L : watchTicks <= 60 ? 500L : 1000L;
-            main.postDelayed(this, delay);
+            if (watchTicks < 60) {
+                main.postDelayed(this, watchTicks <= 20 ? 500L : 1000L);
+            } else {
+                watchScheduled = false;
+            }
         }
     };
 
-    /** 后台数一下当前可见包；比上次多就说明权限刚放行，直接整体重读。 */
-    private void checkVisibilityChanged() {
+    /** 后台数一下当前可见包；比加载时多就提示刷新。 */
+    private void checkPermissionGrowth() {
         IO.execute(() -> {
             int now = getPackageManager().getInstalledPackages(0).size();
             main.post(() -> {
-                if (isFinishing() || isDestroyed() || loading) {
+                if (isFinishing() || isDestroyed() || refreshPromptShown) {
                     return;
                 }
                 if (now > visibleCount) {
-                    loadApps();
+                    refreshPromptShown = true;
+                    showRefreshPrompt();
                 }
             });
         });
+    }
+
+    /** 授权后的刷新提示：点「刷新」才重新读取列表。 */
+    private void showRefreshPrompt() {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(this)
+                .setTitle("刷新应用列表")
+                .setMessage("已获得「获取应用列表」权限，点「刷新」重新读取应用列表。")
+                .setPositiveButton("刷新", (d, w) -> loadApps())
+                .setNegativeButton("稍后", null)
+                .create();
+        dialog.show();
+        // 缩小并裁成圆角
+        Ui.roundAlertDialog(dialog);
+        if (dialog.getWindow() != null) {
+            int width = Math.min(getResources().getDisplayMetrics().widthPixels - Ui.dp(this, 96),
+                    Ui.dp(this, 270));
+            dialog.getWindow().setLayout(Math.max(width, Ui.dp(this, 220)),
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
     }
 
     private static String instanceKey(String pkg, int userId) {
@@ -480,6 +491,94 @@ public class AppFreezeActivity extends BaseActivity {
         return packages;
     }
 
+    /** 一次取回多用户包信息的快照：把原来七八次 su 合并成两条 shell 命令。 */
+    private static final class ShellSnapshot {
+        boolean root;
+        final List<Integer> users = new ArrayList<>();
+        final Map<Integer, Set<String>> packages = new HashMap<>();
+        final Map<Integer, Set<String>> disabled = new HashMap<>();
+        final Map<Integer, Set<String>> system = new HashMap<>();
+    }
+
+    /**
+     * 启动时只跑两条 su：
+     * 1) id + pm list users；
+     * 2) 对每个用户一次读出「全部包 / 停用包 / 系统包」。
+     * 输出用 @@P:用户号 这类标记分节，回到 Java 再解析。
+     */
+    private ShellSnapshot loadShellSnapshot() {
+        ShellSnapshot snap = new ShellSnapshot();
+        PrivShell.Result head = PrivShell.exec("id; echo @@USERS; pm list users", 20);
+        snap.root = head.out != null && head.out.contains("uid=0")
+                || PrivShell.mode() != PrivShell.Mode.NONE;
+        if (head.out != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("UserInfo\\{(\\d+):").matcher(head.out);
+            while (m.find()) {
+                try {
+                    int id = Integer.parseInt(m.group(1));
+                    if (!snap.users.contains(id)) {
+                        snap.users.add(id);
+                    }
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        if (!snap.users.contains(0)) {
+            snap.users.add(0);
+        }
+        Collections.sort(snap.users);
+        if (!snap.root) {
+            snap.users.clear();
+            snap.users.add(0);
+            return snap;
+        }
+        StringBuilder cmd = new StringBuilder();
+        for (int u : snap.users) {
+            cmd.append("echo \"@@P:").append(u).append("\"; pm list packages --user ").append(u).append("; ");
+            cmd.append("echo \"@@D:").append(u).append("\"; pm list packages -d --user ").append(u).append("; ");
+            cmd.append("echo \"@@S:").append(u).append("\"; pm list packages -s --user ").append(u).append("; ");
+        }
+        PrivShell.Result r = PrivShell.exec(cmd.toString(), 40);
+        if (r.out == null) {
+            return snap;
+        }
+        int user = -1;
+        char kind = 0;
+        for (String line : r.out.split("\\n")) {
+            String t = line.trim();
+            if (t.startsWith("@@")) {
+                int colon = t.indexOf(':');
+                if (colon > 2) {
+                    kind = t.charAt(2);
+                    try {
+                        user = Integer.parseInt(t.substring(colon + 1).trim());
+                    } catch (NumberFormatException e) {
+                        user = -1;
+                    }
+                }
+                continue;
+            }
+            if (user < 0 || kind == 0 || !t.startsWith("package:")) {
+                continue;
+            }
+            String pkg = t.substring("package:".length()).trim()
+                    .replaceFirst("\\s*\\(\\s*\\d+\\s*\\)$", "").trim();
+            if (pkg.isEmpty()) {
+                continue;
+            }
+            Map<Integer, Set<String>> target = kind == 'P' ? snap.packages
+                    : kind == 'D' ? snap.disabled : snap.system;
+            Set<String> set = target.get(user);
+            if (set == null) {
+                set = new HashSet<>();
+                target.put(user, set);
+            }
+            set.add(pkg);
+        }
+        return snap;
+    }
+
     private void loadApps() {
         if (loading) {
             return;
@@ -488,12 +587,11 @@ public class AppFreezeActivity extends BaseActivity {
         // 首次进来先给「正在读取」；补拉时保留现有列表，只有空列表才回到加载态
         render(search.getText().toString().trim());
         IO.execute(() -> {
-            PrivShell.Result id = PrivShell.exec("id", 15);
-            final boolean hasPriv = id.out != null && id.out.contains("uid=0")
-                    || PrivShell.mode() != PrivShell.Mode.NONE;
+            ShellSnapshot snap = loadShellSnapshot();
+            final boolean hasPriv = snap.root;
 
             // pm list packages -d 是系统侧的冻结状态，比 PackageInfo 的 enabled 更准
-            Set<String> disabled = hasPriv ? disabledPackages() : null;
+            Set<String> disabled = hasPriv ? snap.disabled.get(0) : null;
             if (disabled == null) {
                 disabled = new HashSet<>();
             }
@@ -503,25 +601,21 @@ public class AppFreezeActivity extends BaseActivity {
 
             List<App> apps = new ArrayList<>();
             PackageManager pm = getPackageManager();
-            // 记录系统当前真正对外的可见包数：授权前后对比它就能知道列表是否已放行
+            // 记录系统当前真正对外的可见包数：授权前后对比它就能知道是否刚放行
             final int visibleNow = pm.getInstalledPackages(0).size();
-            List<Integer> userIds = hasPriv ? discoverUsers() : Collections.singletonList(0);
-            // 每个分身用户单独读一次停用真值与系统包集合，避免把主用户的状态套到分身上
-            Map<Integer, Set<String>> userDisabled = new HashMap<>();
-            Map<Integer, Set<String>> userSystem = new HashMap<>();
+            final List<Integer> userIds = snap.users;
+            // 主用户的系统包集合只取一次：既用于列表，也用来判断「获取应用列表」是否已放行
+            final Set<String> shellPkgs0 = hasPriv && snap.packages.get(0) != null
+                    ? snap.packages.get(0) : new HashSet<>();
             for (int userId : userIds) {
-                if (userId != 0) {
-                    userDisabled.put(userId, disabledPackages(userId));
-                    userSystem.put(userId, listSystemPackagesForUser(userId));
-                }
-            }
-            for (int userId : userIds) {
-                Set<String> packages = hasPriv ? listPackagesForUser(userId) : new HashSet<>();
+                Set<String> packages = userId == 0
+                        ? shellPkgs0
+                        : snap.packages.getOrDefault(userId, new HashSet<>());
                 List<PackageInfo> installed = userId == 0
                         ? pm.getInstalledPackages(0) : new ArrayList<>();
                 if (userId != 0) {
-                    Set<String> dis = userDisabled.get(userId);
-                    Set<String> sys = userSystem.get(userId);
+                    Set<String> dis = snap.disabled.getOrDefault(userId, new HashSet<>());
+                    Set<String> sys = snap.system.getOrDefault(userId, new HashSet<>());
                     for (String pkg : packages) {
                         PackageInfo pi = null;
                         try {
@@ -560,14 +654,15 @@ public class AppFreezeActivity extends BaseActivity {
                     a.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
                             | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
                     String key = instanceKey(a.pkg, userId);
-                    Set<String> truthForUser = userId == 0 ? disabled : userDisabled.get(userId);
+                    Set<String> truthForUser = userId == 0 ? disabled : snap.disabled.get(userId);
                     a.frozen = truthForUser != null
                             ? (truthForUser.contains(a.pkg)
                             || (userId == 0 && suspended.contains(a.pkg)))
                             : !ai.enabled;
                     try {
-                        // 走公共缓存：再次进入添加页时图标直接命中，不再重复解码
-                        a.icon = AppIconCache.load(this, a.pkg, ai);
+                        // 只命中内存缓存，保证列表第一时间出来；
+                        // 磁盘/解码交给 fillIconsAsync 在后台并发补，避免每次进页面都同步读几百张图标
+                        a.icon = AppIconCache.peek(this, a.pkg);
                     } catch (Exception ignored) {
                     }
                     apps.add(a);
@@ -597,21 +692,61 @@ public class AppFreezeActivity extends BaseActivity {
                 all.clear();
                 all.addAll(shownApps);
                 loaded = true;
+                // 记下本次可见包数，后续轮询一旦发现变多就提示刷新
                 visibleCount = visibleNow;
                 render(search.getText().toString().trim());
-                // 每次读完都观察一阵：用户点「允许」/「始终允许」后可见包数变大，自动重读
-                if (reloadPending) {
-                    // 授权弹窗在加载途中就点掉了：这一轮数据是旧的，马上补读
-                    reloadPending = false;
-                    loadApps();
+                fillIconsAsync();
+                // 可见包数明显少于系统真实安装数 → 「获取应用列表」没放行，才需要盯着授权；
+                // 已放行的正常入口不再做轮询，避免每次进来都反复数包拖慢速度
+                boolean permissionMissing = hasPriv
+                        ? (!shellPkgs0.isEmpty() && visibleNow < shellPkgs0.size() - 3)
+                        : visibleNow <= 1;
+                if (permissionMissing) {
+                    startPermissionWatch();
                 } else {
-                    startVisibilityWatch();
+                    stopPermissionWatch();
                 }
             });
         });
     }
 
     private final Runnable refreshTask = this::refreshFrozen;
+
+    /**
+     * 列表先出、图标后补：没命中缓存的图标在后台并发解码，
+     * 完成后按实例键回填到已显示的格子上，避免一次性解码上百个图标把首屏拖慢。
+     */
+    private void fillIconsAsync() {
+        for (final App a : new ArrayList<>(all)) {
+            if (a.icon != null) {
+                continue;
+            }
+            AppIconCache.EXEC.execute(() -> {
+                android.graphics.drawable.Drawable icon = null;
+                try {
+                    PackageInfo pi = getPackageManager().getPackageInfo(a.pkg, 0);
+                    if (pi != null && pi.applicationInfo != null) {
+                        icon = AppIconCache.load(AppFreezeActivity.this, a.pkg, pi.applicationInfo);
+                    }
+                } catch (Exception ignored) {
+                }
+                if (icon == null) {
+                    return;
+                }
+                final android.graphics.drawable.Drawable loaded = icon;
+                main.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    a.icon = loaded;
+                    Cell cell = cells.get(instanceKey(a.pkg, a.userId));
+                    if (cell != null) {
+                        cell.icon.setImageDrawable(loaded);
+                    }
+                });
+            });
+        }
+    }
 
     private void switchFilter(boolean system) {
         showSystem = system;
@@ -800,17 +935,26 @@ public class AppFreezeActivity extends BaseActivity {
         icon.setBackground(round);
         icon.setClipToOutline(true);
 
-        // 图标下方一行应用名：居中、单行、超长省略；状态仍只由图标灰度表达
+        // 图标下方一行应用名：居中、单行、超长省略；雪花与名称同一行居中，短名称时也贴着文字
         TextView name = Ui.text(this, a.label, 11, Ui.TEXT_PRIMARY, false);
         name.setGravity(Gravity.CENTER);
         name.setSingleLine(true);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
+        LinearLayout nameRow = new LinearLayout(this);
+        nameRow.setOrientation(LinearLayout.HORIZONTAL);
+        nameRow.setGravity(Gravity.CENTER);
+        ImageView snow = new ImageView(this);
+        snow.setImageResource(R.drawable.ic_sc_freeze);
+        snow.setVisibility(View.GONE);
+        nameRow.addView(snow, new LinearLayout.LayoutParams(Ui.dp(this, 10), Ui.dp(this, 10)));
+        nameRow.addView(name, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams nameRowLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        nameLp.topMargin = Ui.dp(this, 6);
-        nameLp.leftMargin = Ui.dp(this, 2);
-        nameLp.rightMargin = Ui.dp(this, 2);
-        box.addView(name, nameLp);
+        nameRowLp.topMargin = Ui.dp(this, 6);
+        nameRowLp.leftMargin = Ui.dp(this, 2);
+        nameRowLp.rightMargin = Ui.dp(this, 2);
+        box.addView(nameRow, nameRowLp);
 
         wrap.addView(box, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -818,6 +962,9 @@ public class AppFreezeActivity extends BaseActivity {
         Cell cell = new Cell();
         cell.root = box;
         cell.icon = icon;
+        cell.name = name;
+        cell.nameRow = nameRow;
+        cell.snow = snow;
         cells.put(instanceKey(a.pkg, a.userId), cell);
         bindCell(a, cell);
 
@@ -888,6 +1035,7 @@ public class AppFreezeActivity extends BaseActivity {
         Cell cell = new Cell();
         cell.root = row;
         cell.icon = icon;
+        cell.name = name;
         cells.put(instanceKey(a.pkg, a.userId), cell);
         bindCell(a, cell);
 
@@ -1186,13 +1334,25 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     private void bindCell(App a, Cell cell) {
-        // 已冻结：整体灰化并压暗（像按下去的状态）；未冻结保持彩色。不加角标/文字/边框。
+        // 选择应用页固定用灰度表示已冻结，不跟随「冻结应用显示灰度图标」开关，
+        // 也不显示名称左侧的雪花（那个开关只作用于冻结列表）
         if (a.frozen) {
             cell.icon.setColorFilter(GRAY);
             cell.icon.setAlpha(0.45f);
         } else {
             cell.icon.clearColorFilter();
             cell.icon.setAlpha(1f);
+        }
+        if (cell.snow != null) {
+            cell.snow.setVisibility(View.GONE);
+        }
+        if (cell.name != null) {
+            cell.name.setCompoundDrawables(null, null, null, null);
+            // 名称过长时省略，避免撑出格子
+            int maxW = Math.max(Ui.dp(this, 24),
+                    getResources().getDisplayMetrics().widthPixels / COLUMNS
+                            - Ui.dp(this, 28) - Ui.dp(this, 10));
+            cell.name.setMaxWidth(maxW);
         }
         boolean sel = (batchMode || pickMode) && selected.contains(instanceKey(a.pkg, a.userId));
         cell.root.setBackgroundResource(sel

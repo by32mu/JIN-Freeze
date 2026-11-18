@@ -182,6 +182,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_TAB_SWIPE = "tab_swipe";
     /** 长按空白处左右滑翻标签时是否振动（直接走 Vibrator，不受系统触感开关影响）。 */
     private static final String KEY_SCRUB_VIBRATE = "scrub_vibrate";
+    /** 冻结应用是否用灰度图标显示；关掉后保持彩色，名称左侧加冻结雪花。 */
+    private static final String KEY_GRAY_ICON = "gray_icon";
     /** 隐藏标签文字：只收起标签名那一排，列表仍显示当前勾选的标签；仅勾选数为 1 时可用。 */
     private static final String KEY_HIDE_TAB_ROW = "hide_tab_row";
     /** 全屏系统应用页的提示是否已被「不再提醒」关掉。 */
@@ -286,6 +288,9 @@ public class FreezeListActivity extends BaseActivity {
         FrameLayout iconBox;
         ImageView icon;
         TextView name;
+        /** 名称行与左侧小雪花：雪花和文字整行居中，保证短名称时也紧贴。 */
+        LinearLayout nameRow;
+        ImageView snow;
         View badge;
         /** 暂停标识：只在 pm suspend 降级冻结时显示，正常 disable-user 冻结不显示。 */
         SuspendBadge suspendBadge;
@@ -477,6 +482,10 @@ public class FreezeListActivity extends BaseActivity {
     private boolean tabSwipeEnabled = true;
     /** 长按空白处左右滑翻标签时是否振动；布局设置可关。 */
     private boolean scrubVibrate = true;
+    /** 冻结应用是否灰化显示（设置页「列表图标」下的开关）。 */
+    private boolean grayIcon = true;
+    /** 关闭凚时若下一层是桌面，用它回到上一个真正用过的应用（如头条），而不是停在桌面。 */
+    private String previousAppPkg;
     /** 隐藏标签文字：只收起标签名那一排，列表与滑动手势照常工作。 */
     private boolean hideTabRow;
     /** 布局设置里高度块正在做显隐过渡：期间忽略滚动回调的重复切换。 */
@@ -491,6 +500,8 @@ public class FreezeListActivity extends BaseActivity {
     private float scrubDownX;
     private float scrubDownY;
     private float scrubAnchorX;
+    /** 上一次因长按滑动切标签的时间：用来做 90ms 节流，避免一划就飞过好几个标签。 */
+    private long scrubLastSwitchAt;
     private final Runnable scrubArmRunnable = () -> {
         scrubArmed = true;
         // 只在手势触发（长按到位）时震一下；与长按图标的反馈完全同一套
@@ -746,6 +757,7 @@ public class FreezeListActivity extends BaseActivity {
         // 左右滑动切换标签固定开启（线上不再提供关闭入口），旧版本关过的用户也一并恢复
         tabSwipeEnabled = true;
         scrubVibrate = prefs().getBoolean(KEY_SCRUB_VIBRATE, true);
+        grayIcon = prefs().getBoolean(KEY_GRAY_ICON, true);
         hideTabRow = prefs().getBoolean(KEY_HIDE_TAB_ROW, false);
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
         fabDy = prefs().getInt(lk(KEY_FAB_DY), panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT);
@@ -1949,6 +1961,7 @@ public class FreezeListActivity extends BaseActivity {
                     scrubDownX = ev.getRawX();
                     scrubDownY = ev.getRawY();
                     scrubAnchorX = ev.getRawX();
+                    scrubLastSwitchAt = 0;
                     getWindow().getDecorView().postDelayed(scrubArmRunnable,
                             android.view.ViewConfiguration.getLongPressTimeout());
                 }
@@ -1963,20 +1976,17 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     return false;
                 }
-                // 长按已到位：左右位移每满一格就切一个标签，可连续翻多个
-                float step = Ui.dp(this, 36);
+                // 长按已到位：位移超过一格才切；每次只切一格并按 90ms 节流。
+                // 小幅拖动慢慢翻，快速大幅拖动也不会一瞬飞过好几个标签，翻页更优雅
+                float step = Ui.dp(this, 22);
                 float dx = ev.getRawX() - scrubAnchorX;
-                int guard = 0;
-                while (dx >= step && guard++ < 8) {
-                    scrubSwitchTab(-1);
-                    scrubAnchorX += step;
-                    dx -= step;
-                }
-                guard = 0;
-                while (dx <= -step && guard++ < 8) {
-                    scrubSwitchTab(1);
-                    scrubAnchorX -= step;
-                    dx += step;
+                if (Math.abs(dx) >= step) {
+                    long now = android.os.SystemClock.uptimeMillis();
+                    if (now - scrubLastSwitchAt >= 90) {
+                        scrubLastSwitchAt = now;
+                        scrubSwitchTab(dx > 0 ? -1 : 1);
+                        scrubAnchorX = ev.getRawX();
+                    }
                 }
                 return true;
             case android.view.MotionEvent.ACTION_UP:
@@ -2030,8 +2040,18 @@ public class FreezeListActivity extends BaseActivity {
                 break;
             }
         }
-        int next = (idx + dir + visible.size()) % visible.size();
+        int next = idx + dir;
+        // 到头就停住，不再循环回首/尾标签
+        if (next < 0 || next >= visible.size()) {
+            return;
+        }
         selectTab(visible.get(next).id);
+        // 滑到每个标签都震一下（与触发长按那一震同一套忽略系统触感开关的口径）
+        if (scrubVibrate) {
+            View target = grid != null ? grid : getWindow().getDecorView();
+            target.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK,
+                    android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+        }
     }
 
     /** 跟手拖动：有相邻标签时列表按手指位移移动，边缘只剩 1/4 位移做阻尼。 */
@@ -2174,6 +2194,8 @@ public class FreezeListActivity extends BaseActivity {
             schedulePanelStatusTone();
         }
         syncRecentsExclusion();
+        // 记一下「桌面之下的上一个应用」：返回手势关闭时若是桌面就跳回它
+        refreshPreviousApp();
     }
 
     @Override
@@ -2250,13 +2272,110 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         if (panelMode) {
+            final String prev = previousAppPkg;
+            if (prev != null) {
+                // 先把上一个应用拉到前台，再关掉自己：中间不经过桌面
+                com.jin.freeze.JinApp.IO.execute(() -> {
+                    launchPreviousApp(prev);
+                    // 等目标应用真正压到栈顶再关自己，避免中间露出桌面
+                    android.os.SystemClock.sleep(200);
+                    main.post(() -> {
+                        finishAndRemoveTask();
+                        overridePendingTransition(0, 0);
+                    });
+                });
+                return;
+            }
             closeWithIntro(() -> {
                 finishAndRemoveTask();
                 overridePendingTransition(0, 0);
             });
             return;
         }
+        // 全屏：如果桌面就在凚下面，先把上一个用过的应用拉回来再关闭，避免先闪一下桌面
+        final String prev = previousAppPkg;
+        if (prev != null) {
+            com.jin.freeze.JinApp.IO.execute(() -> {
+                launchPreviousApp(prev);
+                // 等目标应用真正压到栈顶再关自己，避免中间露出桌面
+                android.os.SystemClock.sleep(200);
+                main.post(this::finish);
+            });
+            return;
+        }
         super.onBackPressed();
+    }
+
+    /** 后台刷新「桌面之下的上一个应用」：只在下一层是桌面时才需要手动回跳。 */
+    private void refreshPreviousApp() {
+        com.jin.freeze.JinApp.IO.execute(() -> {
+            String pkg = findAppBelowHome();
+            main.post(() -> previousAppPkg = pkg);
+        });
+    }
+
+    /** 解析最近任务：跳过凚自己；若紧接着是桌面，返回再下一个应用，否则 null。 */
+    private String findAppBelowHome() {
+        PrivShell.Result r = PrivShell.exec("dumpsys activity recents", 8);
+        if (r == null || r.out == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "\\* Recent #\\d+: Task\\{[^}]*?type=(\\w+)[^}]*?(?:A=\\d+:|I=)([A-Za-z0-9_.]+)")
+                .matcher(r.out);
+        List<String[]> tasks = new ArrayList<>();
+        while (m.find()) {
+            tasks.add(new String[]{m.group(1), m.group(2)});
+        }
+        int start = 0;
+        for (int i = 0; i < tasks.size(); i++) {
+            if (getPackageName().equals(tasks.get(i)[1])) {
+                start = i + 1;
+                break;
+            }
+        }
+        boolean homeSeen = false;
+        for (int i = start; i < tasks.size(); i++) {
+            String type = tasks.get(i)[0];
+            String pkg = tasks.get(i)[1];
+            boolean home = "home".equals(type) || isLauncherPackage(pkg);
+            if (!homeSeen) {
+                if (home) {
+                    homeSeen = true;
+                } else {
+                    // 下一层直接是别的应用：系统默认返回就能回去，不用额外处理
+                    return null;
+                }
+            } else if (!home && !getPackageName().equals(pkg)) {
+                return pkg;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isLauncherPackage(String pkg) {
+        switch (pkg) {
+            case "com.miui.home":
+            case "com.android.launcher":
+            case "com.android.launcher3":
+            case "com.google.android.apps.nexuslauncher":
+            case "com.huawei.android.launcher":
+            case "com.oppo.launcher":
+            case "com.bbk.launcher2":
+            case "com.sec.android.app.launcher":
+            case "com.teslacoilsw.launcher":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** 把上一个应用拉到前台（root / Shizuku 走 monkey 的启动器入口）。 */
+    private void launchPreviousApp(String pkg) {
+        if (pkg == null || !pkg.matches("[A-Za-z0-9._]+")) {
+            return;
+        }
+        PrivShell.exec("monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1", 10);
     }
 
     private SharedPreferences prefs() {
@@ -2483,6 +2602,37 @@ public class FreezeListActivity extends BaseActivity {
         }
         prefs().edit().putString(KEY_TABS, arr.toString()).apply();
         SwipeFreeze.syncAsync(this);
+    }
+
+    /** 标签排序：拖动完把新顺序写回 tabs 并重绘标签栏与当前列表。 */
+    private void showTabSortDialog(Runnable refresh) {
+        List<TabSortDialog.Tab> entries = new ArrayList<>();
+        for (Tab t : tabs) {
+            entries.add(new TabSortDialog.Tab(t.id, t.name));
+        }
+        TabSortDialog.show(this, entries, ordered -> {
+            List<Tab> reordered = new ArrayList<>();
+            for (TabSortDialog.Tab o : ordered) {
+                Tab t = findTab(o.id);
+                if (t != null) {
+                    reordered.add(t);
+                }
+            }
+            // 兜底：没出现在弹窗里的标签（理论上不会有）按原顺序补在末尾
+            for (Tab t : tabs) {
+                if (!reordered.contains(t)) {
+                    reordered.add(t);
+                }
+            }
+            tabs.clear();
+            tabs.addAll(reordered);
+            saveTabs();
+            renderTabBar();
+            render();
+            if (refresh != null) {
+                refresh.run();
+            }
+        });
     }
 
     private void loadAppTabs() {
@@ -3516,17 +3666,31 @@ public class FreezeListActivity extends BaseActivity {
         name.setGravity(Gravity.CENTER);
         name.setSingleLine(true);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
+
+        // 雪花和名称放进同一行整体居中：短名称时雪花紧贴文字，
+        // 不会像 TextView 左复合图标那样被钉在格子最左边
+        LinearLayout nameRow = new LinearLayout(this);
+        nameRow.setOrientation(LinearLayout.HORIZONTAL);
+        nameRow.setGravity(Gravity.CENTER);
+        ImageView snow = new ImageView(this);
+        snow.setImageResource(R.drawable.ic_sc_freeze);
+        snow.setVisibility(View.GONE);
+        nameRow.addView(snow, new LinearLayout.LayoutParams(Ui.dp(this, 10), Ui.dp(this, 10)));
+        nameRow.addView(name, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams nameRowLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        nameLp.topMargin = Ui.dp(this, 6);
-        box.addView(name, nameLp);
-        name.setVisibility(showName ? View.VISIBLE : View.GONE);
+        nameRowLp.topMargin = Ui.dp(this, 6);
+        box.addView(nameRow, nameRowLp);
+        nameRow.setVisibility(showName ? View.VISIBLE : View.GONE);
 
         final Cell cell = new Cell();
         cell.root = box;
         cell.iconBox = iconBox;
         cell.icon = icon;
         cell.name = name;
+        cell.nameRow = nameRow;
+        cell.snow = snow;
         cell.badge = badge;
         cell.suspendBadge = suspendBadge;
         // 把 Cell 挂到 root 上：多选态要靠它反查可见格子的抖动/选中圈
@@ -3843,11 +4007,26 @@ public class FreezeListActivity extends BaseActivity {
         // 暂停标识只跟随状态：正常 disable-user 冻结的图标不加任何标识
         cell.suspendBadge.setVisibility(it.suspended ? View.VISIBLE : View.GONE);
         if (it.frozen) {
-            cell.icon.setColorFilter(GRAY);
-            cell.icon.setAlpha(0.45f);
+            if (grayIcon) {
+                cell.icon.setColorFilter(GRAY);
+                cell.icon.setAlpha(0.45f);
+            } else {
+                // 关掉灰度：保持彩色，在名称左侧补一个冻结小雪花
+                cell.icon.clearColorFilter();
+                cell.icon.setAlpha(1f);
+            }
         } else {
             cell.icon.clearColorFilter();
             cell.icon.setAlpha(1f);
+        }
+        if (cell.snow != null) {
+            // 雪花与名称同一行居中，显隐只跟着「冻结且未灰化」
+            cell.snow.setVisibility(it.frozen && !grayIcon ? View.VISIBLE : View.GONE);
+        }
+        if (cell.name != null) {
+            // 名称可用宽度跟着格子宽度走：过长省略，雪花始终贴着文字
+            cell.name.setMaxWidth(Math.max(Ui.dp(this, 24),
+                    computedCellPx() - Ui.dp(this, 8) - Ui.dp(this, 10)));
         }
         cell.root.setBackground(moveMode && it.pkg.equals(selectedPkg) ? selectedBackground() : null);
         cell.root.setAlpha(moveMode && it.pkg.equals(draggingPkg) ? 0.35f : 1f);
@@ -3875,7 +4054,7 @@ public class FreezeListActivity extends BaseActivity {
                         .setCornerRadius(Math.max(Ui.dp(this, 6), (int) (iconPx * 0.18f)));
             }
         }
-        cell.name.setVisibility(showName ? View.VISIBLE : View.GONE);
+        cell.nameRow.setVisibility(showName ? View.VISIBLE : View.GONE);
         // 滚动复用/重绑时同步多选视觉：圈跟随当前选中集合
         if (selectMode && selectedPkgs.contains(it.pkg)) addSelectRing(cell); else removeSelectRing(cell);
     }
@@ -6291,6 +6470,14 @@ public class FreezeListActivity extends BaseActivity {
                     });
                     row.addView(def);
                 }
+                // 排序：放在「默认」右侧、「改名」左侧；点开后只允许拖动调整标签顺序
+                TextView sortBtn = new TextView(this);
+                sortBtn.setText("排序");
+                sortBtn.setTextSize(11);
+                sortBtn.setTextColor(getColor(R.color.blue));
+                sortBtn.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
+                sortBtn.setOnClickListener(v -> showTabSortDialog(refreshTabSettings[0]));
+                row.addView(sortBtn);
                 // 内置标签也能改名（只改显示名，不影响它承载用户/系统应用的性质）；删除仍只限自定义标签
                 TextView rename = new TextView(this);
                 rename.setText("改名");
@@ -6330,6 +6517,18 @@ public class FreezeListActivity extends BaseActivity {
         if (dismissBox != null) {
             box.addView(dismissBox);
         }
+        // 冻结应用的显示方式：开=整体灰化；关=保持彩色，名称左侧加冻结雪花
+        CheckBox grayBox = new CheckBox(this);
+        grayBox.setText("冻结应用显示灰度图标");
+        grayBox.setTextSize(12);
+        grayBox.setMinimumHeight(Ui.dp(this, 32));
+        grayBox.setChecked(grayIcon);
+        grayBox.setOnCheckedChangeListener((b, on) -> {
+            grayIcon = on;
+            prefs().edit().putBoolean(KEY_GRAY_ICON, on).apply();
+            rebindCells();
+        });
+        box.addView(grayBox);
         box.addView(tabOnlyBox);
 
         // 形态切换：选项永远显示「另一种形态」且不勾选，点一下即切过去

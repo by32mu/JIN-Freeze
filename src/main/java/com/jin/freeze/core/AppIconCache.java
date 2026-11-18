@@ -116,7 +116,10 @@ public final class AppIconCache {
             Bitmap bmp = toBitmap(d, px);
             if (bmp != null) {
                 CACHE.put(k, bmp);
-                writeDisk(c, pkg, px, bmp);
+                final Bitmap store = bmp;
+                // 磁盘缓存放到图标线程池异步写：首次授权后一次要落几百个图标，
+                // 同步压缩写文件会把列表拖慢好几秒
+                EXEC.execute(() -> writeDisk(c, pkg, px, store));
             }
             return d;
         } catch (Exception e) {
