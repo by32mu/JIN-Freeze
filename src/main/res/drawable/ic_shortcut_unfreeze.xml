@@ -1,71 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 快捷方式「一键解冻」：同套底 + 雪花 + 升温箭头 -->
+<!-- 快捷方式「一键解冻」（取搞机助手同款图形，颜色改为凚的深蓝） -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path android:pathData="M24,4h60a20,20 0 0,1 20,20v60a20,20 0 0,1 -20,20h-60a20,20 0 0,1 -20,-20v-60a20,20 0 0,1 20,-20z">
-        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt"
-            name="android:fillColor">
-            <gradient
-                android:angle="315"
-                android:endColor="#0E2248"
-                android:startColor="#2E63C8"
-                android:type="linear" />
-        </aapt:attr>
-    </path>
-    <group
-        android:pivotX="50"
-        android:pivotY="54"
-        android:rotation="0">
-        <path
-            android:pathData="M50,34 L50,74"
-            android:strokeColor="#EAF6FF"
-            android:strokeLineCap="round"
-            android:strokeWidth="4" />
-        <path
-            android:pathData="M50,40 L45,45 M50,40 L55,45 M50,68 L45,63 M50,68 L55,63"
-            android:strokeColor="#BFE2FF"
-            android:strokeLineCap="round"
-            android:strokeWidth="3.4" />
-    </group>
-    <group
-        android:pivotX="50"
-        android:pivotY="54"
-        android:rotation="60">
-        <path
-            android:pathData="M50,34 L50,74"
-            android:strokeColor="#EAF6FF"
-            android:strokeLineCap="round"
-            android:strokeWidth="4" />
-        <path
-            android:pathData="M50,40 L45,45 M50,40 L55,45 M50,68 L45,63 M50,68 L55,63"
-            android:strokeColor="#BFE2FF"
-            android:strokeLineCap="round"
-            android:strokeWidth="3.4" />
-    </group>
-    <group
-        android:pivotX="50"
-        android:pivotY="54"
-        android:rotation="120">
-        <path
-            android:pathData="M50,34 L50,74"
-            android:strokeColor="#EAF6FF"
-            android:strokeLineCap="round"
-            android:strokeWidth="4" />
-        <path
-            android:pathData="M50,40 L45,45 M50,40 L55,45 M50,68 L45,63 M50,68 L55,63"
-            android:strokeColor="#BFE2FF"
-            android:strokeLineCap="round"
-            android:strokeWidth="3.4" />
-    </group>
-
-    <!-- 右下角升温箭头：与冻结图标区分 -->
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
     <path
-        android:fillColor="#7FD4FF"
-        android:pathData="M74,64 L86,64 L80,52 z" />
+        android:fillColor="#00000000"
+        android:strokeColor="#2E63C8"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M8,12H16A2,2 0 0 1 18,14V20A2,2 0 0 1 16,22H8A2,2 0 0 1 6,20V14A2,2 0 0 1 8,12Z" />
     <path
-        android:fillColor="#7FD4FF"
-        android:pathData="M76.4,64 h7.2 v10 h-7.2 z" />
+        android:fillColor="#00000000"
+        android:strokeColor="#2E63C8"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M13,12V8A4,4 0 0 1 21,8V9" />
+    <path
+        android:fillColor="#2E63C8"
+        android:pathData="M12,14.6a1.4,1.4 0 1 1 0,2.8a1.4,1.4 0 1 1 0,-2.8z" />
 </vector>

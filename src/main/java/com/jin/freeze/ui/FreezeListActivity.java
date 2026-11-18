@@ -2272,38 +2272,54 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         if (panelMode) {
-            final String prev = previousAppPkg;
-            if (prev != null) {
-                // 先把上一个应用拉到前台，再关掉自己：中间不经过桌面
-                com.jin.freeze.JinApp.IO.execute(() -> {
-                    launchPreviousApp(prev);
-                    // 等目标应用真正压到栈顶再关自己，避免中间露出桌面
-                    android.os.SystemClock.sleep(200);
-                    main.post(() -> {
-                        finishAndRemoveTask();
-                        overridePendingTransition(0, 0);
-                    });
-                });
-                return;
-            }
-            closeWithIntro(() -> {
-                finishAndRemoveTask();
-                overridePendingTransition(0, 0);
-            });
+            closePanelReturningPrevious();
             return;
         }
         // 全屏：如果桌面就在凚下面，先把上一个用过的应用拉回来再关闭，避免先闪一下桌面
+        closeFullscreenReturningPrevious();
+    }
+
+    /** 全屏关闭：若下一层是桌面，先拉回上一个应用再 finish。 */
+    private void closeFullscreenReturningPrevious() {
+        final String prev = previousAppPkg;
+        if (prev == null) {
+            finish();
+            return;
+        }
+        com.jin.freeze.JinApp.IO.execute(() -> {
+            launchPreviousApp(prev);
+            // 等目标应用真正压到栈顶再关自己，避免中间露出桌面
+            android.os.SystemClock.sleep(200);
+            main.post(() -> {
+                if (!isFinishing() && !isDestroyed()) {
+                    finish();
+                }
+            });
+        });
+    }
+
+    /** 收起半屏：若下一层是桌面，先拉回上一个应用再关闭；否则走原来的收起过渡。 */
+    private void closePanelReturningPrevious() {
         final String prev = previousAppPkg;
         if (prev != null) {
+            // 先把上一个应用拉到前台，等它到栈顶再关自己，中间不露出桌面
             com.jin.freeze.JinApp.IO.execute(() -> {
                 launchPreviousApp(prev);
-                // 等目标应用真正压到栈顶再关自己，避免中间露出桌面
                 android.os.SystemClock.sleep(200);
-                main.post(this::finish);
+                main.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    finishAndRemoveTask();
+                    overridePendingTransition(0, 0);
+                });
             });
             return;
         }
-        super.onBackPressed();
+        closeWithIntro(() -> {
+            finishAndRemoveTask();
+            overridePendingTransition(0, 0);
+        });
     }
 
     /** 后台刷新「桌面之下的上一个应用」：只在下一层是桌面时才需要手动回跳。 */
@@ -3309,8 +3325,11 @@ public class FreezeListActivity extends BaseActivity {
                 // 冻结设置成「后收起」时，等这一轮状态刷新落地再关面板，回到进入前的应用
                 if (dismissAfterReload) {
                     dismissAfterReload = false;
-                    finishAndRemoveTask();
-                    overridePendingTransition(0, 0);
+                    if (panelMode) {
+                        closePanelReturningPrevious();
+                    } else {
+                        closeFullscreenReturningPrevious();
+                    }
                     return;
                 }
                 if (pendingAction != null) {
@@ -8923,8 +8942,11 @@ public class FreezeListActivity extends BaseActivity {
             }
             // 「冻结后收起列表」的自动收起保持原有判断，不受提示影响
             if (skippedCount > 0 && panelDismissAfterFreeze) {
-                finishAndRemoveTask();
-                overridePendingTransition(0, 0);
+                if (panelMode) {
+                    closePanelReturningPrevious();
+                } else {
+                    closeFullscreenReturningPrevious();
+                }
             }
             return;
         }
