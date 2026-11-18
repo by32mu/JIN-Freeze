@@ -528,6 +528,11 @@ public class FreezeListActivity extends BaseActivity {
     /** 长按到位后的第一段位移方向是否已判定 / 是否允许切形态：第一下不是对应方向就整段手势都不切。 */
     private boolean scrubDirDecided;
     private boolean scrubSwitchAllowed;
+    /** 长按手势累计路程：横向一多（弧形、横滑）就取消整段切形态。 */
+    private float scrubPathX;
+    private float scrubPathY;
+    private float scrubLastX;
+    private float scrubLastY;
     /** 已消耗位移的锚点：每翻一格就前移一格的距离，余量留给下一次。 */
     private float scrubAnchorX;
     private android.view.VelocityTracker scrubVelocity;
@@ -2011,6 +2016,8 @@ public class FreezeListActivity extends BaseActivity {
                         && inBlankListArea(ev.getRawX(), ev.getRawY())) {
                     scrubDownX = ev.getRawX();
                     scrubDownY = ev.getRawY();
+                    scrubLastX = scrubDownX;
+                    scrubLastY = scrubDownY;
                     scrubAnchorX = ev.getRawX();
                     getWindow().getDecorView().postDelayed(scrubArmRunnable,
                             android.view.ViewConfiguration.getLongPressTimeout());
@@ -2046,6 +2053,15 @@ public class FreezeListActivity extends BaseActivity {
     private void scrubByFinger(android.view.MotionEvent ev) {
         float dy = ev.getRawY() - scrubDownY;
         float dxDown = ev.getRawX() - scrubDownX;
+        // 累计手指实际走过的路程：横向路程超过纵向的一半，说明是弧形/横滑手势，
+        // 这段手势从此不再允许切形态，避免圆弧形上滑被当成上滑。
+        scrubPathX += Math.abs(ev.getRawX() - scrubLastX);
+        scrubPathY += Math.abs(ev.getRawY() - scrubLastY);
+        scrubLastX = ev.getRawX();
+        scrubLastY = ev.getRawY();
+        if (scrubSwitchAllowed && scrubPathX > scrubPathY * 0.5f) {
+            scrubSwitchAllowed = false;
+        }
         // 长按到位后的第一段位移方向定生死：半屏第一下必须向上、全屏必须向下，
         // 否则这次手势只按左右滑处理，后面再上下滑也不切形态，避免来回误触。
         if (!scrubDirDecided) {
@@ -2053,6 +2069,7 @@ public class FreezeListActivity extends BaseActivity {
             if (dist > Ui.dp(this, 8)) {
                 scrubDirDecided = true;
                 scrubSwitchAllowed = Math.abs(dy) > Math.abs(dxDown)
+                        && scrubPathX <= scrubPathY * 0.5f
                         && (panelMode ? dy < 0 : dy > 0);
             }
         }
@@ -2098,6 +2115,8 @@ public class FreezeListActivity extends BaseActivity {
         scrubArmed = false;
         scrubDirDecided = false;
         scrubSwitchAllowed = false;
+        scrubPathX = 0f;
+        scrubPathY = 0f;
         if (scrubVelocity != null) {
             scrubVelocity.recycle();
             scrubVelocity = null;
