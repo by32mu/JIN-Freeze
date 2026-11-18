@@ -2031,8 +2031,8 @@ public class FreezeListActivity extends BaseActivity {
         switch (ev.getActionMasked()) {
             case android.view.MotionEvent.ACTION_DOWN:
                 cancelBlankScrub();
-                // 边缘触发模式：左右边缘条带内即使压着图标也交给这个手势，否则长按永远起不来
-                boolean edgeStart = edgeReserved(ev.getRawX(), ev.getRawY());
+                // 边缘触发模式：左右边缘条带内（含面板上方遮罩）都交给这个手势
+                boolean edgeStart = edgeReserved(ev.getRawX());
                 // 移动/编辑/多选/执行中不启用，留给原有手势与操作
                 if (!moveMode && !editMode && !selectMode && !working
                         && (inBlankListArea(ev.getRawX(), ev.getRawY()) || edgeStart)) {
@@ -2128,13 +2128,14 @@ public class FreezeListActivity extends BaseActivity {
 
     /**
      * 手势起点是否落在屏幕左右边缘触发区。
-     * 起点要避开系统的返回手势区（systemGestures inset），否则贴边按下会被系统当成返回/回桌面，
-     * 应用根本收不到事件；所以可触发区从系统手势区内侧再让 8dp 开始，
-     * 靠内宽度由「屏幕左/右边缘靠内触发手势距离」两个滑块分别决定（0–100dp）。
+     * 区域 = 从屏幕最外沿到「系统手势区 + 靠内宽度」这段；
+     * 最外沿那几毫米本来归系统返回手势，能不能收到取决于系统是否放行（见 applyEdgeGestureExclusion），
+     * 收到就按边缘触发处理，收不到也不会误伤其他逻辑。
      */
     private boolean atScreenEdge(float rawX) {
         int width = getResources().getDisplayMetrics().widthPixels;
-        int margin = Ui.dp(this, 8);
+        int margin = Ui.dp(this, 4);
+        int minInset = Ui.dp(this, 24);
         int leftInset = 0;
         int rightInset = 0;
         androidx.core.view.WindowInsetsCompat insets =
@@ -2145,12 +2146,60 @@ public class FreezeListActivity extends BaseActivity {
             leftInset = g.left;
             rightInset = g.right;
         }
-        int leftStart = leftInset + margin;
-        int rightEnd = width - rightInset - margin;
-        int leftWidth = Ui.dp(this, gestureEdgeLeftDp);
-        int rightWidth = Ui.dp(this, gestureEdgeRightDp);
-        return (leftWidth > 0 && rawX >= leftStart && rawX <= leftStart + leftWidth)
-                || (rightWidth > 0 && rawX >= rightEnd - rightWidth && rawX <= rightEnd);
+        int leftEnd = Math.max(leftInset, minInset) + margin + Ui.dp(this, gestureEdgeLeftDp);
+        int rightStart = width - Math.max(rightInset, minInset) - margin
+                - Ui.dp(this, gestureEdgeRightDp);
+        return (gestureEdgeLeftDp > 0 && rawX <= leftEnd)
+                || (gestureEdgeRightDp > 0 && rawX >= rightStart);
+    }
+
+    /**
+     * 把左右边缘条带从系统返回手势区里「要回来」。
+     * Android 10+ 允许应用声明排除区（系统对单侧高度有上限），声明成功后贴边按下会先交给应用；
+     * 关掉边缘触发时清空，恢复系统返回手势。
+     */
+    private void applyEdgeGestureExclusion() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+            return;
+        }
+        View decor = getWindow().getDecorView();
+        if (decor == null) {
+            return;
+        }
+        if (!gestureEdgeOnly) {
+            decor.setSystemGestureExclusionRects(java.util.Collections.emptyList());
+            return;
+        }
+        int w = decor.getWidth();
+        int h = decor.getHeight();
+        if (w <= 0 || h <= 0) {
+            decor.post(this::applyEdgeGestureExclusion);
+            return;
+        }
+        int margin = Ui.dp(this, 4);
+        int minInset = Ui.dp(this, 24);
+        int leftInset = 0;
+        int rightInset = 0;
+        androidx.core.view.WindowInsetsCompat insets =
+                androidx.core.view.ViewCompat.getRootWindowInsets(decor);
+        if (insets != null) {
+            androidx.core.graphics.Insets g = insets.getInsets(
+                    androidx.core.view.WindowInsetsCompat.Type.systemGestures());
+            leftInset = g.left;
+            rightInset = g.right;
+        }
+        int leftW = Math.min(w, Math.max(leftInset, minInset) + margin
+                + Ui.dp(this, gestureEdgeLeftDp));
+        int rightW = Math.min(w, Math.max(rightInset, minInset) + margin
+                + Ui.dp(this, gestureEdgeRightDp));
+        java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>();
+        if (gestureEdgeLeftDp > 0) {
+            rects.add(new android.graphics.Rect(0, 0, leftW, h));
+        }
+        if (gestureEdgeRightDp > 0) {
+            rects.add(new android.graphics.Rect(w - rightW, 0, w, h));
+        }
+        decor.setSystemGestureExclusionRects(rects);
     }
 
     /**
@@ -2191,9 +2240,9 @@ public class FreezeListActivity extends BaseActivity {
         return inGridArea(rawX, rawY) && !onAppIcon(rawX, rawY);
     }
 
-    /** 边缘触发模式下的专属条带：这里的长按交给切形态手势，不再弹图标操作单。 */
-    private boolean edgeReserved(float rawX, float rawY) {
-        return gestureEdgeOnly && inGridArea(rawX, rawY) && atScreenEdge(rawX);
+    /** 边缘触发模式下的专属条带：这里的长按交给切形态手势（面板上方的遮罩区也算）。 */
+    private boolean edgeReserved(float rawX) {
+        return gestureEdgeOnly && atScreenEdge(rawX);
     }
 
     /** 触点是否压在真正的图标方块上：只有这里长按才弹操作单，其他位置留给长按滑标签。 */
@@ -2396,6 +2445,8 @@ public class FreezeListActivity extends BaseActivity {
             schedulePanelStatusTone();
         }
         syncRecentsExclusion();
+        // 边缘触发开启时，把两侧条带从系统返回手势区里排除，贴边按下才收得到
+        applyEdgeGestureExclusion();
         // 记一下「桌面之下的上一个应用」：返回手势关闭时若是桌面就跳回它
         refreshPreviousApp();
     }
@@ -4039,7 +4090,7 @@ public class FreezeListActivity extends BaseActivity {
                     // 手指移动超过系统触摸抖动阈值时下面会取消长按计时，避免误弹菜单。
                     // 只有按在图标方块上才计长按；格子留白/名称行长按留给「长按空白滑动切标签」；
                     // 勾了边缘触发后，边缘条带内的长按让给切形态手势，不弹图标操作单
-                    if (onAppIcon(cell.downX, cell.downY) && !edgeReserved(cell.downX, cell.downY)) {
+                    if (onAppIcon(cell.downX, cell.downY) && !edgeReserved(cell.downX)) {
                         v.postDelayed(cell.longPress, LONG_PRESS_MS);
                     }
                     break;
@@ -7323,6 +7374,7 @@ public class FreezeListActivity extends BaseActivity {
                 gestureEdgeLeftDp = p;
                 prefs().edit().putInt(KEY_GESTURE_EDGE_LEFT, p).apply();
                 edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + p + "dp");
+                applyEdgeGestureExclusion();
             }
 
             @Override
@@ -7354,6 +7406,7 @@ public class FreezeListActivity extends BaseActivity {
                 gestureEdgeRightDp = p;
                 prefs().edit().putInt(KEY_GESTURE_EDGE_RIGHT, p).apply();
                 edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + p + "dp");
+                applyEdgeGestureExclusion();
             }
 
             @Override
@@ -7378,6 +7431,7 @@ public class FreezeListActivity extends BaseActivity {
             int vis = on ? View.VISIBLE : View.GONE;
             edgeLeftBox.setVisibility(vis);
             edgeRightBox.setVisibility(vis);
+            applyEdgeGestureExclusion();
         });
         gestureSec.addView(edgeBox);
         gestureSec.addView(edgeLeftBox);
