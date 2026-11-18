@@ -211,7 +211,7 @@ public class FreezeListActivity extends BaseActivity {
     /** 点 ▼ 展开后的固定高度（dp）；实际按底部底栏上沿收窄，不覆盖底栏。 */
     private static final int LAYOUT_EXPAND_DEFAULT_DP = 727;
     /** 底部冻结按钮「距底部」可调范围上限（dp）。 */
-    private static final int FAB_DY_MAX = 14;
+    private static final int FAB_DY_MAX = 30;
     /** 半屏顶部小白条开关：关掉后隐藏把手、高度沿用记住的值。 */
     private static final String KEY_PANEL_HANDLE = "panel_handle_enabled";
     /** 冻结成功后是否自动收起列表（全屏/半屏各自记忆，回到进入前的应用）。 */
@@ -304,6 +304,8 @@ public class FreezeListActivity extends BaseActivity {
         View badge;
         /** 暂停标识：只在 pm suspend 降级冻结时显示，正常 disable-user 冻结不显示。 */
         SuspendBadge suspendBadge;
+        /** 白名单标识：灰化/半灰半彩图标时固定在图标右下角。 */
+        ImageView whiteBadge;
         Item item;
         /** 图标自己的长按定时器：400ms 主动触发，不依赖系统默认的 500ms。 */
         Runnable longPress;
@@ -494,6 +496,8 @@ public class FreezeListActivity extends BaseActivity {
     /** 主副关联 / 列表白名单的管理弹窗：添加应用的手势返回要能回到这一页。 */
     private AlertDialog pairManagerDialog;
     private AlertDialog whitelistManagerDialog;
+    /** 布局设置弹窗：长按空白上下滑切形态时先把它收起。 */
+    private android.app.Dialog settingsDialog;
     /** 管理弹窗上面叠的添加选择页，逐层返回时统一关闭。 */
     private final List<AlertDialog> pairPickers = new ArrayList<>();
     /** 设置页「冻结图标样式」这一行：选中后即时刷新显示的当前选项。 */
@@ -2037,6 +2041,19 @@ public class FreezeListActivity extends BaseActivity {
      * 所以慢慢拖一格一格走，快速划过则连续翻过多格。
      */
     private void scrubByFinger(android.view.MotionEvent ev) {
+        // 长按空白后上下滑切换形态：半屏只认上滑（进全屏），全屏只认下滑（回半屏）
+        float dy = ev.getRawY() - scrubDownY;
+        int switchSlop = Ui.dp(this, 42);
+        if (panelMode && dy < -switchSlop) {
+            cancelBlankScrub();
+            switchForm(true);
+            return;
+        }
+        if (!panelMode && dy > switchSlop) {
+            cancelBlankScrub();
+            switchForm(false);
+            return;
+        }
         if (scrubVelocity == null) {
             scrubVelocity = android.view.VelocityTracker.obtain();
         }
@@ -2066,6 +2083,27 @@ public class FreezeListActivity extends BaseActivity {
             scrubVelocity = null;
         }
         getWindow().getDecorView().removeCallbacks(scrubArmRunnable);
+    }
+
+    /**
+     * 全屏 / 半屏自由切换：设置里的形态开关与长按空白后的上下滑共用。
+     * 目标形态开着「隐藏后台」时走对应隐藏入口，保证新任务从创建起就不进最近任务。
+     */
+    private void switchForm(boolean toFull) {
+        prefs().edit().putBoolean(KEY_FULLSCREEN_OPEN, toFull).apply();
+        if (settingsDialog != null && settingsDialog.isShowing()) {
+            settingsDialog.dismiss();
+        }
+        settingsDialog = null;
+        boolean hideTarget = prefs().getBoolean(
+                toFull ? KEY_PANEL_HIDE_RECENTS : "panel_" + KEY_PANEL_HIDE_RECENTS, false);
+        Class<?> next = toFull
+                ? (hideTarget ? FreezeListHiddenActivity.class : FreezeListActivity.class)
+                : (hideTarget ? FreezePanelHiddenActivity.class : FreezePanelActivity.class);
+        Intent intent = new Intent(this, next);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        startActivity(intent);
+        finish();
     }
 
     /** 手势起点是否落在列表的空白处（没压到应用图标本身，格子留白与名称行都算空白）。 */
@@ -2847,63 +2885,41 @@ public class FreezeListActivity extends BaseActivity {
                 continue;
             }
             boolean on = t.id.equals(currentTabId);
-            if (panelMode) {
-                // 半屏形态：文字 + 下划线指示当前标签
-                LinearLayout item = new LinearLayout(this);
-                item.setOrientation(LinearLayout.VERTICAL);
-                item.setGravity(Gravity.CENTER_HORIZONTAL);
-                TextView label = new TextView(this);
-                label.setText(t.name);
-                label.setTextSize(14);
-                label.setSingleLine(true);
-                label.setGravity(Gravity.CENTER);
-                label.setPadding(Ui.dp(this, 2), Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8));
-                label.setTextColor(on ? getColor(R.color.text_primary)
-                        : getColor(R.color.text_secondary));
-                label.setTypeface(null, on ? android.graphics.Typeface.BOLD
-                        : android.graphics.Typeface.NORMAL);
-                item.addView(label, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                View underline = new View(this);
-                underline.setBackgroundColor(getColor(R.color.blue));
-                underline.setVisibility(on ? View.VISIBLE : View.INVISIBLE);
-                LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 2));
-                ulp.leftMargin = Ui.dp(this, 4);
-                ulp.rightMargin = Ui.dp(this, 4);
-                item.addView(underline, ulp);
-                item.setOnClickListener(v -> selectTab(t.id));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                // 只在非首个标签上加左间距，避免末尾多出一截导致整体看起来偏左
-                if (!firstPanelTab) {
-                    lp.leftMargin = Ui.dp(this, 10);
-                }
-                firstPanelTab = false;
-                tabBar.addView(item, lp);
-                if (on) {
-                    onView = item;
-                }
-                continue;
-            }
-            TextView chip = new TextView(this);
-            chip.setText(t.name);
-            chip.setTextSize(13);
-            chip.setSingleLine(true);
-            chip.setGravity(Gravity.CENTER);
-            chip.setPadding(Ui.dp(this, 16), Ui.dp(this, 7), Ui.dp(this, 16), Ui.dp(this, 7));
-            // 选中态用低饱和浅蓝胶囊 + 深蓝字：原来的高饱和蓝底白字在全屏里太扎眼
-            chip.setBackgroundResource(on ? R.drawable.bg_tab_selected : R.drawable.bg_btn_white);
-            chip.setTextColor(on ? getColor(R.color.tab_selected_text) : getColor(R.color.blue));
-            chip.setTypeface(null, on ? android.graphics.Typeface.BOLD
+            // 全屏与半屏统一同一套标签样式：文字 + 下划线，字号、颜色、间距完全一致
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setGravity(Gravity.CENTER_HORIZONTAL);
+            TextView label = new TextView(this);
+            label.setText(t.name);
+            label.setTextSize(14);
+            label.setSingleLine(true);
+            label.setGravity(Gravity.CENTER);
+            label.setPadding(Ui.dp(this, 2), Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8));
+            label.setTextColor(on ? getColor(R.color.text_primary)
+                    : getColor(R.color.text_secondary));
+            label.setTypeface(null, on ? android.graphics.Typeface.BOLD
                     : android.graphics.Typeface.NORMAL);
-            chip.setOnClickListener(v -> selectTab(t.id));
+            item.addView(label, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            View underline = new View(this);
+            underline.setBackgroundColor(getColor(R.color.blue));
+            underline.setVisibility(on ? View.VISIBLE : View.INVISIBLE);
+            LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 2));
+            ulp.leftMargin = Ui.dp(this, 4);
+            ulp.rightMargin = Ui.dp(this, 4);
+            item.addView(underline, ulp);
+            item.setOnClickListener(v -> selectTab(t.id));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.rightMargin = Ui.dp(this, 6);
-            tabBar.addView(chip, lp);
+            // 只在非首个标签上加左间距，避免末尾多出一截导致整体看起来偏左
+            if (!firstPanelTab) {
+                lp.leftMargin = Ui.dp(this, 10);
+            }
+            firstPanelTab = false;
+            tabBar.addView(item, lp);
             if (on) {
-                onView = chip;
+                onView = item;
             }
         }
         scrollTabIntoView(onView);
@@ -3807,6 +3823,18 @@ public class FreezeListActivity extends BaseActivity {
         suspendBadge.setLayoutParams(sLp);
         suspendBadge.setVisibility(View.GONE);
         iconBox.addView(suspendBadge);
+
+        // 白名单标识：与暂停标识同角不同用，灰化图标时落后右下角
+        ImageView whiteBadge = new ImageView(this);
+        whiteBadge.setImageResource(R.drawable.ic_whitelist_badge);
+        FrameLayout.LayoutParams wLp = new FrameLayout.LayoutParams(
+                Ui.dp(this, 14), Ui.dp(this, 14));
+        wLp.gravity = Gravity.BOTTOM | Gravity.END;
+        wLp.bottomMargin = Ui.dp(this, 1);
+        wLp.rightMargin = Ui.dp(this, 1);
+        whiteBadge.setLayoutParams(wLp);
+        whiteBadge.setVisibility(View.GONE);
+        iconBox.addView(whiteBadge);
         box.addView(iconBox);
 
         TextView name = Ui.text(this, "", 11, Ui.TEXT_PRIMARY, false);
@@ -3840,6 +3868,7 @@ public class FreezeListActivity extends BaseActivity {
         cell.snow = snow;
         cell.badge = badge;
         cell.suspendBadge = suspendBadge;
+        cell.whiteBadge = whiteBadge;
         // 把 Cell 挂到 root 上：多选态要靠它反查可见格子的抖动/选中圈
         box.setTag(cell);
         // 监听器不绑定具体应用：拖拽换位后只重绑数据，点击/长按跟着当前数据走
@@ -4163,8 +4192,31 @@ public class FreezeListActivity extends BaseActivity {
             ((HalfGrayImageView) cell.icon).setSplitStyle(splitStyle);
         }
         if (cell.snow != null) {
-            // 雪花与名称同一行居中，显隐只跟着「冻结且全彩」
-            cell.snow.setVisibility(it.frozen && splitStyle == 0 ? View.VISIBLE : View.GONE);
+            // 全彩：冻结时名称左侧显示雪花；白名单应用把这一格换成白名单标识
+            // （灰化/半灰半彩图标改在图标右下角显示，见下面的 whiteBadge）
+            boolean white = isWhitelisted(it.pkg);
+            boolean cornerBadge = white && splitStyle != 0;
+            boolean showRow = white ? !cornerBadge : (it.frozen && splitStyle == 0);
+            cell.snow.setImageResource(white
+                    ? R.drawable.ic_whitelist_badge : R.drawable.ic_sc_freeze);
+            cell.snow.setVisibility(showRow ? View.VISIBLE : View.GONE);
+        }
+        if (cell.whiteBadge != null) {
+            boolean white = isWhitelisted(it.pkg);
+            boolean cornerBadge = white && splitStyle != 0;
+            cell.whiteBadge.setVisibility(cornerBadge ? View.VISIBLE : View.GONE);
+            // 与暂停标识同处右下角时，把暂停标识让到左下角，避免互相压住
+            if (cell.suspendBadge != null
+                    && cell.suspendBadge.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams sLp =
+                        (FrameLayout.LayoutParams) cell.suspendBadge.getLayoutParams();
+                boolean both = cornerBadge && it.suspended;
+                sLp.gravity = both
+                        ? (Gravity.BOTTOM | Gravity.START) : (Gravity.BOTTOM | Gravity.END);
+                sLp.leftMargin = both ? Ui.dp(this, 1) : 0;
+                sLp.rightMargin = both ? 0 : Ui.dp(this, 1);
+                cell.suspendBadge.setLayoutParams(sLp);
+            }
         }
         if (cell.name != null) {
             // 名称可用宽度跟着格子宽度走：过长省略，雪花始终贴着文字
@@ -5157,6 +5209,8 @@ public class FreezeListActivity extends BaseActivity {
             cur.remove(key);
         }
         prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+        // 列表格子的白名单标识随状态即时刷新
+        rebindCells();
     }
 
     /** 多选批量加入 / 移出白名单；列表图标本身不变，取消靠长按菜单或白名单列表。 */
@@ -5176,6 +5230,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
         refreshWhitelistEntry();
+        rebindCells();
         Toast.makeText(this, (add ? "已加入白名单 " : "已移出白名单 ") + n + " 个应用",
                 Toast.LENGTH_SHORT).show();
     }
@@ -7009,22 +7064,8 @@ public class FreezeListActivity extends BaseActivity {
             if (!on) {
                 return;
             }
-            boolean toFull = panelMode;
-            prefs().edit().putBoolean(KEY_FULLSCREEN_OPEN, toFull).apply();
-            if (dialogRef[0] != null) {
-                dialogRef[0].dismiss();
-            }
-            // 点击即切换：直接换到另一种形态的 Activity，不用退出重进；
-            // 目标形态开着「隐藏后台」时走对应的隐藏入口，保证新任务从创建起就不进最近任务
-            boolean hideTarget = prefs().getBoolean(
-                    toFull ? KEY_PANEL_HIDE_RECENTS : "panel_" + KEY_PANEL_HIDE_RECENTS, false);
-            Class<?> next = toFull
-                    ? (hideTarget ? FreezeListHiddenActivity.class : FreezeListActivity.class)
-                    : (hideTarget ? FreezePanelHiddenActivity.class : FreezePanelActivity.class);
-            Intent intent = new Intent(this, next);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-            startActivity(intent);
-            finish();
+            // 点击即切换：直接换到另一种形态的 Activity，不用退出重进
+            switchForm(panelMode);
         });
 
         if (handleBox != null) {
@@ -7303,194 +7344,6 @@ public class FreezeListActivity extends BaseActivity {
         // 整个界面透明度区块先收进 its，最后整体插到「底部冻结按钮调节」上面
         LinearLayout its = new LinearLayout(this);
         its.setOrientation(LinearLayout.VERTICAL);
-        if (panelMode) {
-            TextView transTitle = new TextView(this);
-            transTitle.setText("界面透明度：");
-            transTitle.setTextSize(12);
-            transTitle.setTextColor(getColor(R.color.text_primary));
-            transTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
-
-            final TextView blurLabel = new TextView(this);
-            blurLabel.setTextSize(11);
-            blurLabel.setTextColor(getColor(R.color.text_secondary));
-
-            final SeekBar blurBar = new SeekBar(this);
-            blurBar.setMax(100);
-            int blurAlpha = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 20)));
-            int blurPct = 100 - blurAlpha;
-            blurBar.setProgress(blurPct);
-            blurLabel.setText("半屏外背景：" + blurPct + "%");
-            blurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override
-                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                    if (!fromUser) {
-                        return;
-                    }
-                    // 滑块值 = 透明度：0 最模糊（不透明），越大越透明
-                    prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
-                    blurLabel.setText("半屏外背景：" + p + "%");
-                    applyBackdropStrength();
-                }
-
-                @Override
-                public void onStartTrackingTouch(SeekBar sb) {
-                }
-
-                @Override
-                public void onStopTrackingTouch(SeekBar sb) {
-                }
-            });
-
-            its.addView(transTitle);
-            its.addView(blurLabel);
-            its.addView(blurBar);
-
-            // 半屏面板本体：0=完全透明、50=最模糊、100=实心；只改面板自己，外面那层遮罩不动
-            final TextView panelLabel = new TextView(this);
-            panelLabel.setTextSize(11);
-            panelLabel.setTextColor(getColor(R.color.text_secondary));
-
-            final SeekBar panelBar = new SeekBar(this);
-            panelBar.setMax(100);
-            int panelAlpha = Math.max(0, Math.min(100,
-                    prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
-            int panelPct = 100 - panelAlpha;
-            panelBar.setProgress(panelPct);
-            panelLabel.setText("半屏内背景：" + panelPct + "%");
-            panelBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override
-                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                    if (!fromUser) {
-                        return;
-                    }
-                    prefs().edit().putInt(lk(KEY_SURFACE), 100 - p).apply();
-                    panelLabel.setText("半屏内背景：" + p + "%");
-                    applyPanelSurface();
-                }
-
-                @Override
-                public void onStartTrackingTouch(SeekBar sb) {
-                }
-
-                @Override
-                public void onStopTrackingTouch(SeekBar sb) {
-                }
-            });
-
-            its.addView(panelLabel);
-            its.addView(panelBar);
-        } else {
-            // 全屏形态也补两条：全屏背景档位 + 雪花按钮底板档位。
-            // 与半屏同一套语义（0 全透明 / 50 模糊 / 100 实心），键独立记忆，默认实心不变观感。
-            TextView transTitle = new TextView(this);
-            transTitle.setText("界面透明度：");
-            transTitle.setTextSize(12);
-            transTitle.setTextColor(getColor(R.color.text_primary));
-            transTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
-
-            final TextView fullBgLabel = new TextView(this);
-            fullBgLabel.setTextSize(11);
-            fullBgLabel.setTextColor(getColor(R.color.text_secondary));
-
-            final SeekBar fullBgBar = new SeekBar(this);
-            fullBgBar.setMax(100);
-            int fullBgAlpha = Math.max(0, Math.min(100,
-                    prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
-            int fullBgPct = 100 - fullBgAlpha;
-            fullBgBar.setProgress(fullBgPct);
-            fullBgLabel.setText("全屏背景：" + fullBgPct + "%");
-            fullBgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override
-                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                    if (!fromUser) {
-                        return;
-                    }
-                    // 滑块值 = 透明度：0 不透明（原观感），100 全透明
-                    prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
-                    fullBgLabel.setText("全屏背景：" + p + "%");
-                    applyFullscreenSurface();
-                }
-
-                @Override
-                public void onStartTrackingTouch(SeekBar sb) {
-                }
-
-                @Override
-                public void onStopTrackingTouch(SeekBar sb) {
-                }
-            });
-
-            // 顶栏（横幅）背景：没设过时跟随全屏背景，动过滑块后独立记忆
-            final TextView headerLabel = new TextView(this);
-            headerLabel.setTextSize(11);
-            headerLabel.setTextColor(getColor(R.color.text_secondary));
-            headerLabel.setPadding(0, Ui.dp(this, 8), 0, 0);
-
-            final SeekBar headerBar = new SeekBar(this);
-            headerBar.setMax(100);
-            int headerPct = 100 - headerSurfacePct();
-            headerBar.setProgress(headerPct);
-            headerLabel.setText("横幅透明度：" + headerPct + "%");
-            headerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override
-                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                    if (!fromUser) {
-                        return;
-                    }
-                    prefs().edit().putInt(KEY_HEADER_SURFACE, 100 - p).apply();
-                    headerLabel.setText("横幅透明度：" + p + "%");
-                    applyFullscreenSurface();
-                }
-
-                @Override
-                public void onStartTrackingTouch(SeekBar sb) {
-                }
-
-                @Override
-                public void onStopTrackingTouch(SeekBar sb) {
-                }
-            });
-
-            // 标签页胶囊整条：选中/未选中一起缩放，与页面背景互不影响
-            final TextView tabSurfLabel = new TextView(this);
-            tabSurfLabel.setTextSize(11);
-            tabSurfLabel.setTextColor(getColor(R.color.text_secondary));
-            tabSurfLabel.setPadding(0, Ui.dp(this, 8), 0, 0);
-
-            final SeekBar tabSurfBar = new SeekBar(this);
-            tabSurfBar.setMax(100);
-            int tabSurfPct = 100 - tabSurfacePct();
-            tabSurfBar.setProgress(tabSurfPct);
-            tabSurfLabel.setText("标签页透明度：" + tabSurfPct + "%");
-            tabSurfBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override
-                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                    if (!fromUser) {
-                        return;
-                    }
-                    prefs().edit().putInt(KEY_TAB_SURFACE, 100 - p).apply();
-                    tabSurfLabel.setText("标签页透明度：" + p + "%");
-                    applyFullscreenSurface();
-                }
-
-                @Override
-                public void onStartTrackingTouch(SeekBar sb) {
-                }
-
-                @Override
-                public void onStopTrackingTouch(SeekBar sb) {
-                }
-            });
-
-            // 冻结按钮透明度已统一放到「距底部」下面，这里不再单独占一行
-            its.addView(transTitle);
-            its.addView(fullBgLabel);
-            its.addView(fullBgBar);
-            its.addView(headerLabel);
-            its.addView(headerBar);
-            its.addView(tabSurfLabel);
-            its.addView(tabSurfBar);
-        }
 
         // 搜索框透明度：只属于全屏（半屏底部没有搜索框）；独立档位，与背景档位解耦
         if (!panelMode) {
@@ -7678,6 +7531,12 @@ public class FreezeListActivity extends BaseActivity {
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         dialog.setContentView(shell);
         dialogRef[0] = dialog;
+        settingsDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (settingsDialog == dialog) {
+                settingsDialog = null;
+            }
+        });
         done.setOnClickListener(v -> dialog.dismiss());
         backupEntry.setOnClickListener(v -> {
             dialog.dismiss();
@@ -8326,6 +8185,7 @@ public class FreezeListActivity extends BaseActivity {
                 cur.removeAll(checked);
                 prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
                 refreshWhitelistEntry();
+                rebindCells();
                 Toast.makeText(this, "已移出白名单 " + checked.size() + " 个应用",
                         Toast.LENGTH_SHORT).show();
                 if (holder[0] != null) {
@@ -9751,7 +9611,7 @@ public class FreezeListActivity extends BaseActivity {
         final Runnable[] refresh = new Runnable[1];
         refresh[0] = () -> {
             String head = "设置";
-            String tail = "（权限：" + privilegeValue() + "）";
+            String tail = "（当前权限：" + privilegeValue() + "）";
             android.text.SpannableStringBuilder sb =
                     new android.text.SpannableStringBuilder(head + tail);
             int start = head.length();
