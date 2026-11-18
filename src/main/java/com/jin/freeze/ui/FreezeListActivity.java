@@ -3321,6 +3321,20 @@ public class FreezeListActivity extends BaseActivity {
         Set<String> wanted = pkgs();
         List<String> order = savedOrder();
         boolean custom = customOrder();
+        // 名单可能在另一个形态的实例里被增删（半屏 ↔ 全屏各有一份内存列表）：
+        // 回到前台先把过期的内存列表换成磁盘上的当前名单，否则第一帧会闪出已被移除的应用，
+        // 等下面后台真值回来才纠正。这里只用 PackageInfo 和图标缓存，不跑 shell。
+        Set<String> shownKeys = new HashSet<>();
+        for (Item it : items) {
+            shownKeys.add(it.pkg);
+        }
+        if (!items.isEmpty() && !shownKeys.equals(wanted)) {
+            items.clear();
+            if (!wanted.isEmpty()) {
+                items.addAll(quickItems(wanted, order, custom));
+            }
+            render();
+        }
         // 冷启动首帧：不查 shell（su/pm 命令要几百毫秒），先用 PackageInfo 自带状态画出来，
         // 后台真值回来后再刷一次，避免白屏等命令。
         if (!loadedOnce && items.isEmpty() && !wanted.isEmpty()) {

@@ -15,16 +15,15 @@ import java.util.List;
 
 /**
  * 「打开列表 / 一键冻结 / 一键解冻」三条快捷方式。
- * manifest 里已有静态声明（res/xml/shortcuts.xml）；这里再按动态方式兜底：
- * 系统不允许动态 id 与静态 id 重名，两者同时存在还会在启动器里出现重复项，
- * 所以检测到静态声明已生效时不重复发布，动态只在静态不可用时补位。
+ * 现在只发布动态快捷方式：manifest 里的静态声明已清空，因为 MIUI 桌面按 iconRes 取图时
+ * 会把三条画成同一个图标；动态快捷方式把渲染好的位图直接带在 ShortcutInfo 里，逐条独立。
  */
 public final class ShortcutSync {
 
     public static final String ID_OPEN_LIST = "open_freeze_list";
     public static final String ID_FREEZE_ALL = "freeze_all";
     public static final String ID_UNFREEZE_ALL = "unfreeze_all";
-    /** 动态兜底用独立 id，避免与 manifest 静态 id 冲突。 */
+    /** 动态快捷方式用独立 id，避免与历史版本残留的静态 id 混淆。 */
     private static final String DYN_PREFIX = "dyn_";
 
     private ShortcutSync() {
@@ -39,10 +38,6 @@ public final class ShortcutSync {
             return;
         }
         try {
-            if (!sm.getManifestShortcuts().isEmpty()) {
-                // 静态已注册：不再重复发一套同名快捷方式
-                return;
-            }
             List<ShortcutInfo> list = new ArrayList<>();
             list.add(build(ctx, DYN_PREFIX + ID_OPEN_LIST,
                     R.string.sc_open_list, R.string.sc_open_list_long,

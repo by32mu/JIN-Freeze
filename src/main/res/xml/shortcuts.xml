@@ -1,41 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 静态快捷方式：长按桌面图标可见；动态兜底由 ShortcutSync 按需补位 -->
-<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <shortcut
-        android:enabled="true"
-        android:icon="@drawable/ic_shortcut_list"
-        android:shortcutId="open_freeze_list"
-        android:shortcutLongLabel="@string/sc_open_list_long"
-        android:shortcutShortLabel="@string/sc_open_list">
-        <intent
-            android:action="com.jin.freeze.action.OPEN_FREEZE_LIST"
-            android:targetClass="com.jin.freeze.ui.QuickLaunchActivity"
-            android:targetPackage="com.jin.freeze" />
-    </shortcut>
-
-    <shortcut
-        android:enabled="true"
-        android:icon="@drawable/ic_shortcut_freeze"
-        android:shortcutId="freeze_all"
-        android:shortcutLongLabel="@string/sc_freeze_all_long"
-        android:shortcutShortLabel="@string/sc_freeze_all">
-        <intent
-            android:action="com.jin.freeze.action.FREEZE_ALL"
-            android:targetClass="com.jin.freeze.ui.QuickLaunchActivity"
-            android:targetPackage="com.jin.freeze" />
-    </shortcut>
-
-    <shortcut
-        android:enabled="true"
-        android:icon="@drawable/ic_shortcut_unfreeze"
-        android:shortcutId="unfreeze_all"
-        android:shortcutLongLabel="@string/sc_unfreeze_all_long"
-        android:shortcutShortLabel="@string/sc_unfreeze_all">
-        <intent
-            android:action="com.jin.freeze.action.UNFREEZE_ALL"
-            android:targetClass="com.jin.freeze.ui.QuickLaunchActivity"
-            android:targetPackage="com.jin.freeze" />
-    </shortcut>
-
-</shortcuts>
+<!--
+  静态快捷方式已停用：MIUI 桌面在解析静态快捷方式的 iconRes 时会把三条图标画成同一个
+  （实测「打开列表 / 一键冻结 / 一键解冻」全部显示成解锁图标）。
+  改为在 ShortcutSync 里发布动态快捷方式，图标用渲染好的位图逐条携带，桌面不再按资源 id 取图。
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android" />
