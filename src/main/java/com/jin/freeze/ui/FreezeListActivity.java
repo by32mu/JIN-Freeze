@@ -153,6 +153,11 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_ICON_DP = "grid_icon_dp";
     private static final String KEY_ICON_MANUAL = "grid_icon_manual";
     private static final String KEY_SHOW_NAME = "grid_show_name";
+    /** 长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的触发距离（dp）。 */
+    private static final String KEY_GESTURE_UP = "gesture_up_dp";
+    private static final String KEY_GESTURE_DOWN = "gesture_down_dp";
+    private static final int GESTURE_DP_DEFAULT = 42;
+    private static final int GESTURE_DP_MAX = 520;
     /** 半屏专属：勾选后每个图标右上角常驻红色减号，点它即把该应用移出名单。 */
     private static final String KEY_PANEL_QUICK_REMOVE = "panel_quick_remove";
     /** 移动图标开关：打开后点图标选中、再点目标位置放下；全屏与半屏共用同一份状态。 */
@@ -525,14 +530,9 @@ public class FreezeListActivity extends BaseActivity {
     private boolean scrubArmed;
     private float scrubDownX;
     private float scrubDownY;
-    /** 长按到位后的第一段位移方向是否已判定 / 是否允许切形态：第一下不是对应方向就整段手势都不切。 */
-    private boolean scrubDirDecided;
-    private boolean scrubSwitchAllowed;
-    /** 长按手势累计路程：横向一多（弧形、横滑）就取消整段切形态。 */
-    private float scrubPathX;
-    private float scrubPathY;
-    private float scrubLastX;
-    private float scrubLastY;
+    /** 长按空白后上滑 / 下滑切形态的触发距离（dp），设置页滑块实时生效。 */
+    private int gestureUpDp = GESTURE_DP_DEFAULT;
+    private int gestureDownDp = GESTURE_DP_DEFAULT;
     /** 已消耗位移的锚点：每翻一格就前移一格的距离，余量留给下一次。 */
     private float scrubAnchorX;
     private android.view.VelocityTracker scrubVelocity;
@@ -786,6 +786,8 @@ public class FreezeListActivity extends BaseActivity {
         }
         iconDp = prefs().getInt(lk(KEY_ICON_DP), 52);
         iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL), false);
+        gestureUpDp = clampGestureDp(prefs().getInt(KEY_GESTURE_UP, GESTURE_DP_DEFAULT));
+        gestureDownDp = clampGestureDp(prefs().getInt(KEY_GESTURE_DOWN, GESTURE_DP_DEFAULT));
         showName = prefs().getBoolean(lk(KEY_SHOW_NAME), true);
         quickRemove = panelMode && prefs().getBoolean(KEY_PANEL_QUICK_REMOVE, false);
         // 移动图标改成一次性动作（长按操作单进入），启动时不再恢复上次状态
@@ -2016,8 +2018,6 @@ public class FreezeListActivity extends BaseActivity {
                         && inBlankListArea(ev.getRawX(), ev.getRawY())) {
                     scrubDownX = ev.getRawX();
                     scrubDownY = ev.getRawY();
-                    scrubLastX = scrubDownX;
-                    scrubLastY = scrubDownY;
                     scrubAnchorX = ev.getRawX();
                     getWindow().getDecorView().postDelayed(scrubArmRunnable,
                             android.view.ViewConfiguration.getLongPressTimeout());
@@ -2051,43 +2051,18 @@ public class FreezeListActivity extends BaseActivity {
      * 所以慢慢拖一格一格走，快速划过则连续翻过多格。
      */
     private void scrubByFinger(android.view.MotionEvent ev) {
+        // 长按空白后上下滑切换形态：半屏只认上滑（进全屏），全屏只认下滑（回半屏）。
+        // 触发距离由设置页的「手势触发距离」两个滑块决定，实时生效。
         float dy = ev.getRawY() - scrubDownY;
-        float dxDown = ev.getRawX() - scrubDownX;
-        // 累计手指实际走过的路程：横向路程超过纵向的一半，说明是弧形/横滑手势，
-        // 这段手势从此不再允许切形态，避免圆弧形上滑被当成上滑。
-        scrubPathX += Math.abs(ev.getRawX() - scrubLastX);
-        scrubPathY += Math.abs(ev.getRawY() - scrubLastY);
-        scrubLastX = ev.getRawX();
-        scrubLastY = ev.getRawY();
-        if (scrubSwitchAllowed && scrubPathX > scrubPathY * 0.5f) {
-            scrubSwitchAllowed = false;
+        if (panelMode && dy < -Ui.dp(this, gestureUpDp)) {
+            cancelBlankScrub();
+            switchForm(true);
+            return;
         }
-        // 长按到位后的第一段位移方向定生死：半屏第一下必须向上、全屏必须向下，
-        // 否则这次手势只按左右滑处理，后面再上下滑也不切形态，避免来回误触。
-        if (!scrubDirDecided) {
-            float dist = (float) Math.hypot(dxDown, dy);
-            if (dist > Ui.dp(this, 8)) {
-                scrubDirDecided = true;
-                scrubSwitchAllowed = Math.abs(dy) > Math.abs(dxDown)
-                        && scrubPathX <= scrubPathY * 0.5f
-                        && (panelMode ? dy < 0 : dy > 0);
-            }
-        }
-        // 距离阈值 90dp，且纵向位移明显大于横向
-        int switchSlop = Ui.dp(this, 90);
-        if (scrubSwitchAllowed
-                && Math.abs(dy) > switchSlop
-                && Math.abs(dy) > Math.abs(dxDown) * 2f) {
-            if (panelMode && dy < 0) {
-                cancelBlankScrub();
-                switchForm(true);
-                return;
-            }
-            if (!panelMode && dy > 0) {
-                cancelBlankScrub();
-                switchForm(false);
-                return;
-            }
+        if (!panelMode && dy > Ui.dp(this, gestureDownDp)) {
+            cancelBlankScrub();
+            switchForm(false);
+            return;
         }
         if (scrubVelocity == null) {
             scrubVelocity = android.view.VelocityTracker.obtain();
@@ -2113,15 +2088,16 @@ public class FreezeListActivity extends BaseActivity {
 
     private void cancelBlankScrub() {
         scrubArmed = false;
-        scrubDirDecided = false;
-        scrubSwitchAllowed = false;
-        scrubPathX = 0f;
-        scrubPathY = 0f;
         if (scrubVelocity != null) {
             scrubVelocity.recycle();
             scrubVelocity = null;
         }
         getWindow().getDecorView().removeCallbacks(scrubArmRunnable);
+    }
+
+    /** 手势触发距离限制在 0–520dp。 */
+    private static int clampGestureDp(int dp) {
+        return Math.max(0, Math.min(GESTURE_DP_MAX, dp));
     }
 
     /**
@@ -7195,6 +7171,78 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(fabAlphaLabel);
         box.addView(fabAlphaBar);
 
+        // 手势触发距离：长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的触发距离，
+        // 两个滑块实时生效；整块最后插到「列表图标」上面
+        LinearLayout gestureSec = new LinearLayout(this);
+        gestureSec.setOrientation(LinearLayout.VERTICAL);
+        TextView gestureTitle = new TextView(this);
+        gestureTitle.setText("手势触发距离");
+        gestureTitle.setTextSize(12);
+        gestureTitle.setTextColor(getColor(R.color.text_primary));
+        gestureTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
+
+        final TextView upLabel = new TextView(this);
+        upLabel.setTextSize(11);
+        upLabel.setTextColor(getColor(R.color.text_secondary));
+        upLabel.setText("上滑手势：" + gestureUpDp + "dp");
+
+        SeekBar upBar = new SeekBar(this);
+        upBar.setMax(GESTURE_DP_MAX);
+        upBar.setProgress(gestureUpDp);
+        upBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                gestureUpDp = p;
+                prefs().edit().putInt(KEY_GESTURE_UP, p).apply();
+                upLabel.setText("上滑手势：" + p + "dp");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+
+        final TextView downLabel = new TextView(this);
+        downLabel.setTextSize(11);
+        downLabel.setTextColor(getColor(R.color.text_secondary));
+        downLabel.setText("下滑手势：" + gestureDownDp + "dp");
+
+        SeekBar downBar = new SeekBar(this);
+        downBar.setMax(GESTURE_DP_MAX);
+        downBar.setProgress(gestureDownDp);
+        downBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                gestureDownDp = p;
+                prefs().edit().putInt(KEY_GESTURE_DOWN, p).apply();
+                downLabel.setText("下滑手势：" + p + "dp");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+
+        gestureSec.addView(gestureTitle);
+        gestureSec.addView(upLabel);
+        gestureSec.addView(upBar);
+        gestureSec.addView(downLabel);
+        gestureSec.addView(downBar);
+
         // 列数滑块：4–8 档，和上面几个滑块同一套样式。
         // 整块先收进 ias，最后整体插到「底部冻结按钮调节」上面
         LinearLayout ias = new LinearLayout(this);
@@ -7256,6 +7304,8 @@ public class FreezeListActivity extends BaseActivity {
         ias.addView(sizeLabel);
         ias.addView(sizeBar);
         box.addView(ias, Math.max(0, box.indexOfChild(fabTitle)));
+        // 手势触发距离放在「列表图标」正上方
+        box.addView(gestureSec, Math.max(0, box.indexOfChild(ias)));
 
         // 自定义壁纸：作为背景层的底图，透明度/模糊仍由上面的背景滑块叠加；半屏与全屏各存各的。
         // 视图先收进 wps，最后整体插到「底部冻结按钮调节」上面
