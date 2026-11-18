@@ -74,6 +74,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -400,6 +401,13 @@ public class FreezeListActivity extends BaseActivity {
     private View sysHintRow;
     /** 空态：名单为空时显示在面板中部（添加应用）。 */
     private View emptyState;
+    /** 本次选应用从哪个标签点「+」进来：新加入的应用落到该标签（用户应用进系统标签会被拒绝）。 */
+    private String pickerTargetTab;
+    /** 布局设置里「展开范围」滑块的运行期引用：冻结按钮位置/大小变化时实时重算上限。 */
+    private SeekBar layoutExpandBar;
+    private TextView layoutExpandValue;
+    private android.app.Dialog layoutDialog;
+    private int layoutShadowPad;
     private boolean loadedOnce;
     /** 打开选应用页期间不让「隐藏半屏后台」把面板收掉，否则回传结果没人接。 */
     private boolean pickerOpen;
@@ -535,11 +543,13 @@ public class FreezeListActivity extends BaseActivity {
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
                 pickerOpen = false;
                 if (result.getResultCode() != RESULT_OK || result.getData() == null) {
+                    pickerTargetTab = null;
                     return;
                 }
                 ArrayList<String> picked = result.getData()
                         .getStringArrayListExtra(AppFreezeActivity.EXTRA_PICKED);
                 if (picked == null || picked.isEmpty()) {
+                    pickerTargetTab = null;
                     return;
                 }
                 List<String> normalized = new ArrayList<>();
@@ -547,11 +557,45 @@ public class FreezeListActivity extends BaseActivity {
                     normalized.add(storageKey(packagePart(key), userIdPart(key)));
                 }
                 Set<String> cur = new HashSet<>(pkgs());
+                Set<String> added = new LinkedHashSet<>();
                 for (String key : normalized) {
                     if (!cur.contains(key)) {
-                        pendingRevealPkg = key;
-                        break;
+                        added.add(key);
                     }
+                }
+                // 在哪个标签点「+」就加进哪个标签；用户应用禁止进入「系统应用」标签
+                if (!added.isEmpty() && pickerTargetTab != null) {
+                    boolean changed = false;
+                    boolean blocked = false;
+                    PackageManager pm = getPackageManager();
+                    for (String key : added) {
+                        boolean system = false;
+                        try {
+                            ApplicationInfo ai = pm.getApplicationInfo(packagePart(key), 0);
+                            system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
+                                    | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+                        } catch (Exception ignored) {
+                        }
+                        if (TAB_SYSTEM.equals(pickerTargetTab) && !system) {
+                            blocked = true;
+                            continue;
+                        }
+                        if (!pickerTargetTab.equals(appTabs.get(key))) {
+                            appTabs.put(key, pickerTargetTab);
+                            changed = true;
+                        }
+                    }
+                    if (changed) {
+                        saveAppTabs();
+                    }
+                    if (blocked) {
+                        Toast.makeText(this, "用户应用禁止移入系统应用标签",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                }
+                pickerTargetTab = null;
+                if (!added.isEmpty()) {
+                    pendingRevealPkg = added.iterator().next();
                 }
                 cur.addAll(normalized);
                 prefs().edit().putStringSet(KEY_PKGS, cur).apply();
@@ -696,9 +740,11 @@ public class FreezeListActivity extends BaseActivity {
         iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL), false);
         showName = prefs().getBoolean(lk(KEY_SHOW_NAME), true);
         quickRemove = panelMode && prefs().getBoolean(KEY_PANEL_QUICK_REMOVE, false);
-        moveMode = prefs().getBoolean(lk(KEY_MOVE_MODE), false);
+        // 移动图标改成一次性动作（长按操作单进入），启动时不再恢复上次状态
+        moveMode = false;
         showFrozenTip = prefs().getBoolean(lk(KEY_SHOW_FROZEN_TIP), true);
-        tabSwipeEnabled = prefs().getBoolean(lk(KEY_TAB_SWIPE), true);
+        // 左右滑动切换标签固定开启（线上不再提供关闭入口），旧版本关过的用户也一并恢复
+        tabSwipeEnabled = true;
         scrubVibrate = prefs().getBoolean(KEY_SCRUB_VIBRATE, true);
         hideTabRow = prefs().getBoolean(KEY_HIDE_TAB_ROW, false);
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
@@ -1804,6 +1850,7 @@ public class FreezeListActivity extends BaseActivity {
     private void openPicker() {
         // 勾选「隐藏半屏后台」时，面板一暂停就会被移除；选应用期间先豁免
         pickerOpen = true;
+        pickerTargetTab = currentTabId;
         Intent i = new Intent(this, AppFreezeActivity.class);
         i.putExtra(AppFreezeActivity.EXTRA_PICK, true);
         // 选择页默认停在发起时所在的标签（用户应用/系统应用），选完回到这里
@@ -2191,6 +2238,11 @@ public class FreezeListActivity extends BaseActivity {
      */
     @Override
     public void onBackPressed() {
+        // 移动模式优先用返回键退出（入口已从设置挪到长按操作单）
+        if (moveMode) {
+            setMoveMode(false);
+            return;
+        }
         // 多选态优先退出多选，不直接关面板
         if (selectMode) {
             exitSelectMode();
@@ -3228,7 +3280,8 @@ public class FreezeListActivity extends BaseActivity {
             }
             if (!q.isEmpty()
                     && !it.label.toLowerCase(Locale.ROOT).contains(q)
-                    && !it.pkg.toLowerCase(Locale.ROOT).contains(q)) {
+                    && !it.pkg.toLowerCase(Locale.ROOT).contains(q)
+                    && !(it.userId != 0 && String.valueOf(it.userId).contains(q))) {
                 continue;
             }
             shown.add(it);
@@ -3253,7 +3306,8 @@ public class FreezeListActivity extends BaseActivity {
         for (Item it : items) {
             if (!q.isEmpty()
                     && !it.label.toLowerCase(Locale.ROOT).contains(q)
-                    && !it.pkg.toLowerCase(Locale.ROOT).contains(q)) {
+                    && !it.pkg.toLowerCase(Locale.ROOT).contains(q)
+                    && !(it.userId != 0 && String.valueOf(it.userId).contains(q))) {
                 continue;
             }
             shown.add(it);
@@ -3778,7 +3832,7 @@ public class FreezeListActivity extends BaseActivity {
         if (it.icon != null) {
             cell.icon.setImageDrawable(it.icon);
         } else {
-            cell.icon.setImageResource(R.drawable.ic_launcher);
+            cell.icon.setImageResource(android.R.drawable.sym_def_app_icon);
         }
         cell.name.setText(it.label);
         cell.root.setContentDescription(it.label);
@@ -4059,7 +4113,8 @@ public class FreezeListActivity extends BaseActivity {
             if (!selectedPkgs.contains(it.pkg)) continue;
             ImageView iv = new ImageView(this);
             iv.setImageDrawable(it.icon != null ? it.icon
-                    : androidx.core.content.ContextCompat.getDrawable(this, R.drawable.ic_launcher));
+                    : androidx.core.content.ContextCompat.getDrawable(this,
+                    android.R.drawable.sym_def_app_icon));
             iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
             iv.setContentDescription(it.label);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
@@ -4186,6 +4241,19 @@ public class FreezeListActivity extends BaseActivity {
             }
 
             @Override
+            public boolean moveIconEnabled() {
+                return true;
+            }
+
+            @Override
+            public void startMoveMode() {
+                setMoveMode(true);
+                Toast.makeText(FreezeListActivity.this,
+                        "移动模式：点一下选中，再点目标位置放置，返回键退出",
+                        Toast.LENGTH_SHORT).show();
+            }
+
+            @Override
             public void appSettings() {
                 openAppSettings(it);
             }
@@ -4284,7 +4352,8 @@ public class FreezeListActivity extends BaseActivity {
         for (Item it : batchTargets) {
             ImageView iv = new ImageView(this);
             iv.setImageDrawable(it.icon != null ? it.icon
-                    : androidx.core.content.ContextCompat.getDrawable(this, R.drawable.ic_launcher));
+                    : androidx.core.content.ContextCompat.getDrawable(this,
+                    android.R.drawable.sym_def_app_icon));
             iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
             iv.setContentDescription(it.label);
             LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(headIcon, headIcon);
@@ -5869,22 +5938,7 @@ public class FreezeListActivity extends BaseActivity {
         // 打开移动模式时收起底部倒三角展开的高度块（列表本身不动），引用在弹窗建好后填
         final Runnable[] collapseHeightRow = new Runnable[1];
 
-        // 移动图标开关（手势最高优先级）：打开后点击选中、再点目标位置放下，长按拖动换位；
-        // 标签左右滑动、长按操作单、点击打开应用全部让路。关闭后恢复原来分工。
-        CheckBox moveBox = new CheckBox(this);
-        moveBox.setText("移动图标");
-        moveBox.setTextSize(12);
-        moveBox.setMinimumHeight(Ui.dp(this, 32));
-        moveBox.setChecked(moveMode);
-        moveBox.setOnCheckedChangeListener((btn, on) -> {
-            setMoveMode(on);
-            if (on) {
-                // 进入移动模式：收起点开的高度块，半屏列表本身保持展开可操作
-                if (collapseHeightRow[0] != null) {
-                    collapseHeightRow[0].run();
-                }
-            }
-        });
+        // 移动图标不再放设置里：入口改到长按图标弹出的操作单（多选上方），见 showAppSheet
 
         // 冻结成功提示开关：全屏与半屏共用
         CheckBox tipBox = new CheckBox(this);
@@ -5917,7 +5971,7 @@ public class FreezeListActivity extends BaseActivity {
 
         // 长按冻结按钮：默认勾选，保持现有「弹出解冻图标」并震动；取消后长按无反应
         CheckBox longPressBox = new CheckBox(this);
-        longPressBox.setText("长按冻结按钮触发解冻图标");
+        longPressBox.setText("长按底部雪花触发一键解冻图标");
         longPressBox.setTextSize(12);
         longPressBox.setMinimumHeight(Ui.dp(this, 32));
         longPressBox.setChecked(prefs().getBoolean(KEY_FAB_LONG_PRESS_UNFREEZE, true));
@@ -5940,7 +5994,7 @@ public class FreezeListActivity extends BaseActivity {
         CheckBox hideStatusBarBox = null;
         CheckBox quickRemoveBox = null;
         CheckBox dismissBox = new CheckBox(this);
-        dismissBox.setText("冻结后收起列表");
+        dismissBox.setText("点击底部冻结后退出列表");
         dismissBox.setTextSize(12);
         dismissBox.setMinimumHeight(Ui.dp(this, 32));
         dismissBox.setChecked(panelDismissAfterFreeze);
@@ -6047,6 +6101,9 @@ public class FreezeListActivity extends BaseActivity {
                 sizeValue.setText("按钮大小：" + fabSizeDp + "dp");
                 applyFabSize();
                 fabGroup.post(FreezeListActivity.this::applyFabPosition);
+                // 按钮变大/变小会改变上沿，展开范围随之上限实时跟着走
+                getWindow().getDecorView().postDelayed(
+                        FreezeListActivity.this::refreshExpandRange, 40);
             }
 
             @Override
@@ -6103,6 +6160,9 @@ public class FreezeListActivity extends BaseActivity {
                 prefs().edit().putInt(lk(KEY_FAB_DY), fabDy).apply();
                 refreshFabLabels.run();
                 applyFabPosition();
+                // 按钮上下移动后，展开范围的上限与当前高度一起实时收放
+                getWindow().getDecorView().postDelayed(
+                        FreezeListActivity.this::refreshExpandRange, 40);
             }
 
             @Override
@@ -6146,20 +6206,9 @@ public class FreezeListActivity extends BaseActivity {
             });
         }
 
-        // 左右滑动切换标签：关掉后只认点击，避免与长按移动 / 列表滚动打架
-        CheckBox swipeBox = new CheckBox(this);
-        swipeBox.setText("列表左右滑动切换标签");
-        swipeBox.setTextSize(12);
-        swipeBox.setMinimumHeight(Ui.dp(this, 32));
-        swipeBox.setChecked(tabSwipeEnabled);
-        swipeBox.setOnCheckedChangeListener((b, on) -> {
-            tabSwipeEnabled = on;
-            prefs().edit().putBoolean(lk(KEY_TAB_SWIPE), on).apply();
-        });
-
         // 长按空白处左右滑翻标签时的振动：直接走 Vibrator，不受系统触感开关限制
         CheckBox scrubVibBox = new CheckBox(this);
-        scrubVibBox.setText("长按滑动震动反馈");
+        scrubVibBox.setText("长按空白处滑动标签震动反馈");
         scrubVibBox.setTextSize(12);
         scrubVibBox.setMinimumHeight(Ui.dp(this, 32));
         scrubVibBox.setChecked(scrubVibrate);
@@ -6273,48 +6322,43 @@ public class FreezeListActivity extends BaseActivity {
 
         box.addView(personalTitle);
         box.addView(nameBox);
-        box.addView(moveBox);
         box.addView(tipBox);
         box.addView(keepIconBox);
+        box.addView(scrubVibBox);
         box.addView(longPressBox);
+        if (dismissBox != null) {
+            box.addView(dismissBox);
+        }
         box.addView(tabOnlyBox);
 
-        // 全屏打开模式：只决定桌面图标进来时的形态，两种形态各用各的布局参数
+        // 形态切换：选项永远显示「另一种形态」且不勾选，点一下即切过去
         CheckBox fullBox = new CheckBox(this);
-        fullBox.setText("全屏打开模式");
+        fullBox.setText(panelMode ? "全屏打开模式" : "半屏打开模式");
         fullBox.setTextSize(12);
         fullBox.setMinimumHeight(Ui.dp(this, 32));
-        fullBox.setChecked(prefs().getBoolean(KEY_FULLSCREEN_OPEN, true));
+        fullBox.setChecked(false);
         fullBox.setOnCheckedChangeListener((b, on) -> {
-            prefs().edit().putBoolean(KEY_FULLSCREEN_OPEN, on).apply();
-            boolean switching = (on == panelMode);
+            if (!on) {
+                return;
+            }
+            boolean toFull = panelMode;
+            prefs().edit().putBoolean(KEY_FULLSCREEN_OPEN, toFull).apply();
             if (dialogRef[0] != null) {
                 dialogRef[0].dismiss();
             }
-            if (switching) {
-                // 点击即切换：直接换到另一种形态的 Activity，不用退出重进；
-                // 目标形态开着「隐藏后台」时走对应的隐藏入口，保证新任务从创建起就不进最近任务
-                boolean hideTarget = prefs().getBoolean(
-                        on ? KEY_PANEL_HIDE_RECENTS : "panel_" + KEY_PANEL_HIDE_RECENTS, false);
-                Class<?> next = on
-                        ? (hideTarget ? FreezeListHiddenActivity.class : FreezeListActivity.class)
-                        : (hideTarget ? FreezePanelHiddenActivity.class : FreezePanelActivity.class);
-                Intent intent = new Intent(this, next);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-                startActivity(intent);
-                finish();
-            } else {
-                Toast.makeText(this, on
-                                ? "下次从桌面图标进入：全屏列表"
-                                : "下次从桌面图标进入：半屏面板",
-                        Toast.LENGTH_SHORT).show();
-            }
+            // 点击即切换：直接换到另一种形态的 Activity，不用退出重进；
+            // 目标形态开着「隐藏后台」时走对应的隐藏入口，保证新任务从创建起就不进最近任务
+            boolean hideTarget = prefs().getBoolean(
+                    toFull ? KEY_PANEL_HIDE_RECENTS : "panel_" + KEY_PANEL_HIDE_RECENTS, false);
+            Class<?> next = toFull
+                    ? (hideTarget ? FreezeListHiddenActivity.class : FreezeListActivity.class)
+                    : (hideTarget ? FreezePanelHiddenActivity.class : FreezePanelActivity.class);
+            Intent intent = new Intent(this, next);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+            startActivity(intent);
+            finish();
         });
-        box.addView(fullBox);
 
-        if (hideRecentsBox != null) {
-            box.addView(hideRecentsBox);
-        }
         if (handleBox != null) {
             box.addView(handleBox);
         }
@@ -6324,14 +6368,15 @@ public class FreezeListActivity extends BaseActivity {
         if (quickRemoveBox != null) {
             box.addView(quickRemoveBox);
         }
-        if (dismissBox != null) {
-            box.addView(dismissBox);
-        }
-        box.addView(swipeBox);
-        box.addView(scrubVibBox);
         if (hideRowBox != null) {
             box.addView(hideRowBox);
         }
+        // 隐藏后台紧贴「划卡冻结（lsposed）」上面
+        if (hideRecentsBox != null) {
+            box.addView(hideRecentsBox);
+        }
+        // 形态切换入口放在「隐藏后台」下面
+        box.addView(fullBox);
         // 两个 LSPosed 冻结开关统一排在「隐藏半屏标签文字」下面
         addSwipeFreezeSection(box);
         addLockFreezeSection(box);
@@ -6354,9 +6399,10 @@ public class FreezeListActivity extends BaseActivity {
 
         final SeekBar fabAlphaBar = new SeekBar(this);
         fabAlphaBar.setMax(100);
-        int fabAlphaPct = Math.max(0, Math.min(100,
+        int fabAlphaStored = Math.max(0, Math.min(100,
                 prefs().getInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE,
                         panelMode ? PANEL_FAB_SURFACE_DEFAULT : SURFACE_SOLID)));
+        int fabAlphaPct = 100 - fabAlphaStored;
         fabAlphaBar.setProgress(fabAlphaPct);
         fabAlphaLabel.setText("透明度：" + fabAlphaPct + "%");
         fabAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -6365,8 +6411,9 @@ public class FreezeListActivity extends BaseActivity {
                 if (!fromUser) {
                     return;
                 }
+                // 滑块值 = 透明度：0 不透明（原观感），100 全透明
                 prefs().edit()
-                        .putInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE, p)
+                        .putInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE, 100 - p)
                         .apply();
                 fabAlphaLabel.setText("透明度：" + p + "%");
                 if (panelMode) {
@@ -6387,7 +6434,10 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(fabAlphaLabel);
         box.addView(fabAlphaBar);
 
-        // 列数滑块：4–8 档，和上面几个滑块同一套样式
+        // 列数滑块：4–8 档，和上面几个滑块同一套样式。
+        // 整块先收进 ias，最后整体插到「底部冻结按钮调节」上面
+        LinearLayout ias = new LinearLayout(this);
+        ias.setOrientation(LinearLayout.VERTICAL);
         TextView iconAdjustTitle = new TextView(this);
         iconAdjustTitle.setText("列表图标调整");
         iconAdjustTitle.setTextSize(12);
@@ -6430,13 +6480,17 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
             }
         });
-        box.addView(iconAdjustTitle);
-        box.addView(colsValue);
-        box.addView(colsBar);
-        box.addView(sizeLabel);
-        box.addView(sizeBar);
+        ias.addView(iconAdjustTitle);
+        ias.addView(colsValue);
+        ias.addView(colsBar);
+        ias.addView(sizeLabel);
+        ias.addView(sizeBar);
+        box.addView(ias, Math.max(0, box.indexOfChild(fabTitle)));
 
-        // 自定义壁纸：作为背景层的底图，透明度/模糊仍由上面的背景滑块叠加；半屏与全屏各存各的
+        // 自定义壁纸：作为背景层的底图，透明度/模糊仍由上面的背景滑块叠加；半屏与全屏各存各的。
+        // 视图先收进 wps，最后整体插到「底部冻结按钮调节」上面
+        LinearLayout wps = new LinearLayout(this);
+        wps.setOrientation(LinearLayout.VERTICAL);
         TextView wpTitle = new TextView(this);
         wpTitle.setText("自定义壁纸");
         wpTitle.setTextSize(12);
@@ -6447,7 +6501,7 @@ public class FreezeListActivity extends BaseActivity {
         wpState.setTextSize(11);
         wpState.setTextColor(getColor(R.color.text_secondary));
         wpState.setText(wallpaperUri == null || wallpaperUri.isEmpty()
-                ? "当前：未设置（使用纯色背景）" : "当前：已设置");
+                ? "当前：未设置" : "当前：已设置");
         layoutWpState = wpState;
 
         LinearLayout wpRow = new LinearLayout(this);
@@ -6468,21 +6522,21 @@ public class FreezeListActivity extends BaseActivity {
         wpClear.setPadding(0, Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 8));
         wpClear.setOnClickListener(v -> {
             clearCustomWallpaper();
-            wpState.setText("当前：未设置（使用纯色背景）");
+            wpState.setText("当前：未设置");
             layoutWpState = wpState;
         });
 
         wpRow.addView(wpPick);
         wpRow.addView(wpClear);
-        box.addView(wpTitle);
-        box.addView(wpState);
-        box.addView(wpRow);
+        wps.addView(wpTitle);
+        wps.addView(wpState);
+        wps.addView(wpRow);
 
         // 壁纸自己的模糊度：0 完全清晰（默认），只影响这张壁纸，不动透明度/背景模糊那几条
         final TextView wpBlurLabel = new TextView(this);
         wpBlurLabel.setTextSize(11);
         wpBlurLabel.setTextColor(getColor(R.color.text_secondary));
-        wpBlurLabel.setText("壁纸模糊度：" + wallpaperBlur + "%（左滑透明，右滑模糊）");
+        wpBlurLabel.setText("壁纸模糊度：" + wallpaperBlur + "%");
         SeekBar wpBlurBar = new SeekBar(this);
         wpBlurBar.setMax(100);
         wpBlurBar.setProgress(wallpaperBlur);
@@ -6492,7 +6546,7 @@ public class FreezeListActivity extends BaseActivity {
                 if (!fromUser) {
                     return;
                 }
-                wpBlurLabel.setText("壁纸模糊度：" + p + "%（左滑透明，右滑模糊）");
+                wpBlurLabel.setText("壁纸模糊度：" + p + "%");
                 // 拖动过程中就用降采样快速模糊跟住：任何时候都是模糊图，不会回退到清晰帧
                 wallpaperBlur = Math.max(0, Math.min(100, p));
                 if (wallpaperSourceBitmap != null && wallpaperUri != null) {
@@ -6515,8 +6569,8 @@ public class FreezeListActivity extends BaseActivity {
                 applyWallpaperBackground();
             }
         });
-        box.addView(wpBlurLabel);
-        box.addView(wpBlurBar);
+        wps.addView(wpBlurLabel);
+        wps.addView(wpBlurBar);
 
         // 长按应用的选项框是否也换成壁纸底：取半屏那张图（含它的模糊度），半屏/全屏共用这一个开关
         android.widget.CheckBox wpSheet = new android.widget.CheckBox(this);
@@ -6526,9 +6580,14 @@ public class FreezeListActivity extends BaseActivity {
         wpSheet.setChecked(prefs().getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false));
         wpSheet.setOnCheckedChangeListener((b, on) ->
                 prefs().edit().putBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, on).apply());
-        box.addView(wpSheet);
+        wps.addView(wpSheet);
+        // 整块插到「标签（点击看说明）」下面：就在列表图标调整之前
+        box.addView(wps, Math.max(0, box.indexOfChild(ias)));
 
-        // 半屏上方「非面板区域」的遮罩强度：越小越透明（看得清背后页面），越大越模糊
+        // 半屏上方「非面板区域」的遮罩强度：越小越透明（看得清背后页面），越大越模糊。
+        // 整个界面透明度区块先收进 its，最后整体插到「底部冻结按钮调节」上面
+        LinearLayout its = new LinearLayout(this);
+        its.setOrientation(LinearLayout.VERTICAL);
         if (panelMode) {
             TextView transTitle = new TextView(this);
             transTitle.setText("界面透明度：");
@@ -6542,7 +6601,8 @@ public class FreezeListActivity extends BaseActivity {
 
             final SeekBar blurBar = new SeekBar(this);
             blurBar.setMax(100);
-            int blurPct = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 25)));
+            int blurAlpha = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 25)));
+            int blurPct = 100 - blurAlpha;
             blurBar.setProgress(blurPct);
             blurLabel.setText("半屏外背景：" + blurPct + "%");
             blurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -6551,7 +6611,8 @@ public class FreezeListActivity extends BaseActivity {
                     if (!fromUser) {
                         return;
                     }
-                    prefs().edit().putInt(lk(KEY_BLUR), p).apply();
+                    // 滑块值 = 透明度：0 不透明（原观感），100 全透明
+                    prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
                     blurLabel.setText("半屏外背景：" + p + "%");
                     applyBackdropStrength();
                 }
@@ -6565,9 +6626,9 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
 
-            box.addView(transTitle);
-            box.addView(blurLabel);
-            box.addView(blurBar);
+            its.addView(transTitle);
+            its.addView(blurLabel);
+            its.addView(blurBar);
 
             // 半屏面板本体：0=完全透明、50=最模糊、100=实心；只改面板自己，外面那层遮罩不动
             final TextView panelLabel = new TextView(this);
@@ -6576,8 +6637,9 @@ public class FreezeListActivity extends BaseActivity {
 
             final SeekBar panelBar = new SeekBar(this);
             panelBar.setMax(100);
-            int panelPct = Math.max(0, Math.min(100,
+            int panelAlpha = Math.max(0, Math.min(100,
                     prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
+            int panelPct = 100 - panelAlpha;
             panelBar.setProgress(panelPct);
             panelLabel.setText("半屏内背景：" + panelPct + "%");
             panelBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -6586,7 +6648,7 @@ public class FreezeListActivity extends BaseActivity {
                     if (!fromUser) {
                         return;
                     }
-                    prefs().edit().putInt(lk(KEY_SURFACE), p).apply();
+                    prefs().edit().putInt(lk(KEY_SURFACE), 100 - p).apply();
                     panelLabel.setText("半屏内背景：" + p + "%");
                     applyPanelSurface();
                 }
@@ -6600,8 +6662,8 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
 
-            box.addView(panelLabel);
-            box.addView(panelBar);
+            its.addView(panelLabel);
+            its.addView(panelBar);
         } else {
             // 全屏形态也补两条：全屏背景档位 + 雪花按钮底板档位。
             // 与半屏同一套语义（0 全透明 / 50 模糊 / 100 实心），键独立记忆，默认实心不变观感。
@@ -6617,18 +6679,20 @@ public class FreezeListActivity extends BaseActivity {
 
             final SeekBar fullBgBar = new SeekBar(this);
             fullBgBar.setMax(100);
-            int fullBgPct = Math.max(0, Math.min(100,
+            int fullBgAlpha = Math.max(0, Math.min(100,
                     prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
+            int fullBgPct = 100 - fullBgAlpha;
             fullBgBar.setProgress(fullBgPct);
-            fullBgLabel.setText("全屏背景：" + fullBgPct + "%（左滑透明，右滑模糊）");
+            fullBgLabel.setText("全屏背景：" + fullBgPct + "%");
             fullBgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
                     if (!fromUser) {
                         return;
                     }
-                    prefs().edit().putInt(KEY_FULL_SURFACE, p).apply();
-                    fullBgLabel.setText("全屏背景：" + p + "%（左滑透明，右滑模糊）");
+                    // 滑块值 = 透明度：0 不透明（原观感），100 全透明
+                    prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
+                    fullBgLabel.setText("全屏背景：" + p + "%");
                     applyFullscreenSurface();
                 }
 
@@ -6649,17 +6713,17 @@ public class FreezeListActivity extends BaseActivity {
 
             final SeekBar headerBar = new SeekBar(this);
             headerBar.setMax(100);
-            int headerPct = headerSurfacePct();
+            int headerPct = 100 - headerSurfacePct();
             headerBar.setProgress(headerPct);
-            headerLabel.setText("横幅透明度：" + headerPct + "%（左滑透明，右滑模糊）");
+            headerLabel.setText("横幅透明度：" + headerPct + "%");
             headerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
                     if (!fromUser) {
                         return;
                     }
-                    prefs().edit().putInt(KEY_HEADER_SURFACE, p).apply();
-                    headerLabel.setText("横幅透明度：" + p + "%（左滑透明，右滑模糊）");
+                    prefs().edit().putInt(KEY_HEADER_SURFACE, 100 - p).apply();
+                    headerLabel.setText("横幅透明度：" + p + "%");
                     applyFullscreenSurface();
                 }
 
@@ -6680,17 +6744,17 @@ public class FreezeListActivity extends BaseActivity {
 
             final SeekBar tabSurfBar = new SeekBar(this);
             tabSurfBar.setMax(100);
-            int tabSurfPct = tabSurfacePct();
+            int tabSurfPct = 100 - tabSurfacePct();
             tabSurfBar.setProgress(tabSurfPct);
-            tabSurfLabel.setText("标签页透明度：" + tabSurfPct + "%（左滑透明，右滑模糊）");
+            tabSurfLabel.setText("标签页透明度：" + tabSurfPct + "%");
             tabSurfBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
                     if (!fromUser) {
                         return;
                     }
-                    prefs().edit().putInt(KEY_TAB_SURFACE, p).apply();
-                    tabSurfLabel.setText("标签页透明度：" + p + "%（左滑透明，右滑模糊）");
+                    prefs().edit().putInt(KEY_TAB_SURFACE, 100 - p).apply();
+                    tabSurfLabel.setText("标签页透明度：" + p + "%");
                     applyFullscreenSurface();
                 }
 
@@ -6704,13 +6768,13 @@ public class FreezeListActivity extends BaseActivity {
             });
 
             // 冻结按钮透明度已统一放到「距底部」下面，这里不再单独占一行
-            box.addView(transTitle);
-            box.addView(fullBgLabel);
-            box.addView(fullBgBar);
-            box.addView(headerLabel);
-            box.addView(headerBar);
-            box.addView(tabSurfLabel);
-            box.addView(tabSurfBar);
+            its.addView(transTitle);
+            its.addView(fullBgLabel);
+            its.addView(fullBgBar);
+            its.addView(headerLabel);
+            its.addView(headerBar);
+            its.addView(tabSurfLabel);
+            its.addView(tabSurfBar);
         }
 
         // 搜索框透明度：只属于全屏（半屏底部没有搜索框）；独立档位，与背景档位解耦
@@ -6721,17 +6785,18 @@ public class FreezeListActivity extends BaseActivity {
 
             final SeekBar searchBar = new SeekBar(this);
             searchBar.setMax(100);
-            int searchStart = searchPct();
+            int searchStart = 100 - searchPct();
             searchBar.setProgress(searchStart);
-            searchLabel.setText("搜索框透明度：" + searchStart + "%（左滑透明，右滑模糊）");
+            searchLabel.setText("搜索框透明度：" + searchStart + "%");
             searchBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
                     if (!fromUser) {
                         return;
                     }
-                    prefs().edit().putInt(lk(KEY_SEARCH_SURFACE), p).apply();
-                    searchLabel.setText("搜索框透明度：" + p + "%（左滑透明，右滑模糊）");
+                    // 滑块值 = 透明度：0 不透明，100 全透明
+                    prefs().edit().putInt(lk(KEY_SEARCH_SURFACE), 100 - p).apply();
+                    searchLabel.setText("搜索框透明度：" + p + "%");
                     applySearchSurface();
                 }
 
@@ -6743,9 +6808,10 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            box.addView(searchLabel);
-            box.addView(searchBar);
+            its.addView(searchLabel);
+            its.addView(searchBar);
         }
+        box.addView(its, Math.max(0, box.indexOfChild(fabTitle)));
 
         // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
         TextView backupTitle = new TextView(this);
@@ -7243,19 +7309,24 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
 
-        // 滑块 2：设置面板展开范围 0–888dp，记忆点右上角倒三角时的高度，允许覆盖半屏（不盖冻结按钮）
-        expandBar.setMax(LAYOUT_EXPAND_MAX_DP);
-        expandBar.setProgress(expandDialogDp());
-        expandValue.setText(heightLabel("设置面板展开范围", expandDialogDp(), clampedExpandHeightPx(expandDialogDp())));
+        // 滑块 2：设置面板展开范围 —— 上限直接取到底部冻结按钮上沿，按钮在哪就最多到哪
+        int expandMaxDp = Math.max(1, Math.round(expandHeightMaxPx()
+                / getResources().getDisplayMetrics().density));
+        int expandStart = Math.min(expandDialogDp(), expandMaxDp);
+        expandBar.setMax(expandMaxDp);
+        expandBar.setProgress(expandStart);
+        expandValue.setText(heightLabel("设置面板展开范围", expandStart,
+                clampedExpandHeightPx(expandStart)));
         expandBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
                 if (!fromUser) {
                     return;
                 }
-                int dp = clampInt(p, 0, LAYOUT_EXPAND_MAX_DP);
+                int dp = clampInt(p, 0, expandMaxDp);
                 prefs().edit().putInt(lk(KEY_LAYOUT_EXPAND_H), dp).apply();
-                expandValue.setText(heightLabel("设置面板展开范围", dp, clampedExpandHeightPx(dp)));
+                expandValue.setText(heightLabel("设置面板展开范围", dp,
+                        clampedExpandHeightPx(dp)));
                 applyDialogHeight(dialog, clampedExpandHeightPx(dp), shadowPad);
             }
 
@@ -7268,6 +7339,36 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         attachDialogDrag(w, title, defaultX, defaultY, width, height, shadowPad);
+        // 留给「底部冻结按钮调节」的滑块：按钮一动就实时重算展开范围
+        layoutExpandBar = expandBar;
+        layoutExpandValue = expandValue;
+        layoutDialog = dialog;
+        layoutShadowPad = shadowPad;
+    }
+
+    /** 冻结按钮位置/大小变化后：重算展开范围上限，滑块与当前展开高度一起收放。 */
+    private void refreshExpandRange() {
+        SeekBar bar = layoutExpandBar;
+        if (bar == null) {
+            return;
+        }
+        int maxDp = Math.max(1, Math.round(expandHeightMaxPx()
+                / getResources().getDisplayMetrics().density));
+        if (bar.getMax() != maxDp) {
+            bar.setMax(maxDp);
+        }
+        int cur = Math.min(bar.getProgress(), maxDp);
+        if (cur != bar.getProgress()) {
+            bar.setProgress(cur);
+            prefs().edit().putInt(lk(KEY_LAYOUT_EXPAND_H), cur).apply();
+            if (layoutDialog != null) {
+                applyDialogHeight(layoutDialog, clampedExpandHeightPx(cur), layoutShadowPad);
+            }
+        }
+        if (layoutExpandValue != null) {
+            layoutExpandValue.setText(heightLabel("设置面板展开范围", cur,
+                    clampedExpandHeightPx(cur)));
+        }
     }
 
     /** 「布局面板高度」记忆值（dp）：升级后首次读取时从旧版单一高度键迁移。 */
@@ -7331,8 +7432,7 @@ public class FreezeListActivity extends BaseActivity {
         return Math.max(0, max);
     }
 
-    /**
-     * 展开高度上限：屏幕可用高度与 888dp 取小，再按底部冻结按钮的当前实际上沿夹紧。
+    /** 展开高度上限：屏幕可用高度与 888dp 取小，再按底部冻结按钮的当前实际上沿夹紧。
      * 按钮位置受「按钮大小 / 距底部 / 左右偏移」影响，这里一律按运行期的屏幕坐标实时取，
      * 保证展开后的面板永远停在按钮上方，不会把按钮盖住。
      */
@@ -7342,6 +7442,10 @@ public class FreezeListActivity extends BaseActivity {
         int max = screenH - statusBarHeightPx() - pad * 2 - Ui.dp(this, 8);
         max = Math.min(max, Ui.dp(this, LAYOUT_EXPAND_MAX_DP));
         int fabTop = freezeButtonTopPx();
+        if (!panelMode) {
+            // 全屏直接用按钮参数推算上沿：不受布局/动画时序影响，拖动「距底部」「按钮大小」时能立刻重算
+            fabTop = screenH - Ui.dp(this, fabDy) - Ui.dp(this, fabSizeDp) - Ui.dp(this, 4);
+        }
         if (fabTop > 0) {
             // 弹窗内容顶边 = 默认 8dp + 记忆的拖动偏移，与 applyDialogGeometry 的定位口径一致
             int dialogTop = Ui.dp(this, 8) + prefs().getInt(lk(KEY_LAYOUT_DY), 0);

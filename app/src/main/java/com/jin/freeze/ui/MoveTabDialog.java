@@ -55,7 +55,7 @@ public final class MoveTabDialog {
         if (icon != null) {
             head.setImageDrawable(icon);
         } else {
-            head.setImageResource(R.drawable.ic_launcher);
+            head.setImageResource(android.R.drawable.sym_def_app_icon);
         }
         LinearLayout.LayoutParams headLp = new LinearLayout.LayoutParams(
                 Ui.dp(c, 38), Ui.dp(c, 38));

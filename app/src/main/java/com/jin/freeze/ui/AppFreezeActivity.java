@@ -170,7 +170,10 @@ public class AppFreezeActivity extends BaseActivity {
             render(search.getText().toString().trim());
         });
 
-        batchBtn.setText(pickMode ? "确定" : "批量");        batchBar.setVisibility(View.GONE);
+        batchBtn.setText(pickMode ? "确定" : "批量");
+        // 选择页改成点图标直接加入，不再需要「确定」
+        batchBtn.setVisibility(pickMode ? View.GONE : View.VISIBLE);
+        batchBar.setVisibility(View.GONE);
         batchBtn.setOnClickListener(v -> {
             if (pickMode) {
                 finishWithPicked();
@@ -362,6 +365,26 @@ public class AppFreezeActivity extends BaseActivity {
         return packages;
     }
 
+    /** 指定用户下的系统应用包名：分身里只装着的系统组件也能归到「系统应用」标签。 */
+    private Set<String> listSystemPackagesForUser(int userId) {
+        Set<String> packages = new HashSet<>();
+        PrivShell.Result r = PrivShell.exec("pm list packages -s --user " + userId, 30);
+        if (r.out == null) {
+            return packages;
+        }
+        for (String line : r.out.split("\\n")) {
+            String t = line.trim();
+            if (t.startsWith("package:")) {
+                String pkg = t.substring("package:".length()).trim();
+                pkg = pkg.replaceFirst("\\s*\\(\\s*\\d+\\s*\\)$", "").trim();
+                if (!pkg.isEmpty()) {
+                    packages.add(pkg);
+                }
+            }
+        }
+        return packages;
+    }
+
     private void loadApps() {
         if (loading) {
             return;
@@ -386,11 +409,13 @@ public class AppFreezeActivity extends BaseActivity {
             List<App> apps = new ArrayList<>();
             PackageManager pm = getPackageManager();
             List<Integer> userIds = hasPriv ? discoverUsers() : Collections.singletonList(0);
-            // 每个分身用户单独读一次停用真值，避免把主用户的状态套到分身上
+            // 每个分身用户单独读一次停用真值与系统包集合，避免把主用户的状态套到分身上
             Map<Integer, Set<String>> userDisabled = new HashMap<>();
+            Map<Integer, Set<String>> userSystem = new HashMap<>();
             for (int userId : userIds) {
                 if (userId != 0) {
                     userDisabled.put(userId, disabledPackages(userId));
+                    userSystem.put(userId, listSystemPackagesForUser(userId));
                 }
             }
             for (int userId : userIds) {
@@ -399,6 +424,7 @@ public class AppFreezeActivity extends BaseActivity {
                         ? pm.getInstalledPackages(0) : new ArrayList<>();
                 if (userId != 0) {
                     Set<String> dis = userDisabled.get(userId);
+                    Set<String> sys = userSystem.get(userId);
                     for (String pkg : packages) {
                         PackageInfo pi = null;
                         try {
@@ -411,11 +437,12 @@ public class AppFreezeActivity extends BaseActivity {
                         }
                         // 只装在分身/工作空间里的应用：主用户的 PackageManager 查不到详情，
                         // 仍按包名录出来（名称暂用包名），保证能冻结/解冻。
+                        // 系统应用按该用户自己的系统包集合判定，仍归到「系统应用」标签。
                         App a = new App();
                         a.label = pkg + cloneTag(userId);
                         a.pkg = pkg;
                         a.userId = userId;
-                        a.system = false;
+                        a.system = sys != null && sys.contains(pkg);
                         a.frozen = dis != null && dis.contains(pkg);
                         apps.add(a);
                     }
@@ -541,10 +568,14 @@ public class AppFreezeActivity extends BaseActivity {
             if (stateFilter == 2 && a.frozen) {
                 continue;
             }
-            if (!q.isEmpty()
-                    && !a.label.toLowerCase(Locale.ROOT).contains(q)
-                    && !a.pkg.toLowerCase(Locale.ROOT).contains(q)) {
-                continue;
+            if (!q.isEmpty()) {
+                // 支持按多用户后缀搜：输入 999 / 10 也能找到对应分身/双开实例
+                boolean hit = a.label.toLowerCase(Locale.ROOT).contains(q)
+                        || a.pkg.toLowerCase(Locale.ROOT).contains(q)
+                        || (a.userId != 0 && String.valueOf(a.userId).contains(q));
+                if (!hit) {
+                    continue;
+                }
             }
             shown.add(a);
         }
@@ -637,7 +668,8 @@ public class AppFreezeActivity extends BaseActivity {
         if (a.icon != null) {
             icon.setImageDrawable(a.icon);
         } else {
-            icon.setImageResource(R.drawable.ic_launcher);
+            // 取不到图标的应用（如只在分身里存在的系统组件）用系统默认应用图标，不冒充凚自己的图标
+            icon.setImageResource(android.R.drawable.sym_def_app_icon);
         }
         box.addView(icon, new LinearLayout.LayoutParams(Ui.dp(this, 46), Ui.dp(this, 46)));
         // 真裁切圆角（随尺寸自适应），不加白色卡片底
@@ -697,7 +729,7 @@ public class AppFreezeActivity extends BaseActivity {
         if (a.icon != null) {
             icon.setImageDrawable(a.icon);
         } else {
-            icon.setImageResource(R.drawable.ic_launcher);
+            icon.setImageResource(android.R.drawable.sym_def_app_icon);
         }
         int iconPx = Ui.dp(this, 36);
         android.graphics.drawable.GradientDrawable round =
@@ -749,7 +781,17 @@ public class AppFreezeActivity extends BaseActivity {
     /** 网格/列表共用的点击与长按行为。 */
     private void bindActions(App a, Cell cell, View target) {
         target.setOnClickListener(v -> {
-            if (pickMode || batchMode) {
+            if (pickMode) {
+                // 点击图标即加入名单并返回列表，不再走勾选 + 确定
+                Intent data = new Intent();
+                ArrayList<String> picked = new ArrayList<>();
+                picked.add(instanceKey(a.pkg, a.userId));
+                data.putStringArrayListExtra(EXTRA_PICKED, picked);
+                setResult(RESULT_OK, data);
+                finish();
+                return;
+            }
+            if (batchMode) {
                 String key = instanceKey(a.pkg, a.userId);
                 if (selected.contains(key)) {
                     selected.remove(key);
@@ -769,6 +811,10 @@ public class AppFreezeActivity extends BaseActivity {
         });
         target.setOnLongClickListener(v -> {
             if (pickMode) {
+                // 与列表长按图标同一套震动反馈
+                target.performHapticFeedback(
+                        android.view.HapticFeedbackConstants.LONG_PRESS,
+                        android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                 // 与半屏列表共用同一套操作单，不再单独维护一份「解冻确认」
                 showAppSheet(a);
                 return true;
@@ -830,6 +876,16 @@ public class AppFreezeActivity extends BaseActivity {
             @Override
             public void removeAndUnfreeze() {
                 AppFreezeActivity.this.removeFromList(a);
+            }
+
+            @Override
+            public boolean tagMoveEnabled() {
+                return false;
+            }
+
+            @Override
+            public boolean pinHomeEnabled() {
+                return false;
             }
         });
     }
@@ -1024,7 +1080,7 @@ public class AppFreezeActivity extends BaseActivity {
             cell.icon.clearColorFilter();
             cell.icon.setAlpha(1f);
         }
-        boolean sel = (batchMode || pickMode) && selected.contains(instanceKey(a.pkg, a.userId));
+        boolean sel = batchMode && selected.contains(instanceKey(a.pkg, a.userId));
         cell.root.setBackgroundResource(sel
                 ? R.drawable.bg_card_selected : R.drawable.bg_card);
     }

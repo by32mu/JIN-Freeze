@@ -41,9 +41,29 @@ public final class AppActionSheet {
 
         void removeAndUnfreeze();
 
+        /** 是否显示「更改标签页」：选择应用页不需要这个入口。 */
+        default boolean tagMoveEnabled() {
+            return true;
+        }
+
+        /** 是否显示「添加到桌面」：选择应用页不需要这个入口。 */
+        default boolean pinHomeEnabled() {
+            return true;
+        }
+
         /** 是否显示多选按钮：只有真正支持多选批量操作的页面才 override 返回 true。 */
         default boolean multiSelectEnabled() {
             return false;
+        }
+
+        /** 是否显示「移动图标」入口：只有支持拖动排序的冻结列表才 override 返回 true。 */
+        default boolean moveIconEnabled() {
+            return false;
+        }
+
+        /** 进入移动图标模式（点一下选中、再点目标位置放置）。 */
+        default void startMoveMode() {
+            // 默认空实现：不支持排序的页面不用 override
         }
 
         /** 从本次长按进入多选态（ActionSheet 自己 dismiss，调用方负责进入 selectMode）。 */
@@ -120,7 +140,7 @@ public final class AppActionSheet {
         if (icon != null) {
             headIcon.setImageDrawable(icon);
         } else {
-            headIcon.setImageResource(R.drawable.ic_launcher);
+            headIcon.setImageResource(android.R.drawable.sym_def_app_icon);
         }
         header.addView(headIcon, new LinearLayout.LayoutParams(Ui.dp(c, 34), Ui.dp(c, 34)));
         TextView headName = Ui.text(c, label, 15, fg, true);
@@ -137,14 +157,23 @@ public final class AppActionSheet {
         addItem(c, content, sheet, frozen ? R.drawable.ic_sc_unfreeze : R.drawable.ic_sc_freeze,
                 frozen ? "解冻" : "冻结", actions::toggleFreeze, fg, iconFg);
         divider(c, content, 18, lineColor);
-        addItem(c, content, sheet, R.drawable.ic_action_tag, "更改标签页", actions::moveTab, fg, iconFg);
+        if (actions.tagMoveEnabled()) {
+            addItem(c, content, sheet, R.drawable.ic_action_tag, "更改标签页", actions::moveTab, fg, iconFg);
+        }
+        // 移动图标：紧跟在「更改标签页」下方、多选上方
+        if (actions.moveIconEnabled()) {
+            addItem(c, content, sheet, R.drawable.ic_action_move, "移动图标",
+                    actions::startMoveMode, fg, iconFg);
+        }
         // 多选入口：紧跟在「更改标签页」下方
         if (actions.multiSelectEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_check_badge, "多选",
                     actions::startMultiSelect, fg, iconFg);
         }
         addItem(c, content, sheet, R.drawable.ic_action_app_info, "在其他应用中配置", actions::appSettings, fg, iconFg);
-        addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
+        if (actions.pinHomeEnabled()) {
+            addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
+        }
         if (actions.inList()) {
             addItem(c, content, sheet, R.drawable.ic_minus, "从列表移除",
                     actions::removeFromList, fg, iconFg);
