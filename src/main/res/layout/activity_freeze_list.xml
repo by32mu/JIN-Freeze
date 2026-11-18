@@ -172,6 +172,7 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
+        <!-- 底部留白与半屏一致（半屏底栏 54dp），避免全屏时白色空档遮住太多图标 -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/grid"
             android:layout_width="match_parent"
@@ -180,7 +181,7 @@
             android:paddingStart="14dp"
             android:paddingTop="8dp"
             android:paddingEnd="14dp"
-            android:paddingBottom="100dp"
+            android:paddingBottom="54dp"
             android:scrollbars="none" />
     </LinearLayout>
 

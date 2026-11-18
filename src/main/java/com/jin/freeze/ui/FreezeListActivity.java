@@ -163,16 +163,16 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_FAB_DX = "fab_dx";
     private static final String KEY_FAB_DY = "fab_dy";
     private static final String KEY_FAB_SIZE = "fab_size";
-    /** 悬浮冻结按钮默认直径（dp），大小滑块与恢复默认都以它为准。 */
-    private static final int FAB_SIZE_DEFAULT = 40;
+    /** 全屏悬浮冻结按钮默认直径（dp），大小滑块与恢复默认都以它为准。 */
+    private static final int FAB_SIZE_DEFAULT = 38;
     private static final int FAB_SIZE_MIN = 32;
     private static final int FAB_SIZE_MAX = 64;
     /** 半屏形态的一键冻结按钮出厂值：直径 38dp、离底 5dp、底板不透明度 60%。 */
     private static final int PANEL_FAB_SIZE_DEFAULT = 38;
     private static final int PANEL_FAB_DY_DEFAULT = 5;
     private static final int PANEL_FAB_SURFACE_DEFAULT = 60;
-    /** 全屏形态「距底部」出厂值：首次安装或恢复默认时取 18dp。 */
-    private static final int FAB_DY_DEFAULT = 18;
+    /** 全屏形态「距底部」出厂值：首次安装或恢复默认时取 4dp。 */
+    private static final int FAB_DY_DEFAULT = 4;
     /** 标签：内置「用户应用 / 系统应用」+ 自定义；顺序、显隐、名称与每个应用的归属都落盘。 */
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
@@ -2021,7 +2021,7 @@ public class FreezeListActivity extends BaseActivity {
         getWindow().getDecorView().removeCallbacks(scrubArmRunnable);
     }
 
-    /** 手势起点是否落在列表的空白处（没压到图标格子）。 */
+    /** 手势起点是否落在列表的空白处（没压到应用图标本身，格子留白与名称行都算空白）。 */
     private boolean inBlankListArea(float rawX, float rawY) {
         if (grid == null || grid.getVisibility() != View.VISIBLE) {
             return false;
@@ -2033,7 +2033,33 @@ public class FreezeListActivity extends BaseActivity {
         if (x < 0 || y < 0 || x >= grid.getWidth() || y >= grid.getHeight()) {
             return false;
         }
-        return grid.findChildViewUnder(x, y) == null;
+        return !onAppIcon(rawX, rawY);
+    }
+
+    /** 触点是否压在真正的图标方块上：只有这里长按才弹操作单，其他位置留给长按滑标签。 */
+    private boolean onAppIcon(float rawX, float rawY) {
+        if (grid == null || grid.getVisibility() != View.VISIBLE) {
+            return false;
+        }
+        int[] loc = new int[2];
+        grid.getLocationOnScreen(loc);
+        float x = rawX - loc[0];
+        float y = rawY - loc[1];
+        if (x < 0 || y < 0 || x >= grid.getWidth() || y >= grid.getHeight()) {
+            return false;
+        }
+        View child = grid.findChildViewUnder(x, y);
+        if (child == null || !(child.getTag() instanceof Cell)) {
+            return false;
+        }
+        View icon = ((Cell) child.getTag()).icon;
+        if (icon == null || icon.getVisibility() != View.VISIBLE) {
+            return false;
+        }
+        int[] ip = new int[2];
+        icon.getLocationOnScreen(ip);
+        return rawX >= ip[0] && rawX < ip[0] + icon.getWidth()
+                && rawY >= ip[1] && rawY < ip[1] + icon.getHeight();
     }
 
     /** 长按手势切标签：在可见标签里循环前后翻，首尾相接。 */
@@ -2459,7 +2485,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         SharedPreferences.Editor e = prefs().edit();
         // 老默认 40dp / 贴底 0dp，由「半屏初始化」从全屏设置抄过来的也算没动过
-        if (prefs().getInt("panel_fab_size", -1) == FAB_SIZE_DEFAULT) {
+        if (prefs().getInt("panel_fab_size", -1) == 40) {
             e.putInt("panel_fab_size", PANEL_FAB_SIZE_DEFAULT);
         }
         if (prefs().getInt("panel_fab_dy", -1) == 0) {
@@ -3741,7 +3767,8 @@ public class FreezeListActivity extends BaseActivity {
         });
         box.setOnClickListener(v -> {
             Item cur = cell.item;
-            if (cur == null || editMode) {
+            // 全屏减号（移除模式）与半屏「快捷移除图标」都只响应红标，点图标本体不打开应用
+            if (cur == null || editMode || (panelMode && quickRemove)) {
                 return;
             }
             // 长按刚触发过（已弹出操作单/进入多选）：吞掉这次松手带来的点击
@@ -3803,8 +3830,11 @@ public class FreezeListActivity extends BaseActivity {
                     cell.lastX = cell.downX;
                     cell.lastY = cell.downY;
                     // 不抢父容器的事件：RecyclerView 需要正常收到滑动才能滚动列表；
-                    // 手指移动超过系统触摸抖动阈值时下面会取消长按计时，避免误弹菜单
-                    v.postDelayed(cell.longPress, LONG_PRESS_MS);
+                    // 手指移动超过系统触摸抖动阈值时下面会取消长按计时，避免误弹菜单。
+                    // 只有按在图标方块上才计长按；格子留白/名称行长按留给「长按空白滑动切标签」
+                    if (onAppIcon(cell.downX, cell.downY)) {
+                        v.postDelayed(cell.longPress, LONG_PRESS_MS);
+                    }
                     break;
                 case android.view.MotionEvent.ACTION_MOVE: {
                     cell.lastX = e.getRawX();

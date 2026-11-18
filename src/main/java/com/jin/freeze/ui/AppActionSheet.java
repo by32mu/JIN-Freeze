@@ -242,7 +242,7 @@ public final class AppActionSheet {
         }
     }
 
-    /** 空白区域拖动：整块平移选项框，起手震动与长按图标一致，松手记住当前位置。 */
+    /** 空白区域拖动：整块平移选项框，按下即震动（先震动、后允许移动），松手记住当前位置。 */
     private static void attachSheetDrag(Context c, View v, final View[] target,
                                         final android.content.SharedPreferences sp,
                                         final String dxKey, final String dyKey) {
@@ -261,6 +261,10 @@ public final class AppActionSheet {
                     start[0] = target[0].getTranslationX();
                     start[1] = target[0].getTranslationY();
                     moved[0] = false;
+                    // 先把震动打出去，之后才允许跟着手指移动
+                    view.performHapticFeedback(
+                            android.view.HapticFeedbackConstants.LONG_PRESS,
+                            android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                     android.view.ViewParent p = view.getParent();
                     if (p != null) {
                         p.requestDisallowInterceptTouchEvent(true);
@@ -274,10 +278,6 @@ public final class AppActionSheet {
                             return true;
                         }
                         moved[0] = true;
-                        // 与长按图标一致的震动
-                        view.performHapticFeedback(
-                                android.view.HapticFeedbackConstants.LONG_PRESS,
-                                android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                     }
                     int sw = c.getResources().getDisplayMetrics().widthPixels;
                     int sh = c.getResources().getDisplayMetrics().heightPixels;
