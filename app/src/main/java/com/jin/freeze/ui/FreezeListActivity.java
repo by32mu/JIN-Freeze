@@ -179,6 +179,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_DEFAULT_TAB = "default_tab";
     /** 是否允许在列表区域左右滑动切换标签；关掉后只能点标签。 */
     private static final String KEY_TAB_SWIPE = "tab_swipe";
+    /** 长按空白处左右滑翻标签时是否振动（直接走 Vibrator，不受系统触感开关影响）。 */
+    private static final String KEY_SCRUB_VIBRATE = "scrub_vibrate";
     /** 隐藏标签文字：只收起标签名那一排，列表仍显示当前勾选的标签；仅勾选数为 1 时可用。 */
     private static final String KEY_HIDE_TAB_ROW = "hide_tab_row";
     /** 全屏系统应用页的提示是否已被「不再提醒」关掉。 */
@@ -465,6 +467,8 @@ public class FreezeListActivity extends BaseActivity {
     private boolean showFrozenTip;
     /** 列表区域左右滑动切标签；布局设置可关。 */
     private boolean tabSwipeEnabled = true;
+    /** 长按空白处左右滑翻标签时是否振动；布局设置可关。 */
+    private boolean scrubVibrate = true;
     /** 隐藏标签文字：只收起标签名那一排，列表与滑动手势照常工作。 */
     private boolean hideTabRow;
     /** 布局设置里高度块正在做显隐过渡：期间忽略滚动回调的重复切换。 */
@@ -474,6 +478,20 @@ public class FreezeListActivity extends BaseActivity {
     private boolean swipeTracking;
     /** 标签滑动切页动画进行中：不接管新的横向手势，避免叠加。 */
     private boolean tabAnimating;
+    /** 长按空白处后左右滑快速翻标签：长按已到位 / 手势起点 / 步进锚点。 */
+    private boolean scrubArmed;
+    private float scrubDownX;
+    private float scrubDownY;
+    private float scrubAnchorX;
+    private final Runnable scrubArmRunnable = () -> {
+        scrubArmed = true;
+        // 只在手势触发（长按到位）时震一下；与长按图标的反馈完全同一套
+        if (scrubVibrate && visibleTabCount() > 1) {
+            View target = grid != null ? grid : getWindow().getDecorView();
+            target.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
+                    android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+        }
+    };
     /** 曾经离开前台：下次 onStart 视为「重新进入列表」，落回默认标签。 */
     private boolean wasStopped;
 
@@ -681,6 +699,7 @@ public class FreezeListActivity extends BaseActivity {
         moveMode = prefs().getBoolean(lk(KEY_MOVE_MODE), false);
         showFrozenTip = prefs().getBoolean(lk(KEY_SHOW_FROZEN_TIP), true);
         tabSwipeEnabled = prefs().getBoolean(lk(KEY_TAB_SWIPE), true);
+        scrubVibrate = prefs().getBoolean(KEY_SCRUB_VIBRATE, true);
         hideTabRow = prefs().getBoolean(KEY_HIDE_TAB_ROW, false);
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
         fabDy = prefs().getInt(lk(KEY_FAB_DY), panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT);
@@ -1818,6 +1837,10 @@ public class FreezeListActivity extends BaseActivity {
             decor.removeCallbacks(toneAfterTouch);
             decor.postDelayed(toneAfterTouch, 80);
         }
+        // 长按列表空白处再左右滑：快速逐格翻标签（不依赖「左右滑动切换标签」开关）
+        if (handleBlankScrub(ev)) {
+            return true;
+        }
         if (!tabSwipeEnabled || moveMode || editMode || working || tabAnimating) {
             return super.dispatchTouchEvent(ev);
         }
@@ -1862,6 +1885,105 @@ public class FreezeListActivity extends BaseActivity {
                 break;
         }
         return super.dispatchTouchEvent(ev);
+    }
+
+    /**
+     * 长按列表空白处不松手再左右滑：按位移逐格翻标签。
+     * 和「左右滑动切换标签」并存，但长按手势优先；返回 true 表示本次事件已被这个手势消费。
+     */
+    private boolean handleBlankScrub(android.view.MotionEvent ev) {
+        switch (ev.getActionMasked()) {
+            case android.view.MotionEvent.ACTION_DOWN:
+                cancelBlankScrub();
+                // 移动/编辑/多选/执行中不启用，留给原有手势与操作
+                if (!moveMode && !editMode && !selectMode && !working
+                        && inBlankListArea(ev.getRawX(), ev.getRawY())) {
+                    scrubDownX = ev.getRawX();
+                    scrubDownY = ev.getRawY();
+                    scrubAnchorX = ev.getRawX();
+                    getWindow().getDecorView().postDelayed(scrubArmRunnable,
+                            android.view.ViewConfiguration.getLongPressTimeout());
+                }
+                return false;
+            case android.view.MotionEvent.ACTION_MOVE:
+                if (!scrubArmed) {
+                    // 还没长按到位就移动了：交回原来的滚动 / 滑动手势
+                    float dx0 = ev.getRawX() - scrubDownX;
+                    float dy0 = ev.getRawY() - scrubDownY;
+                    if (Math.abs(dx0) > Ui.dp(this, 12) || Math.abs(dy0) > Ui.dp(this, 12)) {
+                        cancelBlankScrub();
+                    }
+                    return false;
+                }
+                // 长按已到位：左右位移每满一格就切一个标签，可连续翻多个
+                float step = Ui.dp(this, 36);
+                float dx = ev.getRawX() - scrubAnchorX;
+                int guard = 0;
+                while (dx >= step && guard++ < 8) {
+                    scrubSwitchTab(-1);
+                    scrubAnchorX += step;
+                    dx -= step;
+                }
+                guard = 0;
+                while (dx <= -step && guard++ < 8) {
+                    scrubSwitchTab(1);
+                    scrubAnchorX -= step;
+                    dx += step;
+                }
+                return true;
+            case android.view.MotionEvent.ACTION_UP:
+            case android.view.MotionEvent.ACTION_CANCEL:
+                boolean armed = scrubArmed;
+                cancelBlankScrub();
+                return armed;
+            default:
+                return false;
+        }
+    }
+
+    private void cancelBlankScrub() {
+        scrubArmed = false;
+        getWindow().getDecorView().removeCallbacks(scrubArmRunnable);
+    }
+
+    /** 手势起点是否落在列表的空白处（没压到图标格子）。 */
+    private boolean inBlankListArea(float rawX, float rawY) {
+        if (grid == null || grid.getVisibility() != View.VISIBLE) {
+            return false;
+        }
+        int[] loc = new int[2];
+        grid.getLocationOnScreen(loc);
+        float x = rawX - loc[0];
+        float y = rawY - loc[1];
+        if (x < 0 || y < 0 || x >= grid.getWidth() || y >= grid.getHeight()) {
+            return false;
+        }
+        return grid.findChildViewUnder(x, y) == null;
+    }
+
+    /** 长按手势切标签：在可见标签里循环前后翻，首尾相接。 */
+    private void scrubSwitchTab(int dir) {
+        if (tabAnimating || working) {
+            return;
+        }
+        List<Tab> visible = new ArrayList<>();
+        for (Tab t : tabs) {
+            if (t.visible) {
+                visible.add(t);
+            }
+        }
+        if (visible.size() < 2) {
+            return;
+        }
+        int idx = 0;
+        for (int i = 0; i < visible.size(); i++) {
+            if (visible.get(i).id.equals(currentTabId)) {
+                idx = i;
+                break;
+            }
+        }
+        int next = (idx + dir + visible.size()) % visible.size();
+        selectTab(visible.get(next).id);
     }
 
     /** 跟手拖动：有相邻标签时列表按手指位移移动，边缘只剩 1/4 位移做阻尼。 */
@@ -2027,6 +2149,8 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        // 长按翻标签的计时器在离开页面时清掉
+        cancelBlankScrub();
         // 离开页面就把状态栏图标恢复成跟随深浅色，不残留过渡时的强制白色
         if (panelMode) {
             restoreStatusBarIcons();
@@ -6033,6 +6157,17 @@ public class FreezeListActivity extends BaseActivity {
             prefs().edit().putBoolean(lk(KEY_TAB_SWIPE), on).apply();
         });
 
+        // 长按空白处左右滑翻标签时的振动：直接走 Vibrator，不受系统触感开关限制
+        CheckBox scrubVibBox = new CheckBox(this);
+        scrubVibBox.setText("长按滑动震动反馈");
+        scrubVibBox.setTextSize(12);
+        scrubVibBox.setMinimumHeight(Ui.dp(this, 32));
+        scrubVibBox.setChecked(scrubVibrate);
+        scrubVibBox.setOnCheckedChangeListener((b, on) -> {
+            scrubVibrate = on;
+            prefs().edit().putBoolean(KEY_SCRUB_VIBRATE, on).apply();
+        });
+
         LinearLayout tabList = new LinearLayout(this);
         tabList.setOrientation(LinearLayout.VERTICAL);
 
@@ -6193,6 +6328,7 @@ public class FreezeListActivity extends BaseActivity {
             box.addView(dismissBox);
         }
         box.addView(swipeBox);
+        box.addView(scrubVibBox);
         if (hideRowBox != null) {
             box.addView(hideRowBox);
         }
