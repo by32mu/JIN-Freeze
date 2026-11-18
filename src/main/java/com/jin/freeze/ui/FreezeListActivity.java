@@ -7394,7 +7394,7 @@ public class FreezeListActivity extends BaseActivity {
         edgeRightBox.addView(edgeRightBar);
 
         CheckBox edgeBox = new CheckBox(this);
-        edgeBox.setText("屏幕边缘触发上下滑动手势");
+        edgeBox.setText("屏幕边缘触发上下手势");
         edgeBox.setTextSize(12);
         edgeBox.setMinimumHeight(Ui.dp(this, 32));
         edgeBox.setChecked(gestureEdgeOnly);
