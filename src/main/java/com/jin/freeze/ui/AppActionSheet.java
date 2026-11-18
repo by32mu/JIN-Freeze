@@ -194,8 +194,116 @@ public final class AppActionSheet {
         sheet.getBehavior().setState(BottomSheetBehavior.STATE_EXPANDED);
         // show 之后 BottomSheet 还会再套一层，用 onShow 再兜一次底，确保容器不留方角白底
         sheet.setOnShowListener(d -> makeSheetTransparent(sheet));
+
+        // 选项框位置：半屏/全屏分别记忆，空白处按住拖动整块平移
+        final android.content.SharedPreferences sp =
+                c.getSharedPreferences("freeze_list", Context.MODE_PRIVATE);
+        final boolean fullMode = wallpaperMode == WallpaperSource.MODE_FULL;
+        final String dxKey = fullMode ? "sheet_dx_full" : "sheet_dx_panel";
+        final String dyKey = fullMode ? "sheet_dy_full" : "sheet_dy_panel";
+        final float savedDx = sp.getFloat(dxKey, 0f);
+        final float savedDy = sp.getFloat(dyKey, 0f);
+        final View[] dragTarget = new View[]{null};
+        sheet.getBehavior().addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
+            @Override
+            public void onStateChanged(View bottomSheet, int newState) {
+                if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                    dragTarget[0] = bottomSheet;
+                    bottomSheet.setTranslationX(savedDx);
+                    bottomSheet.setTranslationY(savedDy);
+                }
+            }
+
+            @Override
+            public void onSlide(View bottomSheet, float slideOffset) {
+            }
+        });
+        // 标题行、卡片内边距、左右留白都算空白区
+        attachSheetDrag(c, header, dragTarget, sp, dxKey, dyKey);
+        attachSheetDrag(c, content, dragTarget, sp, dxKey, dyKey);
+        attachSheetDrag(c, outer, dragTarget, sp, dxKey, dyKey);
+
         sheet.show();
         makeSheetTransparent(sheet);
+
+        // show 之后 BottomSheetBehavior 可能已经是 EXPANDED，不会再回调一次，
+        // 这里主动拿到底板并落位，否则拖动时 target 一直为空、怎么拖都没反应
+        final View sheetBody = sheet.findViewById(
+                com.google.android.material.R.id.design_bottom_sheet);
+        if (sheetBody != null) {
+            dragTarget[0] = sheetBody;
+            sheetBody.setTranslationX(savedDx);
+            sheetBody.setTranslationY(savedDy);
+            // 入场动画结束时会重置 translationY，动画后再落一次记忆位置
+            sheetBody.postDelayed(() -> {
+                sheetBody.setTranslationX(sp.getFloat(dxKey, 0f));
+                sheetBody.setTranslationY(sp.getFloat(dyKey, 0f));
+            }, 350);
+        }
+    }
+
+    /** 空白区域拖动：整块平移选项框，起手震动与长按图标一致，松手记住当前位置。 */
+    private static void attachSheetDrag(Context c, View v, final View[] target,
+                                        final android.content.SharedPreferences sp,
+                                        final String dxKey, final String dyKey) {
+        final int slop = android.view.ViewConfiguration.get(c).getScaledTouchSlop();
+        final float[] down = new float[2];
+        final float[] start = new float[2];
+        final boolean[] moved = new boolean[]{false};
+        v.setOnTouchListener((view, ev) -> {
+            switch (ev.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    if (target[0] == null) {
+                        return false;
+                    }
+                    down[0] = ev.getRawX();
+                    down[1] = ev.getRawY();
+                    start[0] = target[0].getTranslationX();
+                    start[1] = target[0].getTranslationY();
+                    moved[0] = false;
+                    android.view.ViewParent p = view.getParent();
+                    if (p != null) {
+                        p.requestDisallowInterceptTouchEvent(true);
+                    }
+                    return true;
+                case android.view.MotionEvent.ACTION_MOVE: {
+                    float dx = ev.getRawX() - down[0];
+                    float dy = ev.getRawY() - down[1];
+                    if (!moved[0]) {
+                        if (Math.hypot(dx, dy) < slop) {
+                            return true;
+                        }
+                        moved[0] = true;
+                        // 与长按图标一致的震动
+                        view.performHapticFeedback(
+                                android.view.HapticFeedbackConstants.LONG_PRESS,
+                                android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                    }
+                    int sw = c.getResources().getDisplayMetrics().widthPixels;
+                    int sh = c.getResources().getDisplayMetrics().heightPixels;
+                    View t = target[0];
+                    if (t != null) {
+                        // 限制在屏幕内，避免拖出屏外找不回来
+                        t.setTranslationX(Math.max(-sw * 0.3f, Math.min(sw * 0.3f, start[0] + dx)));
+                        t.setTranslationY(Math.max(-sh * 0.45f, Math.min(sh * 0.1f, start[1] + dy)));
+                    }
+                    return true;
+                }
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    if (moved[0] && target[0] != null) {
+                        sp.edit().putFloat(dxKey, target[0].getTranslationX())
+                                .putFloat(dyKey, target[0].getTranslationY()).apply();
+                    }
+                    android.view.ViewParent up = view.getParent();
+                    if (up != null) {
+                        up.requestDisallowInterceptTouchEvent(false);
+                    }
+                    return true;
+                default:
+                    return false;
+            }
+        });
     }
 
     /** 把 BottomSheet 的窗口、decor、底板全部清成透明，圆角只由内部卡片负责。 */

@@ -1330,7 +1330,8 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     private void pinToHome(App a) {
-        ShortcutPin.pin(this, a.pkg, a.label, a.icon);
+        // 实例键：分身和主应用各占一个快捷方式 ID
+        ShortcutPin.pin(this, instanceKey(a.pkg, a.userId), a.label, a.icon);
     }
 
     private void bindCell(App a, Cell cell) {

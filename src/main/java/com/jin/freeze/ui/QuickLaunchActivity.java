@@ -63,11 +63,35 @@ public class QuickLaunchActivity extends Activity {
         finishWith(t);
     }
 
-    /** 照搬 Hail 的 launchApp：冻结先解冻，再用系统启动入口拉起。 */
-    private void launchApp(String pkg) {
+    /** 纯包名：兼容快捷方式里的「pkg@999」分身实例键。 */
+    private static String packagePart(String key) {
+        int at = key == null ? -1 : key.lastIndexOf('@');
+        return at > 0 ? key.substring(0, at) : key;
+    }
+
+    /** 实例用户号：主用户 0，双开/分身是 999 等。 */
+    private static int userIdPart(String key) {
+        int at = key == null ? -1 : key.lastIndexOf('@');
+        if (at >= 0) {
+            try {
+                return Integer.parseInt(key.substring(at + 1).trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 0;
+    }
+
+    /** 照搬 Hail 的 launchApp：冻结先解冻，再用系统启动入口拉起；分身按自己的用户启动。 */
+    private void launchApp(String key) {
+        final String pkg = packagePart(key);
+        final int userId = userIdPart(key);
         if (pkg == null || !pkg.matches("[A-Za-z0-9._]+")) {
             Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
             finish();
+            return;
+        }
+        if (userId != 0) {
+            launchCloneApp(pkg, userId);
             return;
         }
         new Thread(() -> {
@@ -90,6 +114,42 @@ public class QuickLaunchActivity extends Activity {
                 finish();
             });
         }, "jin-launch-app").start();
+    }
+
+    /** 分身快捷方式：在它自己的用户空间撤销暂停/启用，再用 am start --user 拉起。 */
+    private void launchCloneApp(String pkg, int userId) {
+        new Thread(() -> {
+            // 分身必须借 root / Shizuku 才能跨用户启动，没授权时给出明确提示而不是静默退出
+            if (!PrivShell.available()) {
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "打开分身需要 Root 或 Shizuku 权限，请先打开凚完成授权",
+                            Toast.LENGTH_LONG).show();
+                    finish();
+                });
+                return;
+            }
+            PrivShell.exec("pm unsuspend --user " + userId + " " + pkg
+                    + "; pm enable --user " + userId + " " + pkg, 30);
+            Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
+            if (launch == null || launch.getComponent() == null) {
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+                return;
+            }
+            PrivShell.Result start = PrivShell.exec("am start --user " + userId + " -n "
+                    + launch.getComponent().flattenToShortString(), 15);
+            boolean failed = start == null || start.timeout
+                    || (start.out != null && start.out.contains("Error"));
+            runOnUiThread(() -> {
+                if (failed) {
+                    Toast.makeText(this, "分身启动失败，请确认凚的 Root / Shizuku 权限已授权",
+                            Toast.LENGTH_LONG).show();
+                }
+                finish();
+            });
+        }, "jin-launch-clone").start();
     }
 
     private void finishWith(LaunchTarget.Target t) {

@@ -58,9 +58,30 @@ public final class ShortcutPin {
     private ShortcutPin() {
     }
 
-    /** 单个快捷方式（长按菜单 / 应用页）：直接请求，桌面弹一次确认框。 */
-    public static void pin(android.app.Activity a, String pkg, CharSequence name, Drawable icon) {
-        request(a, pkg, name, icon, null);
+    /** 纯包名：兼容「pkg@999」的分身实例键。 */
+    private static String packagePart(String key) {
+        int at = key == null ? -1 : key.lastIndexOf('@');
+        return at > 0 ? key.substring(0, at) : key;
+    }
+
+    /** 实例用户号：主用户 0，双开/分身是 999 等。 */
+    private static int userIdPart(String key) {
+        int at = key == null ? -1 : key.lastIndexOf('@');
+        if (at >= 0) {
+            try {
+                return Integer.parseInt(key.substring(at + 1).trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * 单个快捷方式（长按菜单 / 应用页）：直接请求，桌面弹一次确认框。
+     * key 可以是「pkg」也可以是「pkg@999」，分身会拿到独立的快捷方式 ID。
+     */
+    public static void pin(android.app.Activity a, String key, CharSequence name, Drawable icon) {
+        request(a, key, name, icon, null);
     }
 
     /**
@@ -77,17 +98,17 @@ public final class ShortcutPin {
         QUEUE.clear();
         Set<String> pinned = pinnedPackages(c);
         PackageManager pm = c.getPackageManager();
-        for (String pkg : pkgs) {
-            if (pkg == null || pkg.isEmpty() || pinned.contains(pkg)) {
+        for (String key : pkgs) {
+            if (key == null || key.isEmpty() || pinned.contains(key)) {
                 continue;
             }
             try {
-                pm.getApplicationInfo(pkg, PackageManager.MATCH_DISABLED_COMPONENTS);
+                pm.getApplicationInfo(packagePart(key), PackageManager.MATCH_DISABLED_COMPONENTS);
             } catch (Exception e) {
                 continue;
             }
-            if (!QUEUE.contains(pkg)) {
-                QUEUE.add(pkg);
+            if (!QUEUE.contains(key)) {
+                QUEUE.add(key);
             }
         }
         // 用 Application Context 当宿主：恢复全部时页面会 recreate，队列不能跟着中断
@@ -119,9 +140,9 @@ public final class ShortcutPin {
             }
             return;
         }
-        String pkg = QUEUE.poll();
-        currentToken = pkg;
-        request(c, pkg, null, null, pkg);
+        String key = QUEUE.poll();
+        currentToken = key;
+        request(c, key, null, null, key);
         // 桌面没回结果（部分 ROM 不回调）时按超时继续
         MAIN.postDelayed(() -> {
             if (gen == generation) {
@@ -134,9 +155,16 @@ public final class ShortcutPin {
      * 发起一次固定请求。
      * @param token 非空表示批量队列里的一个：带上回调，桌面确认/拒绝后继续下一个
      */
-    private static void request(Context ctx, String pkg, CharSequence name, Drawable icon,
+    private static void request(Context ctx, String key, CharSequence name, Drawable icon,
                                 String token) {
-        Intent intent = new Intent(ACTION_LAUNCH).putExtra(KEY_PACKAGE, pkg);
+        final String pkg = packagePart(key);
+        final int userId = userIdPart(key);
+        // 快捷方式 ID 用只含字母数字下划线的形式区分主应用和分身，
+        // 避免「已固定主应用后，分身因 ID 冲突无法再添加」
+        final String shortcutId = userId == 0 ? pkg : pkg + "_u" + userId;
+        // 携带的实例键仍用 pkg@用户号，交给 QuickLaunchActivity 解析
+        final String launchKey = userId == 0 ? pkg : pkg + "@" + userId;
+        Intent intent = new Intent(ACTION_LAUNCH).putExtra(KEY_PACKAGE, launchKey);
         Bitmap bmp = appIcon(ctx, pkg, icon);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (!ShortcutManagerCompat.isRequestPinShortcutSupported(ctx)) {
@@ -148,7 +176,7 @@ public final class ShortcutPin {
                     ? IconCompat.createWithBitmap(bmp)
                     : IconCompat.createWithResource(ctx, R.drawable.ic_launcher);
             CharSequence label = name == null || name.length() == 0 ? appLabel(ctx, pkg) : name;
-            ShortcutInfoCompat info = new ShortcutInfoCompat.Builder(ctx, pkg)
+            ShortcutInfoCompat info = new ShortcutInfoCompat.Builder(ctx, shortcutId)
                     .setIcon(iconCompat)
                     .setShortLabel(label)
                     .setIntent(intent)
@@ -200,6 +228,14 @@ public final class ShortcutPin {
                 }
                 if (pkg == null || pkg.isEmpty()) {
                     pkg = si.getId();
+                    // 分身快捷方式 ID 是 pkg_u999，转回实例键 pkg@999 再比较
+                    int u = pkg.lastIndexOf("_u");
+                    if (u > 0) {
+                        String tail = pkg.substring(u + 2);
+                        if (tail.matches("\\d+")) {
+                            pkg = pkg.substring(0, u) + "@" + tail;
+                        }
+                    }
                 }
                 if (pkg != null && !pkg.isEmpty()) {
                     out.add(pkg);

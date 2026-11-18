@@ -5,6 +5,7 @@ import android.content.Context;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -41,7 +42,7 @@ public final class TabSortDialog {
     private TabSortDialog() {
     }
 
-    public static void show(Context c, List<Tab> tabs, OnDone onDone) {
+    public static void show(Context c, List<Tab> tabs, OnDone onDone, int xOffsetPx) {
         final Dialog dialog = new Dialog(c);
         final List<Tab> order = new ArrayList<>(tabs);
 
@@ -125,10 +126,15 @@ public final class TabSortDialog {
         dialog.show();
         Ui.roundDialog(dialog, root, 18);
         if (dialog.getWindow() != null) {
-            int width = Math.min(c.getResources().getDisplayMetrics().widthPixels - Ui.dp(c, 96),
-                    Ui.dp(c, 300));
+            // 与「设置」面板等宽：屏宽减 104dp、上限 304dp
+            int width = Math.min(c.getResources().getDisplayMetrics().widthPixels - Ui.dp(c, 104),
+                    Ui.dp(c, 304));
             dialog.getWindow().setLayout(Math.max(width, Ui.dp(c, 220)),
                     ViewGroup.LayoutParams.WRAP_CONTENT);
+            // 跟随设置面板的拖动偏移，保证左边缘对齐
+            android.view.WindowManager.LayoutParams lp = dialog.getWindow().getAttributes();
+            lp.x = xOffsetPx;
+            dialog.getWindow().setAttributes(lp);
         }
     }
 
@@ -154,9 +160,12 @@ public final class TabSortDialog {
             row.addView(name, new LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            TextView handle = Ui.text(c, "≡", 16, Ui.TEXT_SECONDARY, false);
-            handle.setPadding(Ui.dp(c, 8), 0, 0, 0);
-            row.addView(handle);
+            ImageView handle = new ImageView(c);
+            handle.setImageResource(R.drawable.ic_drag_handle);
+            LinearLayout.LayoutParams handleLp =
+                    new LinearLayout.LayoutParams(Ui.dp(c, 20), Ui.dp(c, 16));
+            handleLp.leftMargin = Ui.dp(c, 8);
+            row.addView(handle, handleLp);
 
             row.setLayoutParams(new RecyclerView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 42)));

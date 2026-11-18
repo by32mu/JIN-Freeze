@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="blue">#4E7CF6</color>
+    <!-- 删除等破坏性操作 -->
+    <color name="danger">#E5484D</color>
+    <!-- 恢复等正向操作 -->
+    <color name="success">#2FA36B</color>
     <color name="blue_dark">#2F5AD8</color>
     <color name="blue_light">#5B8DEF</color>
     <color name="page_bg">#F4F6FA</color>
