@@ -525,6 +525,9 @@ public class FreezeListActivity extends BaseActivity {
     private boolean scrubArmed;
     private float scrubDownX;
     private float scrubDownY;
+    /** 长按到位后的第一段位移方向是否已判定 / 是否允许切形态：第一下不是对应方向就整段手势都不切。 */
+    private boolean scrubDirDecided;
+    private boolean scrubSwitchAllowed;
     /** 已消耗位移的锚点：每翻一格就前移一格的距离，余量留给下一次。 */
     private float scrubAnchorX;
     private android.view.VelocityTracker scrubVelocity;
@@ -2041,13 +2044,23 @@ public class FreezeListActivity extends BaseActivity {
      * 所以慢慢拖一格一格走，快速划过则连续翻过多格。
      */
     private void scrubByFinger(android.view.MotionEvent ev) {
-        // 长按空白后上下滑切换形态：半屏只认上滑（进全屏），全屏只认下滑（回半屏）。
-        // 触发距离放大到 90dp，且要求纵向位移明显大于横向（2 倍以上），
-        // 避免左右滑翻标签时手指带一点上下就误切成另一种形态。
         float dy = ev.getRawY() - scrubDownY;
-        float dxDown = Math.abs(ev.getRawX() - scrubDownX);
+        float dxDown = ev.getRawX() - scrubDownX;
+        // 长按到位后的第一段位移方向定生死：半屏第一下必须向上、全屏必须向下，
+        // 否则这次手势只按左右滑处理，后面再上下滑也不切形态，避免来回误触。
+        if (!scrubDirDecided) {
+            float dist = (float) Math.hypot(dxDown, dy);
+            if (dist > Ui.dp(this, 8)) {
+                scrubDirDecided = true;
+                scrubSwitchAllowed = Math.abs(dy) > Math.abs(dxDown)
+                        && (panelMode ? dy < 0 : dy > 0);
+            }
+        }
+        // 距离阈值 90dp，且纵向位移明显大于横向
         int switchSlop = Ui.dp(this, 90);
-        if (Math.abs(dy) > switchSlop && Math.abs(dy) > dxDown * 2f) {
+        if (scrubSwitchAllowed
+                && Math.abs(dy) > switchSlop
+                && Math.abs(dy) > Math.abs(dxDown) * 2f) {
             if (panelMode && dy < 0) {
                 cancelBlankScrub();
                 switchForm(true);
@@ -2083,6 +2096,8 @@ public class FreezeListActivity extends BaseActivity {
 
     private void cancelBlankScrub() {
         scrubArmed = false;
+        scrubDirDecided = false;
+        scrubSwitchAllowed = false;
         if (scrubVelocity != null) {
             scrubVelocity.recycle();
             scrubVelocity = null;
