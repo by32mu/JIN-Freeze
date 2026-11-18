@@ -103,16 +103,38 @@ public class FreezeListActivity extends BaseActivity {
         return userId == 0 ? pkg : instanceKey(pkg, userId);
     }
 
+    /**
+     * 取纯包名：兼容本应用的「pkg@10」写法，以及系统/其他工具常见的
+     * 「com.android.settings (10)」写法（用户号放在包名后的括号里）。
+     */
     private static String packagePart(String key) {
         int at = key.lastIndexOf('@');
-        return at > 0 ? key.substring(0, at) : key;
+        if (at > 0) {
+            return key.substring(0, at);
+        }
+        return key.replaceFirst("\\s*\\(\\s*\\d+\\s*\\)$", "").trim();
     }
 
+    /** 取用户号：同时兼容「pkg@10」与「pkg (10)」。 */
     private static int userIdPart(String key) {
         int at = key.lastIndexOf('@');
-        if (at < 0) return 0;
-        try { return Integer.parseInt(key.substring(at + 1)); }
-        catch (NumberFormatException ignored) { return 0; }
+        if (at >= 0) {
+            try {
+                return Integer.parseInt(key.substring(at + 1).trim());
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\(\\s*(\\d+)\\s*\\)\\s*$").matcher(key);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
     }
     private static final String KEY_ORDER = "order";
     private static final String KEY_CUSTOM = "custom_order";
@@ -154,6 +176,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_TAB_SWIPE = "tab_swipe";
     /** 隐藏标签文字：只收起标签名那一排，列表仍显示当前勾选的标签；仅勾选数为 1 时可用。 */
     private static final String KEY_HIDE_TAB_ROW = "hide_tab_row";
+    /** 全屏系统应用页的提示是否已被「不再提醒」关掉。 */
+    private static final String KEY_SYS_HINT_HIDDEN = "hide_sys_hint";
     /** 半屏浮层高度：拖把手松手后落盘，与布局设置那套参数互不影响。 */
     private static final String KEY_PANEL_HEIGHT = "panel_height_dp";
     /** 布局设置弹窗的拖动偏移（相对默认位置），与半屏高度分开存。 */
@@ -365,6 +389,8 @@ public class FreezeListActivity extends BaseActivity {
     private EditText search;
     private LinearLayout tabBar;
     private TextView sysHint;
+    /** 全屏系统应用页的提示行（提示文字 + 不再提醒），隐藏时整行收起。 */
+    private View sysHintRow;
     /** 空态：名单为空时显示在面板中部（添加应用）。 */
     private View emptyState;
     private boolean loadedOnce;
@@ -610,6 +636,14 @@ public class FreezeListActivity extends BaseActivity {
         search = findViewById(R.id.search);
         tabBar = findViewById(R.id.tab_bar);
         sysHint = findViewById(R.id.sys_hint);
+        sysHintRow = findViewById(R.id.sys_hint_row);
+        View sysHintDismiss = findViewById(R.id.sys_hint_dismiss);
+        if (sysHintDismiss != null) {
+            sysHintDismiss.setOnClickListener(v -> {
+                prefs().edit().putBoolean(KEY_SYS_HINT_HIDDEN, true).apply();
+                setSysHintVisible();
+            });
+        }
 
         if (editBtn != null) {
             editBtn.setOnClickListener(v -> setEditMode(!editMode));
@@ -1756,9 +1790,12 @@ public class FreezeListActivity extends BaseActivity {
     /** 半屏浮层底栏的设置图标直接进布局设置；备份/恢复收进布局弹窗底部，避免功能丢失。 */
 
     private void setSysHintVisible() {
-        if (sysHint != null) {
-            sysHint.setVisibility(TAB_SYSTEM.equals(currentTabId) ? View.VISIBLE : View.GONE);
+        if (sysHintRow == null) {
+            return;
         }
+        boolean show = TAB_SYSTEM.equals(currentTabId)
+                && !prefs().getBoolean(KEY_SYS_HINT_HIDDEN, false);
+        sysHintRow.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     /**
@@ -2362,6 +2399,7 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         boolean firstPanelTab = true;
+        View onView = null;
         for (Tab t : tabs) {
             if (!t.visible) {
                 continue;
@@ -2401,6 +2439,9 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 firstPanelTab = false;
                 tabBar.addView(item, lp);
+                if (on) {
+                    onView = item;
+                }
                 continue;
             }
             TextView chip = new TextView(this);
@@ -2419,8 +2460,27 @@ public class FreezeListActivity extends BaseActivity {
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.rightMargin = Ui.dp(this, 6);
             tabBar.addView(chip, lp);
+            if (on) {
+                onView = chip;
+            }
         }
+        scrollTabIntoView(onView);
         reapplyFullscreenSurfaces();
+    }
+
+    /** 选中标签变化后把对应项滚进可视区：标签多到超出屏幕宽度时也能看到当前项。 */
+    private void scrollTabIntoView(View item) {
+        if (item == null || tabBar == null) {
+            return;
+        }
+        if (!(tabBar.getParent() instanceof HorizontalScrollView)) {
+            return;
+        }
+        final HorizontalScrollView hsv = (HorizontalScrollView) tabBar.getParent();
+        hsv.post(() -> {
+            int target = item.getLeft() - (hsv.getWidth() - item.getWidth()) / 2;
+            hsv.smoothScrollTo(Math.max(0, target), 0);
+        });
     }
 
     private void selectTab(String id) {
@@ -2745,9 +2805,6 @@ public class FreezeListActivity extends BaseActivity {
             } catch (Exception e) {
                 it.label = pkg;
             }
-            if (userId != 0) {
-                it.label += "（双开）";
-            }
             map.put(key, it);
         }
         List<Item> list = new ArrayList<>();
@@ -2830,9 +2887,6 @@ public class FreezeListActivity extends BaseActivity {
                     Set<String> cloneTruth = cloneDisabled.get(userId);
                     it.frozen = cloneTruth != null ? cloneTruth.contains(pkg)
                             : (ai != null && !ai.enabled);
-                }
-                if (userId != 0) {
-                    it.label += "（双开）";
                 }
                 kept.add(key);
                 map.put(key, it);

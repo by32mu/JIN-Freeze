@@ -284,21 +284,38 @@ public class AppFreezeActivity extends BaseActivity {
         return packagePart(stored).equals(pkg) && parseUserId(stored) == userId;
     }
 
+    /** 取用户号：同时兼容「pkg@10」与「pkg (10)」两种分身写法。 */
     private static int parseUserId(String key) {
         int at = key.lastIndexOf('@');
-        if (at < 0) {
-            return 0;
+        if (at >= 0) {
+            try {
+                return Integer.parseInt(key.substring(at + 1).trim());
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
         }
-        try {
-            return Integer.parseInt(key.substring(at + 1));
-        } catch (NumberFormatException ignored) {
-            return 0;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\(\\s*(\\d+)\\s*\\)\\s*$").matcher(key);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
         }
+        return 0;
     }
 
+    /**
+     * 取纯包名：兼容本应用的「pkg@10」写法，以及系统/其他工具常见的
+     * 「com.android.settings (10)」写法（用户号放在包名后的括号里）。
+     */
     private static String packagePart(String key) {
         int at = key.lastIndexOf('@');
-        return at > 0 ? key.substring(0, at) : key;
+        if (at > 0) {
+            return key.substring(0, at);
+        }
+        return key.replaceFirst("\\s*\\(\\s*\\d+\\s*\\)$", "").trim();
     }
 
     private List<Integer> discoverUsers() {
@@ -329,7 +346,12 @@ public class AppFreezeActivity extends BaseActivity {
         for (String line : r.out.split("\\n")) {
             String t = line.trim();
             if (t.startsWith("package:")) {
-                packages.add(t.substring("package:".length()).trim());
+                String pkg = t.substring("package:".length()).trim();
+                // 系统/部分工作空间会把用户号拼在包名后（如 com.android.settings (10)），还原成真实包名
+                pkg = pkg.replaceFirst("\\s*\\(\\s*\\d+\\s*\\)$", "").trim();
+                if (!pkg.isEmpty()) {
+                    packages.add(pkg);
+                }
             }
         }
         return packages;
@@ -371,11 +393,26 @@ public class AppFreezeActivity extends BaseActivity {
                 List<PackageInfo> installed = userId == 0
                         ? pm.getInstalledPackages(0) : new ArrayList<>();
                 if (userId != 0) {
+                    Set<String> dis = userDisabled.get(userId);
                     for (String pkg : packages) {
+                        PackageInfo pi = null;
                         try {
-                            installed.add(pm.getPackageInfo(pkg, 0));
+                            pi = pm.getPackageInfo(pkg, 0);
                         } catch (Exception ignored) {
                         }
+                        if (pi != null) {
+                            installed.add(pi);
+                            continue;
+                        }
+                        // 只装在分身/工作空间里的应用：主用户的 PackageManager 查不到详情，
+                        // 仍按包名录出来（名称暂用包名），保证能冻结/解冻。
+                        App a = new App();
+                        a.label = pkg;
+                        a.pkg = pkg;
+                        a.userId = userId;
+                        a.system = false;
+                        a.frozen = dis != null && dis.contains(pkg);
+                        apps.add(a);
                     }
                 }
                 for (PackageInfo pi : installed) {
@@ -387,9 +424,7 @@ public class AppFreezeActivity extends BaseActivity {
                     a.label = pm.getApplicationLabel(ai).toString();
                     a.pkg = pi.packageName;
                     a.userId = userId;
-                    if (userId != 0) {
-                        a.label += "（双开）";
-                    }
+                    // 分身标识只拼在包名后面显示（com.foo (10)），应用名称保持原样
                     a.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
                             | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
                     String key = instanceKey(a.pkg, userId);
@@ -678,9 +713,11 @@ public class AppFreezeActivity extends BaseActivity {
         texts.addView(name, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // 添加应用（选择模式）的列表形态：名称下方补一行包名，便于区分同名或名称被截断的应用
+        // 添加应用（选择模式）的列表形态：名称下方补一行包名，便于区分同名或名称被截断的应用；
+        // 分身把用户号拼在包名后面（与系统应用列表一致），应用名称本身不加后缀
         if (pickMode) {
-            TextView pkg = Ui.text(this, a.pkg, 11, Ui.TEXT_SECONDARY, false);
+            String pkgText = a.userId == 0 ? a.pkg : a.pkg + " (" + a.userId + ")";
+            TextView pkg = Ui.text(this, pkgText, 11, Ui.TEXT_SECONDARY, false);
             pkg.setSingleLine(true);
             pkg.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
             LinearLayout.LayoutParams pkgLp = new LinearLayout.LayoutParams(
@@ -899,10 +936,23 @@ public class AppFreezeActivity extends BaseActivity {
             names.add("用户应用");
             ids.add("system");
             names.add("系统应用");
+        } else {
+            // 内置标签必须始终可选：旧数据里只存了自定义标签时，补上「用户应用 / 系统应用」，
+            // 否则非系统应用会被一直挡在系统应用标签之外。
+            if (!ids.contains("user")) {
+                ids.add(0, "user");
+                names.add(0, "用户应用");
+            }
+            if (!ids.contains("system")) {
+                int at = Math.min(1, ids.size());
+                ids.add(at, "system");
+                names.add(at, "系统应用");
+            }
         }
         String cur = "";
         try {
-            cur = new JSONObject(fp.getString("app_tabs", "{}")).optString(a.pkg, "");
+            cur = new JSONObject(fp.getString("app_tabs", "{}"))
+                    .optString(storageKey(a.pkg, a.userId), "");
         } catch (Exception ignored) {
         }
         List<String> targetIds = new ArrayList<>();
