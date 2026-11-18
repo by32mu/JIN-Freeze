@@ -156,7 +156,7 @@ public class FreezeListActivity extends BaseActivity {
     /** 长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的触发距离（dp）。 */
     private static final String KEY_GESTURE_UP = "gesture_up_dp";
     private static final String KEY_GESTURE_DOWN = "gesture_down_dp";
-    private static final int GESTURE_DP_DEFAULT = 42;
+    private static final int GESTURE_DP_DEFAULT = 88;
     private static final int GESTURE_DP_MAX = 520;
     /** 半屏专属：勾选后每个图标右上角常驻红色减号，点它即把该应用移出名单。 */
     private static final String KEY_PANEL_QUICK_REMOVE = "panel_quick_remove";
