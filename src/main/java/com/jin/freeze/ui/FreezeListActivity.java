@@ -8647,10 +8647,10 @@ public class FreezeListActivity extends BaseActivity {
         applySettingsAlignment(pick);
     }
 
-    /** 捐赠开发者：整图按屏幕宽度 65% 展示，圆角卡片承载，可保存到相册。 */
+    /** 捐赠开发者：收款码按屏幕宽度 50% 展示，圆角卡片承载；取消 / 保存都直接返回上一页。 */
     private void showDonateDialog() {
         int screenW = getResources().getDisplayMetrics().widthPixels;
-        final int imgW = Math.round(screenW * 0.65f);
+        final int imgW = Math.round(screenW * 0.50f);
         int cardPad = Ui.dp(this, 14);
 
         LinearLayout card = new LinearLayout(this);
@@ -8709,7 +8709,11 @@ public class FreezeListActivity extends BaseActivity {
                     android.graphics.Color.TRANSPARENT));
         }
         cancel.setOnClickListener(v -> d.dismiss());
-        save.setOnClickListener(v -> saveDonateImage());
+        // 保存：照常写相册，同时关掉弹窗回到上一页
+        save.setOnClickListener(v -> {
+            saveDonateImage();
+            d.dismiss();
+        });
         d.show();
         if (w != null) {
             android.view.WindowManager.LayoutParams lp = w.getAttributes();
