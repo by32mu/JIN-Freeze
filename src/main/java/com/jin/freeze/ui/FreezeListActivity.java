@@ -3284,6 +3284,51 @@ public class FreezeListActivity extends BaseActivity {
         ok.setOnClickListener(v -> d.dismiss());
     }
 
+    /** 手势功能标题点开的说明卡片：与「标签（点击看说明）」同一套尺寸，只有「知道了」一个按钮。 */
+    private void showGestureHintDialog() {
+        int padH = Ui.dp(this, 18);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 6));
+
+        TextView body = new TextView(this);
+        body.setText("打开手势后，长按冻结列表空白处，成功触发会有震动反馈；\n"
+                + "触发后，左右滑动切换标签页，上滑切换全屏，下滑切换半屏；\n"
+                + "触发距离的 dp 值越大，需要滑动的距离越长；\n"
+                + "屏幕边缘触发：从屏幕边缘到设定距离这段区域内，都可以触发手势。");
+        body.setTextSize(13);
+        body.setTextColor(getColor(R.color.text_primary));
+        card.addView(body, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView ok = new TextView(this);
+        ok.setText("知道了");
+        ok.setTextSize(13);
+        ok.setGravity(Gravity.CENTER);
+        ok.setMinHeight(Ui.dp(this, 44));
+        ok.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
+        ok.setTextColor(getColor(R.color.blue));
+        ok.setTypeface(null, android.graphics.Typeface.BOLD);
+        android.util.TypedValue tv = new android.util.TypedValue();
+        getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, tv, true);
+        ok.setBackgroundResource(tv.resourceId);
+        btnRow.addView(ok, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(btnRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setView(card)
+                .create();
+        d.show();
+        Ui.roundAlertDialog(d);
+        applySettingsAlignment(d);
+        ok.setOnClickListener(v -> d.dismiss());
+    }
+
     /** 删除自定义标签：其应用清掉归属映射，按 FLAG_SYSTEM 回到内置标签，不丢数据。 */
     private void confirmDeleteTab(Tab tab, Runnable done) {
         int count = 0;
@@ -7286,15 +7331,16 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(fabAlphaLabel);
         box.addView(fabAlphaBar);
 
-        // 手势触发距离：长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的触发距离，
-        // 两个滑块实时生效；整块最后插到「列表图标」上面
+        // 手势功能：标题可点开说明；下面是长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的
+        // 触发距离滑块，实时生效；整块最后插到「标签」上面
         LinearLayout gestureSec = new LinearLayout(this);
         gestureSec.setOrientation(LinearLayout.VERTICAL);
         TextView gestureTitle = new TextView(this);
-        gestureTitle.setText("手势触发距离");
+        gestureTitle.setText("手势功能（点击看说明）");
         gestureTitle.setTextSize(12);
         gestureTitle.setTextColor(getColor(R.color.text_primary));
         gestureTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
+        gestureTitle.setOnClickListener(v -> showGestureHintDialog());
 
         final TextView upLabel = new TextView(this);
         upLabel.setTextSize(11);
