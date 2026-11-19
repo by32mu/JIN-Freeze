@@ -288,6 +288,175 @@ public final class AppActionSheet {
         }
     }
 
+    /** 纯文字菜单项：iconRes 为 0 时不显示图标；trail 非空时在右侧显示状态（如「已开启」）。 */
+    public static final class TextItem {
+        final int iconRes;
+        final String text;
+        final String trail;
+        /** 状态为「关闭」时用次要色显示 trail，避免和已开启一样抢眼。 */
+        final boolean trailOff;
+        final Runnable action;
+
+        public TextItem(String text, String trail, Runnable action) {
+            this(0, text, trail, false, action);
+        }
+
+        public TextItem(int iconRes, String text, String trail, Runnable action) {
+            this(iconRes, text, trail, false, action);
+        }
+
+        public TextItem(int iconRes, String text, String trail, boolean trailOff, Runnable action) {
+            this.iconRes = iconRes;
+            this.text = text;
+            this.trail = trail;
+            this.trailOff = trailOff;
+            this.action = action;
+        }
+    }
+
+    /**
+     * 纯文字选项单：宽度、圆角、壁纸与背景透明度、拖动位置全部沿用长按图标那张选项框，
+     * 宿主形态（半屏 / 全屏）各自取自己的壁纸与透明度。
+     */
+    public static void showTextMenu(Context c, String title, int wallpaperMode,
+                                    int bgAlphaPct, java.util.List<TextItem> items) {
+        final BottomSheetDialog sheet = new BottomSheetDialog(c, R.style.Theme_Jin_Sheet);
+        final android.graphics.Bitmap wallpaper =
+                c.getSharedPreferences(WallpaperSource.PREF, Context.MODE_PRIVATE)
+                        .getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)
+                        ? WallpaperSource.sheetBitmap(c, wallpaperMode) : null;
+        final boolean onWallpaper = wallpaper != null;
+        final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
+        final int trailFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);
+        final int trailOffFg = onWallpaper ? 0xCCFFFFFF : Ui.TEXT_SECONDARY;
+        final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);
+        final int lineColor = onWallpaper ? 0x33FFFFFF : Ui.color(c, R.color.divider);
+
+        android.widget.FrameLayout outer = new android.widget.FrameLayout(c);
+        outer.setPadding(Ui.dp(c, 26), 0, Ui.dp(c, 26), Ui.dp(c, 2));
+
+        final int bgAlpha = Math.round(255f * Math.max(0, Math.min(100, bgAlphaPct)) / 100f);
+        LinearLayout content = new LinearLayout(c);
+        content.setOrientation(LinearLayout.VERTICAL);
+        Drawable cardBg;
+        if (onWallpaper) {
+            cardBg = new android.graphics.drawable.LayerDrawable(new Drawable[]{
+                    new WallpaperDrawable(wallpaper, 0),
+                    new android.graphics.drawable.ColorDrawable(0x66000000)});
+        } else {
+            cardBg = androidx.core.content.ContextCompat.getDrawable(c, R.drawable.bg_dialog).mutate();
+        }
+        cardBg.setAlpha(bgAlpha);
+        content.setBackground(cardBg);
+        final int radius = Ui.promptRadius(c);
+        content.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override
+            public void getOutline(View view, android.graphics.Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
+            }
+        });
+        content.setClipToOutline(true);
+        content.setPadding(0, Ui.dp(c, 2), 0, Ui.dp(c, 6));
+        outer.addView(content, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout header = new LinearLayout(c);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(Ui.dp(c, 15), Ui.dp(c, 12), Ui.dp(c, 15), Ui.dp(c, 8));
+        TextView headName = Ui.text(c, title, 14, fg, true);
+        headName.setSingleLine(true);
+        headName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        header.addView(headName, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        content.addView(header);
+        divider(c, content, 18, lineColor);
+
+        for (TextItem it : items) {
+            addTextItem(c, content, sheet, it.iconRes, it.text, it.trail, it.action,
+                    fg, iconFg, it.trailOff ? trailOffFg : trailFg);
+        }
+
+        ScrollView sv = new ScrollView(c);
+        sv.addView(outer);
+        sheet.setContentView(sv);
+        sheet.getBehavior().setState(BottomSheetBehavior.STATE_EXPANDED);
+        sheet.setOnShowListener(d -> makeSheetTransparent(sheet));
+
+        final android.content.SharedPreferences sp =
+                c.getSharedPreferences("freeze_list", Context.MODE_PRIVATE);
+        final boolean fullMode = wallpaperMode == WallpaperSource.MODE_FULL;
+        final String dxKey = fullMode ? "sheet_dx_full" : "sheet_dx_panel";
+        final String dyKey = fullMode ? "sheet_dy_full" : "sheet_dy_panel";
+        final float savedDx = sp.getFloat(dxKey, 0f);
+        final float savedDy = sp.getFloat(dyKey, 0f);
+        final View[] dragTarget = new View[]{null};
+        sheet.getBehavior().addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
+            @Override
+            public void onStateChanged(View bottomSheet, int newState) {
+                if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                    dragTarget[0] = bottomSheet;
+                    bottomSheet.setTranslationX(savedDx);
+                    bottomSheet.setTranslationY(savedDy);
+                }
+            }
+
+            @Override
+            public void onSlide(View bottomSheet, float slideOffset) {
+            }
+        });
+        attachSheetDrag(c, header, dragTarget, sp, dxKey, dyKey);
+        attachSheetDrag(c, content, dragTarget, sp, dxKey, dyKey);
+        attachSheetDrag(c, outer, dragTarget, sp, dxKey, dyKey);
+
+        sheet.show();
+        makeSheetTransparent(sheet);
+
+        final View sheetBody = sheet.findViewById(
+                com.google.android.material.R.id.design_bottom_sheet);
+        if (sheetBody != null) {
+            dragTarget[0] = sheetBody;
+            sheetBody.setTranslationX(savedDx);
+            sheetBody.setTranslationY(savedDy);
+            sheetBody.postDelayed(() -> {
+                sheetBody.setTranslationX(sp.getFloat(dxKey, 0f));
+                sheetBody.setTranslationY(sp.getFloat(dyKey, 0f));
+            }, 350);
+        }
+    }
+
+    private static void addTextItem(Context c, LinearLayout parent, final BottomSheetDialog sheet,
+                                    int iconRes, String text, String trail, final Runnable action,
+                                    int fg, int iconFg, int trailFg) {
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(Ui.dp(c, 14), 0, Ui.dp(c, 14), 0);
+        row.setBackgroundResource(R.drawable.bg_menu_item);
+        row.setClickable(true);
+        if (iconRes != 0) {
+            ImageView ic = new ImageView(c);
+            ic.setImageResource(iconRes);
+            ic.setImageTintList(ColorStateList.valueOf(iconFg));
+            row.addView(ic, new LinearLayout.LayoutParams(Ui.dp(c, 18), Ui.dp(c, 18)));
+        }
+        TextView label = Ui.text(c, text, 13, fg, false);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        if (iconRes != 0) {
+            lp.leftMargin = Ui.dp(c, 10);
+        }
+        row.addView(label, lp);
+        if (trail != null) {
+            row.addView(Ui.text(c, trail, 11, trailFg, false));
+        }
+        row.setOnClickListener(v -> {
+            sheet.dismiss();
+            action.run();
+        });
+        parent.addView(row, rowLp(c));
+    }
+
     /** 空白区域拖动：整块平移选项框，按下即震动（先震动、后允许移动），松手记住当前位置。 */
     private static void attachSheetDrag(Context c, View v, final View[] target,
                                         final android.content.SharedPreferences sp,

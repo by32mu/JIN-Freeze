@@ -43,7 +43,8 @@ public final class TabSortDialog {
     }
 
     public static void show(Context c, List<Tab> tabs, OnDone onDone, int xOffsetPx) {
-        final Dialog dialog = new Dialog(c);
+        // 与其它弹窗统一：浮动窗口 + 圆角底板（窗口底仍是透明的，圆角由内容卡片负责）
+        final Dialog dialog = new Dialog(c, com.jin.freeze.R.style.Theme_Jin_Alert);
         final List<Tab> order = new ArrayList<>(tabs);
 
         LinearLayout root = new LinearLayout(c);
