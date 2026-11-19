@@ -3294,7 +3294,7 @@ public class FreezeListActivity extends BaseActivity {
         TextView body = new TextView(this);
         body.setText("打开手势后，长按冻结列表空白处，成功触发会有震动反馈；\n"
                 + "触发后，左右滑动切换标签页，上滑切换全屏，下滑切换半屏；\n"
-                + "触发距离的 dp 值越大，需要滑动的距离越长；\n"
+                + "触发距离的 dp 值越大，触发的距离就越长；\n"
                 + "屏幕边缘触发：从屏幕边缘到设定距离这段区域内，都可以触发手势。");
         body.setTextSize(13);
         body.setTextColor(getColor(R.color.text_primary));
