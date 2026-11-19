@@ -4154,6 +4154,15 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
 
+        /**
+         * 整表失效：连同滑出屏幕、被 RecyclerView 视图缓存持有的旧格子一起标脏。
+         * 样式这类对所有格子生效的改动必须走这里——只重绑屏幕上的格子时，
+         * 缓存视图回到屏幕会直接复用旧绑定，看起来就是「被弹窗挡住的区域没刷新」。
+         */
+        void rebindAllCached() {
+            notifyDataSetChanged();
+        }
+
         int positionOf(String pkg) {
             for (int i = 0; i < shown.size(); i++) {
                 if (shown.get(i).pkg.equals(pkg)) {
@@ -8066,6 +8075,11 @@ public class FreezeListActivity extends BaseActivity {
                         layoutIconStyleEntry.setText(iconStyleEntryText());
                     }
                     rebindCells();
+                    // 样式对所有冻结图标生效：滑出屏幕被缓存的旧格子也要重新绑定，
+                    // 否则滚回屏幕时会直接复用旧样式（被设置弹窗挡住/列表底部时最明显）
+                    if (gridAdapter != null) {
+                        gridAdapter.rebindAllCached();
+                    }
                     if (holder[0] != null) {
                         holder[0].dismiss();
                     }
