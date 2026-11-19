@@ -40,6 +40,9 @@ public class QuickLaunchActivity extends Activity {
                     .getBoolean("panel_hide_recents", false);
             startActivity(new Intent(this,
                     hideRecents ? FreezePanelHiddenActivity.class : FreezePanelActivity.class)
+                    // 从快捷方式进列表也走一次权限检查：Shizuku 未授权时自动申请，
+                    // 否则用户只从快捷方式进来会一直不在 Shizuku 的授权列表里
+                    .putExtra(FreezeListActivity.EXTRA_CHECK_PRIV, true)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             finish();
             return;

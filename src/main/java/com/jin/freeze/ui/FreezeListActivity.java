@@ -582,6 +582,8 @@ public class FreezeListActivity extends BaseActivity {
     private boolean introIconsLight;
     /** 未授权提示框（启动检查与布局设置共用），避免同一时刻叠出两个。 */
     private android.app.Dialog privDialog;
+    /** 本次进程是否已自动向 Shizuku 申请过授权，避免每次进页面重复弹窗。 */
+    private static boolean shizukuAutoAsked;
     /** 布局设置标题里「冻结权限：X」的刷新入口，授权状态变化时直接重绘。 */
     private Runnable privTitleRefresh;
     private final Runnable introReveal = this::startIntroReveal;
@@ -707,6 +709,8 @@ public class FreezeListActivity extends BaseActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         panelMode = isPanelMode();
+        // 先让 ShizukuGate 拿到 Context：权限探测要用它读「用户点过允许」的记录
+        ShizukuGate.installed(this);
         // 列表选中项不再有高亮框，清掉历史遗留的档位键
         prefs().edit().remove("accent_surface").remove("panel_accent_surface").apply();
         // 先在进内容之前把壁纸准备好：解码有进程内缓存，首帧就可以直接挂上，不会先露一帧白底
@@ -10212,7 +10216,7 @@ public class FreezeListActivity extends BaseActivity {
             showPrivilegeMissingDialog();
             return;
         }
-        ShizukuGate.request(this, () -> {
+        ShizukuGate.requestAnyway(() -> {
             PrivShell.reset();
             IO.execute(() -> {
                 PrivShell.mode();
@@ -10277,7 +10281,7 @@ public class FreezeListActivity extends BaseActivity {
         retry.setOnClickListener(v -> {
             retry.setEnabled(false);
             retry.setText("检测中…");
-            recheckPrivilegeAsync(true, true, () -> {
+            Runnable recheck = () -> recheckPrivilegeAsync(true, true, () -> {
                 retry.setEnabled(true);
                 retry.setText("重新检测");
                 if (!isFinishing() && privDialog != null && privDialog.isShowing()) {
@@ -10285,6 +10289,13 @@ public class FreezeListActivity extends BaseActivity {
                             Toast.LENGTH_SHORT).show();
                 }
             });
+            // Shizuku 装着且在运行时，先补一次授权请求（弹「要允许凚使用 Shizuku 吗？」），
+            // 否则光重测永远不会通过
+            if (ShizukuGate.available(this)) {
+                ShizukuGate.requestAnyway(recheck);
+            } else {
+                recheck.run();
+            }
         });
 
         LinearLayout actions = new LinearLayout(this);
@@ -10324,9 +10335,40 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 启动检查：root 与 Shizuku 都不可用时弹统一提示；有任一通道则静默通过。 */
     private void checkPrivilegeOnStart() {
+        checkPrivilegeOnStart(0);
+    }
+
+    /**
+     * 启动检查：有 root 直接静默通过。
+     * 没有 root 时，只要 Shizuku 装着且在运行，就主动请求一次授权：
+     * Shizuku 的「应用管理」只收录请求过权限的应用，不请求就永远不在列表里；
+     * 未授权时这次请求会弹出「要允许凚使用 Shizuku 吗？」，
+     * 已授权时直接回调、不弹窗。用户允许后直接可用，拒绝或没装才弹未授权提示。
+     * attempt 用于 Shizuku 刚开机还没连上 binder 时再等一轮。
+     */
+    private void checkPrivilegeOnStart(int attempt) {
         IO.execute(() -> {
             PrivShell.Mode mode = PrivShell.mode();
+            if (mode == PrivShell.Mode.ROOT) {
+                return;
+            }
+            if (ShizukuGate.available(this)) {
+                if (shizukuAutoAsked) {
+                    if (mode == PrivShell.Mode.NONE) {
+                        main.post(this::showPrivilegeMissingDialog);
+                    }
+                    return;
+                }
+                shizukuAutoAsked = true;
+                main.post(() -> ShizukuGate.requestAnyway(() ->
+                        recheckPrivilegeAsync(true, false, this::showPrivilegeMissingDialog)));
+                return;
+            }
             if (mode == PrivShell.Mode.NONE) {
+                if (ShizukuGate.installed(this) && attempt < 1) {
+                    main.postDelayed(() -> checkPrivilegeOnStart(attempt + 1), 1500);
+                    return;
+                }
                 main.post(this::showPrivilegeMissingDialog);
             }
         });

@@ -158,8 +158,21 @@ public final class PrivShell {
 
     private static boolean shizukuGranted() {
         try {
-            return Shizuku.pingBinder()
-                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+            // 必须以「用户在 Shizuku 弹窗里点过允许」为准：
+            // 部分 ROM 把 API_V23 定为安装即授予，checkSelfPermission() 甚至服务端执行都会放行，
+            // 但 Shizuku 的「应用管理」并没登记本应用，会出现「显示已授权却还要授权」的矛盾。
+            if (!ShizukuGate.authorized()) {
+                return false;
+            }
+            if (!Shizuku.pingBinder()) {
+                return false;
+            }
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                return false;
+            }
+            // 再真跑一条 id，确认服务端确实放行
+            Result r = runShizuku("id", 4);
+            return r.code == 0 && r.out != null && r.out.contains("uid=");
         } catch (Throwable ignored) {
             return false;
         }
