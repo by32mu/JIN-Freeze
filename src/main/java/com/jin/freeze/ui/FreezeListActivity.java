@@ -162,7 +162,7 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_GESTURE_EDGE_LEFT = "gesture_edge_left_dp";
     private static final String KEY_GESTURE_EDGE_RIGHT = "gesture_edge_right_dp";
     private static final int GESTURE_DP_DEFAULT = 88;
-    private static final int GESTURE_DP_MAX = 520;
+    private static final int GESTURE_DP_MAX = 200;
     /** 边缘触发区默认宽度与上限。 */
     private static final int GESTURE_EDGE_DP_DEFAULT = 32;
     private static final int GESTURE_EDGE_DP_MAX = 100;
