@@ -153,6 +153,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_ICON_DP = "grid_icon_dp";
     private static final String KEY_ICON_MANUAL = "grid_icon_manual";
     private static final String KEY_SHOW_NAME = "grid_show_name";
+    /** 长按空白处手势总开关：关闭后长按不再起手势，且相关设置项整体隐藏。 */
+    private static final String KEY_GESTURE_ENABLED = "gesture_enabled";
     /** 长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的触发距离（dp）。 */
     private static final String KEY_GESTURE_UP = "gesture_up_dp";
     private static final String KEY_GESTURE_DOWN = "gesture_down_dp";
@@ -539,6 +541,10 @@ public class FreezeListActivity extends BaseActivity {
     private boolean scrubArmed;
     private float scrubDownX;
     private float scrubDownY;
+    /** 本次长按手势已经翻过标签：之后不再触发上滑 / 下滑切形态。 */
+    private boolean scrubTabMoved;
+    /** 长按空白处手势总开关：关闭后长按不再起手势。 */
+    private boolean gestureEnabled = true;
     /** 长按空白后上滑 / 下滑切形态的触发距离（dp），设置页滑块实时生效。 */
     private int gestureUpDp = GESTURE_DP_DEFAULT;
     private int gestureDownDp = GESTURE_DP_DEFAULT;
@@ -800,6 +806,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         iconDp = prefs().getInt(lk(KEY_ICON_DP), 52);
         iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL), false);
+        gestureEnabled = prefs().getBoolean(KEY_GESTURE_ENABLED, true);
         gestureUpDp = clampGestureDp(prefs().getInt(KEY_GESTURE_UP, GESTURE_DP_DEFAULT));
         gestureDownDp = clampGestureDp(prefs().getInt(KEY_GESTURE_DOWN, GESTURE_DP_DEFAULT));
         gestureEdgeOnly = prefs().getBoolean(KEY_GESTURE_EDGE_ONLY, false);
@@ -2035,11 +2042,12 @@ public class FreezeListActivity extends BaseActivity {
                 // 边缘触发模式：左右边缘条带内（含面板上方遮罩）都交给这个手势
                 boolean edgeStart = edgeReserved(ev.getRawX());
                 // 移动/编辑/多选/执行中不启用，留给原有手势与操作
-                if (!moveMode && !editMode && !selectMode && !working
+                if (gestureEnabled && !moveMode && !editMode && !selectMode && !working
                         && (inBlankListArea(ev.getRawX(), ev.getRawY()) || edgeStart)) {
                     scrubDownX = ev.getRawX();
                     scrubDownY = ev.getRawY();
                     scrubAnchorX = ev.getRawX();
+                    scrubTabMoved = false;
                     getWindow().getDecorView().postDelayed(scrubArmRunnable,
                             android.view.ViewConfiguration.getLongPressTimeout());
                 }
@@ -2075,10 +2083,11 @@ public class FreezeListActivity extends BaseActivity {
         // 长按空白后上下滑切换形态：半屏只认上滑（进全屏），全屏只认下滑（回半屏）。
         // 触发距离由设置页的「手势触发距离」两个滑块决定，实时生效；
         // 勾选「屏幕边缘触发上下滑动手势」后，只有从左右边缘开始的手势才切换形态。
+        // 本次手势已经左右翻过标签的，不再触发上下滑切形态，避免一次长按里两种手势互相打断。
         float dy = ev.getRawY() - scrubDownY;
-        boolean trigger = panelMode
+        boolean trigger = !scrubTabMoved && (panelMode
                 ? dy < -Ui.dp(this, gestureUpDp)
-                : dy > Ui.dp(this, gestureDownDp);
+                : dy > Ui.dp(this, gestureDownDp));
         if (trigger) {
             if (!gestureEdgeOnly || atScreenEdge(scrubDownX)) {
                 cancelBlankScrub();
@@ -2162,7 +2171,7 @@ public class FreezeListActivity extends BaseActivity {
         if (decor == null) {
             return;
         }
-        if (!gestureEdgeOnly) {
+        if (!gestureEnabled || !gestureEdgeOnly) {
             decor.setSystemGestureExclusionRects(java.util.Collections.emptyList());
             return;
         }
@@ -2281,6 +2290,8 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         selectTab(visible.get(next).id);
+        // 本次长按手势已经用过左右翻标签：后续位移不再触发上下滑切形态
+        scrubTabMoved = true;
         // 每翻一格都震一下（与触发长按那一震同一套忽略系统触感开关的口径）
         if (scrubVibrate) {
             View target = grid != null ? grid : getWindow().getDecorView();
@@ -7181,7 +7192,6 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(personalTitle);
         box.addView(nameBox);
         box.addView(tipBox);
-        box.addView(scrubVibBox);
         box.addView(longPressBox);
         if (dismissBox != null) {
             box.addView(dismissBox);
@@ -7431,9 +7441,33 @@ public class FreezeListActivity extends BaseActivity {
         gestureSec.addView(edgeBox);
         gestureSec.addView(edgeLeftBox);
         gestureSec.addView(edgeRightBox);
+        // 震动反馈跟着手势功能走，放在「屏幕边缘触发上下手势」这一组下面
+        gestureSec.addView(scrubVibBox);
         int edgeVis = gestureEdgeOnly ? View.VISIBLE : View.GONE;
         edgeLeftBox.setVisibility(edgeVis);
         edgeRightBox.setVisibility(edgeVis);
+
+        // 长按手势总开关：放在手势栏外面，关掉后才能再点开；
+        // 关闭后震动反馈与整个「手势触发距离」栏一起隐藏，长按空白也不再起手势
+        CheckBox gestureEnabledBox = new CheckBox(this);
+        gestureEnabledBox.setText("长按空白处手势");
+        gestureEnabledBox.setTextSize(12);
+        gestureEnabledBox.setMinimumHeight(Ui.dp(this, 32));
+        gestureEnabledBox.setChecked(gestureEnabled);
+        gestureEnabledBox.setOnCheckedChangeListener((b, on) -> {
+            gestureEnabled = on;
+            prefs().edit().putBoolean(KEY_GESTURE_ENABLED, on).apply();
+            int vis = on ? View.VISIBLE : View.GONE;
+            scrubVibBox.setVisibility(vis);
+            gestureSec.setVisibility(vis);
+            if (!on) {
+                cancelBlankScrub();
+            }
+            applyEdgeGestureExclusion();
+        });
+        int gestureVis = gestureEnabled ? View.VISIBLE : View.GONE;
+        scrubVibBox.setVisibility(gestureVis);
+        gestureSec.setVisibility(gestureVis);
 
         // 列数滑块：4–8 档，和上面几个滑块同一套样式。
         // 整块先收进 ias，最后整体插到「底部冻结按钮调节」上面
@@ -7496,8 +7530,10 @@ public class FreezeListActivity extends BaseActivity {
         ias.addView(sizeLabel);
         ias.addView(sizeBar);
         box.addView(ias, Math.max(0, box.indexOfChild(fabTitle)));
-        // 手势触发距离放在「列表图标」正上方
-        box.addView(gestureSec, Math.max(0, box.indexOfChild(ias)));
+        // 手势触发距离整栏放在「标签（点击看说明）」上面
+        box.addView(gestureSec, Math.max(0, box.indexOfChild(tabTitle)));
+        // 长按手势总开关紧跟「半屏打开模式」下面
+        box.addView(gestureEnabledBox, Math.max(0, box.indexOfChild(fullBox) + 1));
 
         // 自定义壁纸：作为背景层的底图，透明度/模糊仍由上面的背景滑块叠加；半屏与全屏各存各的。
         // 视图先收进 wps，最后整体插到「底部冻结按钮调节」上面
