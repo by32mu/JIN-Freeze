@@ -509,6 +509,8 @@ public class FreezeListActivity extends BaseActivity {
     private TextView layoutPairEntry;
     /** 设置面板里「冻结白名单 → 白名单列表」这一行。 */
     private TextView layoutWhitelistEntry;
+    /** 设置面板里「桌面图标模式 → 冻结后是否保留桌面图标」这一行，选完即时刷新。 */
+    private TextView layoutKeepIconEntry;
     /** 主副关联 / 列表白名单的管理弹窗：添加应用的手势返回要能回到这一页。 */
     private AlertDialog pairManagerDialog;
     private AlertDialog whitelistManagerDialog;
@@ -3412,13 +3414,13 @@ public class FreezeListActivity extends BaseActivity {
         col.setPadding(side, Ui.dp(this, 2), side, Ui.dp(this, 2));
 
         TextView yes = new TextView(this);
-        yes.setText("是，切换系统暂停");
+        yes.setText("保留，切换系统暂停");
         yes.setTextSize(13);
         yes.setTextColor(getColor(R.color.text_primary));
         yes.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 12));
 
         TextView no = new TextView(this);
-        no.setText("否，恢复默认冻结");
+        no.setText("不保留，恢复默认冻结");
         no.setTextSize(13);
         no.setTextColor(getColor(R.color.text_primary));
         no.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 12));
@@ -3444,10 +3446,18 @@ public class FreezeListActivity extends BaseActivity {
         applySettingsAlignment(dialog);
     }
 
+    /** 桌面图标模式入口文案：只显示当前选项。 */
+    private String keepIconEntryText() {
+        return keepLauncherIcon ? "保留，切换系统暂停" : "不保留，恢复默认冻结";
+    }
+
     /** 保留桌面图标开关落地：是 → 冻结转系统暂停；否 → 暂停态转回默认冻结。 */
     private void applyKeepLauncherIcon(boolean on) {
         keepLauncherIcon = on;
         prefs().edit().putBoolean(KEY_KEEP_LAUNCHER_ICON, on).apply();
+        if (layoutKeepIconEntry != null) {
+            layoutKeepIconEntry.setText(keepIconEntryText());
+        }
         if (on) {
             // 已有停用态的应用逐个迁到暂停态，否则图标仍缺失
             migrateFrozenToSuspend();
@@ -6570,8 +6580,9 @@ public class FreezeListActivity extends BaseActivity {
         row.setGravity(Gravity.CENTER_VERTICAL);
 
         final CheckBox enableBox = new CheckBox(this);
-        enableBox.setText("划卡冻结（lsposed）");
-        enableBox.setTextSize(12);
+        enableBox.setText("划卡冻结");
+        enableBox.setTextSize(11);
+        enableBox.setTextColor(getColor(R.color.text_secondary));
         enableBox.setMinimumHeight(Ui.dp(this, 32));
         enableBox.setChecked(SwipeFreeze.enabled(this));
         // 先置灰，root 检测完成后再决定是否可用
@@ -6671,8 +6682,9 @@ public class FreezeListActivity extends BaseActivity {
      */
     private void addLockFreezeSection(LinearLayout box) {
         final CheckBox enableBox = new CheckBox(this);
-        enableBox.setText("锁屏冻结（lsposed）");
-        enableBox.setTextSize(12);
+        enableBox.setText("锁屏冻结");
+        enableBox.setTextSize(11);
+        enableBox.setTextColor(getColor(R.color.text_secondary));
         enableBox.setMinimumHeight(Ui.dp(this, 32));
         enableBox.setChecked(SwipeFreeze.lockEnabled(this));
         // 先置灰，root 检测完成后再决定是否可用
@@ -6844,20 +6856,10 @@ public class FreezeListActivity extends BaseActivity {
 
     /** forLock=true 时操作锁屏冻结自己那套标签勾选，界面与划卡冻结完全一致。 */
     private void showTagPickerDialog(TextView summary, final boolean forLock) {
-        final android.app.Dialog dialog = new android.app.Dialog(this);
-        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int padH = Ui.dp(this, 15);
-        root.setPadding(padH, Ui.dp(this, 13), padH, Ui.dp(this, 6));
-
-        TextView title = new TextView(this);
-        title.setText(forLock ? "锁屏冻结标签" : "按标签冻结");
-        title.setTextSize(14);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        title.setTextColor(getColor(R.color.text_primary));
-        root.addView(title);
+        int padH = Ui.dp(this, 16);
+        root.setPadding(padH, Ui.dp(this, 2), padH, Ui.dp(this, 2));
 
         TextView hint = new TextView(this);
         hint.setText(forLock
@@ -6923,31 +6925,17 @@ public class FreezeListActivity extends BaseActivity {
         slp.topMargin = Ui.dp(this, 5);
         root.addView(scroller, slp);
 
-        TextView done = new TextView(this);
-        done.setText("完成");
-        done.setTextSize(12);
-        done.setTypeface(null, android.graphics.Typeface.BOLD);
-        done.setTextColor(getColor(R.color.blue));
-        done.setGravity(Gravity.CENTER);
-        done.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 8));
-        done.setOnClickListener(v -> dialog.dismiss());
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.topMargin = Ui.dp(this, 3);
-        root.addView(done, dlp);
-
-        dialog.setContentView(root);
-        Ui.roundDialog(dialog, root, 96);
-        dialog.setOnShowListener(d -> Ui.roundDialog(dialog, root, 96));
+        // 与「主副应用关联」同一套 AlertDialog：原生标题 + 关闭按钮，宽度和位置同算法
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(forLock ? "锁屏冻结标签" : "按标签冻结")
+                .setView(root)
+                .setNegativeButton("关闭", null)
+                .create();
         dialog.setOnDismissListener(d -> summary.setText(forLock
                 ? lockTagSummaryText() : tagSummaryText()));
-        android.view.Window w = dialog.getWindow();
-        if (w != null) {
-            w.setDimAmount(0.4f);
-            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            w.setGravity(Gravity.CENTER);
-        }
         dialog.show();
+        Ui.roundAlertDialog(dialog);
+        applySettingsAlignment(dialog);
     }
 
     /** 开关提示：沿用凚 现有圆角对话框（Ui.roundDialog + bg_dialog），不用系统方形 AlertDialog。 */
@@ -7090,7 +7078,8 @@ public class FreezeListActivity extends BaseActivity {
 
         CheckBox nameBox = new CheckBox(this);
         nameBox.setText("显示应用名称");
-        nameBox.setTextSize(12);
+        nameBox.setTextSize(11);
+        nameBox.setTextColor(getColor(R.color.text_secondary));
         nameBox.setMinimumHeight(Ui.dp(this, 32));
         nameBox.setChecked(showName);
         nameBox.setOnCheckedChangeListener((btn, on) -> {
@@ -7109,7 +7098,8 @@ public class FreezeListActivity extends BaseActivity {
         // 冻结成功提示开关：全屏与半屏共用
         CheckBox tipBox = new CheckBox(this);
         tipBox.setText("显示已冻结提示");
-        tipBox.setTextSize(12);
+        tipBox.setTextSize(11);
+        tipBox.setTextColor(getColor(R.color.text_secondary));
         tipBox.setMinimumHeight(Ui.dp(this, 32));
         tipBox.setChecked(showFrozenTip);
         tipBox.setOnCheckedChangeListener((btn, on) -> {
@@ -7121,7 +7111,8 @@ public class FreezeListActivity extends BaseActivity {
         // 勾选「隐藏标签页文字」收起标签行、或没有可见标签时才露出，并随勾选实时变化
         CheckBox tabOnlyBox = new CheckBox(this);
         tabOnlyBox.setText("仅冻结/解冻当前标签");
-        tabOnlyBox.setTextSize(12);
+        tabOnlyBox.setTextSize(11);
+        tabOnlyBox.setTextColor(getColor(R.color.text_secondary));
         tabOnlyBox.setMinimumHeight(Ui.dp(this, 32));
         tabOnlyBox.setChecked(batchCurrentTabOnly);
         tabOnlyBox.setOnCheckedChangeListener((btn, on) -> {
@@ -7136,7 +7127,8 @@ public class FreezeListActivity extends BaseActivity {
         CheckBox hideStatusBarBox = null;
         CheckBox dismissBox = new CheckBox(this);
         dismissBox.setText("一键冻结后收起列表");
-        dismissBox.setTextSize(12);
+        dismissBox.setTextSize(11);
+        dismissBox.setTextColor(getColor(R.color.text_secondary));
         dismissBox.setMinimumHeight(Ui.dp(this, 32));
         dismissBox.setChecked(panelDismissAfterFreeze);
         dismissBox.setOnCheckedChangeListener((btn, on) -> {
@@ -7146,7 +7138,8 @@ public class FreezeListActivity extends BaseActivity {
 
         CheckBox hideRecentsBox = new CheckBox(this);
         hideRecentsBox.setText("隐藏最近任务卡片");
-        hideRecentsBox.setTextSize(12);
+        hideRecentsBox.setTextSize(11);
+        hideRecentsBox.setTextColor(getColor(R.color.text_secondary));
         hideRecentsBox.setMinimumHeight(Ui.dp(this, 32));
         hideRecentsBox.setChecked(panelHideRecents);
         hideRecentsBox.setOnCheckedChangeListener((btn, on) -> {
@@ -7160,7 +7153,8 @@ public class FreezeListActivity extends BaseActivity {
         if (panelMode) {
             handleBox = new CheckBox(this);
             handleBox.setText("半屏高度小白条调节");
-            handleBox.setTextSize(12);
+            handleBox.setTextSize(11);
+            handleBox.setTextColor(getColor(R.color.text_secondary));
             handleBox.setMinimumHeight(Ui.dp(this, 32));
             handleBox.setChecked(panelHandleEnabled);
             handleBox.setOnCheckedChangeListener((btn, on) -> {
@@ -7179,7 +7173,8 @@ public class FreezeListActivity extends BaseActivity {
 
             hideStatusBarBox = new CheckBox(this);
             hideStatusBarBox.setText("隐藏半屏的状态栏");
-            hideStatusBarBox.setTextSize(12);
+            hideStatusBarBox.setTextSize(11);
+            hideStatusBarBox.setTextColor(getColor(R.color.text_secondary));
             hideStatusBarBox.setMinimumHeight(Ui.dp(this, 32));
             hideStatusBarBox.setChecked(panelHideStatusBar);
             hideStatusBarBox.setOnCheckedChangeListener((btn, on) -> {
@@ -7313,7 +7308,8 @@ public class FreezeListActivity extends BaseActivity {
         // 全屏里这一行还放着布局/备份/恢复，收起后它们仍贴右
         CheckBox hideRowBox = new CheckBox(this);
         hideRowBox.setText(panelMode ? "隐藏半屏的标签文字" : "隐藏全屏的标签文字");
-        hideRowBox.setTextSize(12);
+        hideRowBox.setTextSize(11);
+        hideRowBox.setTextColor(getColor(R.color.text_secondary));
         hideRowBox.setMinimumHeight(Ui.dp(this, 32));
         hideRowBox.setChecked(hideTabRow);
         hideRowBox.setOnCheckedChangeListener((b, on) -> {
@@ -7334,7 +7330,8 @@ public class FreezeListActivity extends BaseActivity {
         // 长按空白处左右滑翻标签时的振动：直接走 Vibrator，不受系统触感开关限制
         CheckBox scrubVibBox = new CheckBox(this);
         scrubVibBox.setText("列表空白处长按手势震动反馈");
-        scrubVibBox.setTextSize(12);
+        scrubVibBox.setTextSize(11);
+        scrubVibBox.setTextColor(getColor(R.color.text_secondary));
         scrubVibBox.setMinimumHeight(Ui.dp(this, 32));
         scrubVibBox.setChecked(scrubVibrate);
         scrubVibBox.setOnCheckedChangeListener((b, on) -> {
@@ -7477,9 +7474,17 @@ public class FreezeListActivity extends BaseActivity {
         if (hideRecentsBox != null) {
             box.addView(hideRecentsBox);
         }
-        // 两个 LSPosed 冻结开关统一排在「隐藏半屏标签文字」下面
-        addSwipeFreezeSection(box);
-        addLockFreezeSection(box);
+        // 专属LSPosed：划卡冻结与锁屏冻结整体成块，稍后排到手势功能栏之后
+        LinearLayout lspSec = new LinearLayout(this);
+        lspSec.setOrientation(LinearLayout.VERTICAL);
+        TextView lspTitle = new TextView(this);
+        lspTitle.setText("专属LSPosed");
+        lspTitle.setTextSize(12);
+        lspTitle.setTextColor(getColor(R.color.text_primary));
+        lspTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
+        lspSec.addView(lspTitle);
+        addSwipeFreezeSection(lspSec);
+        addLockFreezeSection(lspSec);
         box.addView(tabTitle);
         box.addView(tabList);
         box.addView(newTab);
@@ -7676,7 +7681,8 @@ public class FreezeListActivity extends BaseActivity {
 
         CheckBox edgeBox = new CheckBox(this);
         edgeBox.setText("屏幕边缘触发上下手势");
-        edgeBox.setTextSize(12);
+        edgeBox.setTextSize(11);
+        edgeBox.setTextColor(getColor(R.color.text_secondary));
         edgeBox.setMinimumHeight(Ui.dp(this, 32));
         edgeBox.setChecked(gestureEdgeOnly);
         edgeBox.setOnCheckedChangeListener((b, on) -> {
@@ -7700,7 +7706,8 @@ public class FreezeListActivity extends BaseActivity {
         // 关闭后震动反馈与整个「手势触发距离」栏一起隐藏，长按空白也不再起手势
         CheckBox gestureEnabledBox = new CheckBox(this);
         gestureEnabledBox.setText("列表空白处长按手势");
-        gestureEnabledBox.setTextSize(12);
+        gestureEnabledBox.setTextSize(11);
+        gestureEnabledBox.setTextColor(getColor(R.color.text_secondary));
         gestureEnabledBox.setMinimumHeight(Ui.dp(this, 32));
         gestureEnabledBox.setChecked(gestureEnabled);
         gestureEnabledBox.setOnCheckedChangeListener((b, on) -> {
@@ -7781,8 +7788,10 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(ias, Math.max(0, box.indexOfChild(fabTitle)));
         // 手势触发距离整栏放在「标签（点击看说明）」上面
         box.addView(gestureSec, Math.max(0, box.indexOfChild(tabTitle)));
-        // 长按手势总开关紧跟「锁屏冻结」下面，手势功能栏排在它后面
+        // 手势功能栏与「列表空白处长按手势」绑定：永远紧跟在它下面
         box.addView(gestureEnabledBox, Math.max(0, box.indexOfChild(gestureSec)));
+        // LSPosed 专属整块排在手势功能栏之后
+        box.addView(lspSec, Math.max(0, box.indexOfChild(gestureSec) + 1));
 
         // 自定义壁纸：作为背景层的底图，透明度/模糊仍由上面的背景滑块叠加；半屏与全屏各存各的。
         // 视图先收进 wps，最后整体插到「底部冻结按钮调节」上面
@@ -7917,23 +7926,23 @@ public class FreezeListActivity extends BaseActivity {
         wlSec.addView(layoutWhitelistEntry);
         box.addView(wlSec, Math.max(0, box.indexOfChild(pairSec) + 1));
 
-        // 特殊模式：紧跟列表白名单下面；标题点开说明，入口点开二选一
+        // 桌面图标模式：紧跟列表白名单下面；标题点开说明，入口点开二选一，入口带出当前选项
         LinearLayout spSec = new LinearLayout(this);
         spSec.setOrientation(LinearLayout.VERTICAL);
         TextView spTitle = new TextView(this);
-        spTitle.setText("特殊模式（点击查看说明）");
+        spTitle.setText("桌面图标模式（点击查看说明）");
         spTitle.setTextSize(12);
         spTitle.setTextColor(getColor(R.color.text_primary));
         spTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
         spTitle.setOnClickListener(v -> showSpecialModeHintDialog());
-        TextView spEntry = new TextView(this);
-        spEntry.setText("冻结后是否保留桌面图标");
-        spEntry.setTextSize(11);
-        spEntry.setTextColor(getColor(R.color.text_secondary));
-        spEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
-        spEntry.setOnClickListener(v -> showKeepIconChoiceDialog());
+        layoutKeepIconEntry = new TextView(this);
+        layoutKeepIconEntry.setText(keepIconEntryText());
+        layoutKeepIconEntry.setTextSize(11);
+        layoutKeepIconEntry.setTextColor(getColor(R.color.text_secondary));
+        layoutKeepIconEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        layoutKeepIconEntry.setOnClickListener(v -> showKeepIconChoiceDialog());
         spSec.addView(spTitle);
-        spSec.addView(spEntry);
+        spSec.addView(layoutKeepIconEntry);
         box.addView(spSec, Math.max(0, box.indexOfChild(wlSec) + 1));
 
         // 整块插到「标签（点击看说明）」下面：就在列表图标调整之前
