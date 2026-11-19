@@ -163,10 +163,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_GESTURE_EDGE_RIGHT = "gesture_edge_right_dp";
     private static final int GESTURE_DP_DEFAULT = 88;
     private static final int GESTURE_DP_MAX = 200;
-    /** 边缘触发区默认宽度与上下限。 */
+    /** 边缘触发区默认宽度与上下限；20dp 视为 0（该侧关闭）。 */
     private static final int GESTURE_EDGE_DP_DEFAULT = 32;
     private static final int GESTURE_EDGE_DP_MIN = 20;
-    private static final int GESTURE_EDGE_DP_MAX = 100;
+    private static final int GESTURE_EDGE_DP_MAX = 200;
     /** 半屏专属：勾选后每个图标右上角常驻红色减号，点它即把该应用移出名单。 */
     private static final String KEY_PANEL_QUICK_REMOVE = "panel_quick_remove";
     /** 移动图标开关：打开后点图标选中、再点目标位置放下；全屏与半屏共用同一份状态。 */
@@ -2123,20 +2123,28 @@ public class FreezeListActivity extends BaseActivity {
         return Math.max(0, Math.min(GESTURE_DP_MAX, dp));
     }
 
-    /** 边缘触发区宽度限制在 20–100dp。 */
+    /** 边缘触发区宽度限制在 20–200dp。 */
     private static int clampEdgeDp(int dp) {
         return Math.max(GESTURE_EDGE_DP_MIN, Math.min(GESTURE_EDGE_DP_MAX, dp));
+    }
+
+    /** 边缘距离文案：最小值 20dp 视为 0（关闭该侧）。 */
+    private static String edgeDpLabel(int dp) {
+        return dp <= GESTURE_EDGE_DP_MIN ? "0dp（关闭）" : dp + "dp";
     }
 
     /**
      * 手势起点是否落在左右边缘触发区。
      * 「屏幕左/右边缘靠内触发手势距离」= 从屏幕边缘向里这段距离，整段都可触发：
-     * 左区 0..leftDp，右区 (屏宽-rightDp)..屏宽；滑块为 0 表示该侧不触发。
+     * 左区 0..leftDp，右区 (屏宽-rightDp)..屏宽；20dp 视为 0，表示该侧不触发。
      */
     private boolean atScreenEdge(float rawX) {
         int width = getResources().getDisplayMetrics().widthPixels;
-        int leftWidth = Ui.dp(this, gestureEdgeLeftDp);
-        int rightWidth = Ui.dp(this, gestureEdgeRightDp);
+        // 20dp 视为 0：该侧关闭，不参与触发
+        int leftWidth = gestureEdgeLeftDp > GESTURE_EDGE_DP_MIN
+                ? Ui.dp(this, gestureEdgeLeftDp) : 0;
+        int rightWidth = gestureEdgeRightDp > GESTURE_EDGE_DP_MIN
+                ? Ui.dp(this, gestureEdgeRightDp) : 0;
         return (leftWidth > 0 && rawX <= leftWidth)
                 || (rightWidth > 0 && rawX >= width - rightWidth);
     }
@@ -2164,8 +2172,10 @@ public class FreezeListActivity extends BaseActivity {
             decor.post(this::applyEdgeGestureExclusion);
             return;
         }
-        int leftW = Math.min(w, Ui.dp(this, gestureEdgeLeftDp));
-        int rightW = Math.min(w, Ui.dp(this, gestureEdgeRightDp));
+        int leftW = gestureEdgeLeftDp > GESTURE_EDGE_DP_MIN
+                ? Math.min(w, Ui.dp(this, gestureEdgeLeftDp)) : 0;
+        int rightW = gestureEdgeRightDp > GESTURE_EDGE_DP_MIN
+                ? Math.min(w, Ui.dp(this, gestureEdgeRightDp)) : 0;
         java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>();
         if (leftW > 0) {
             rects.add(new android.graphics.Rect(0, 0, leftW, h));
@@ -7335,7 +7345,7 @@ public class FreezeListActivity extends BaseActivity {
         final TextView edgeLeftLabel = new TextView(this);
         edgeLeftLabel.setTextSize(11);
         edgeLeftLabel.setTextColor(getColor(R.color.text_secondary));
-        edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + gestureEdgeLeftDp + "dp");
+        edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + edgeDpLabel(gestureEdgeLeftDp));
         SeekBar edgeLeftBar = new SeekBar(this);
         edgeLeftBar.setMax(GESTURE_EDGE_DP_MAX - GESTURE_EDGE_DP_MIN);
         edgeLeftBar.setProgress(Math.max(0, gestureEdgeLeftDp - GESTURE_EDGE_DP_MIN));
@@ -7348,7 +7358,7 @@ public class FreezeListActivity extends BaseActivity {
                 int value = p + GESTURE_EDGE_DP_MIN;
                 gestureEdgeLeftDp = value;
                 prefs().edit().putInt(KEY_GESTURE_EDGE_LEFT, value).apply();
-                edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + value + "dp");
+                edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + edgeDpLabel(value));
                 applyEdgeGestureExclusion();
             }
 
@@ -7368,7 +7378,7 @@ public class FreezeListActivity extends BaseActivity {
         final TextView edgeRightLabel = new TextView(this);
         edgeRightLabel.setTextSize(11);
         edgeRightLabel.setTextColor(getColor(R.color.text_secondary));
-        edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + gestureEdgeRightDp + "dp");
+        edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + edgeDpLabel(gestureEdgeRightDp));
         SeekBar edgeRightBar = new SeekBar(this);
         edgeRightBar.setMax(GESTURE_EDGE_DP_MAX - GESTURE_EDGE_DP_MIN);
         edgeRightBar.setProgress(Math.max(0, gestureEdgeRightDp - GESTURE_EDGE_DP_MIN));
@@ -7381,7 +7391,7 @@ public class FreezeListActivity extends BaseActivity {
                 int value = p + GESTURE_EDGE_DP_MIN;
                 gestureEdgeRightDp = value;
                 prefs().edit().putInt(KEY_GESTURE_EDGE_RIGHT, value).apply();
-                edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + value + "dp");
+                edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + edgeDpLabel(value));
                 applyEdgeGestureExclusion();
             }
 
