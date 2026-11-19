@@ -21,6 +21,16 @@ public class JinApp extends Application {
         return t;
     });
 
+    /**
+     * 点开应用专用的后台线程：列表刷新、图标加载都排在 IO 的串行队列里，
+     * 点击后再排到它们后面会白等几百毫秒，所以解冻 + 拉起走这条独立队列。
+     */
+    public static final ExecutorService OPEN = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "jin-open");
+        t.setDaemon(true);
+        return t;
+    });
+
     @Override
     public void onCreate() {
         super.onCreate();

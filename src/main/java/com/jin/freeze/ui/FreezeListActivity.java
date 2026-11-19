@@ -10752,13 +10752,13 @@ public class FreezeListActivity extends BaseActivity {
         }
         // 主应用配了副应用：正常打开主应用，同时在后台顺带解冻副应用
         final String subKey = subOf(it.pkg);
-        if (subKey != null) {
-            unfreezeSubQuiet(subKey);
-        }
         working = true;
-        IO.execute(() -> {
+        // 走 OPEN 独立线程：IO 里排着列表刷新/图标加载，点击不能排在它们后面
+        com.jin.freeze.JinApp.OPEN.execute(() -> {
             PrivShell.Result r = execPm(it.pkg, it.userId, false);
-            boolean ok = applied(it.pkg, false, r);
+            // 点开应用走快速判定：pm 返回成功即认为解冻完成，不再跑 pm list / dumpsys 复核
+            //（这两次查询要 200ms 以上），真值由随后的 reload 在后台校正
+            boolean ok = isPmOk(r);
             // 撤销暂停失败时单独给一句，不落到通用的「启用未生效」
             final String failReason = !ok && SuspendSupport.cached(this).contains(it.pkg)
                     && Boolean.TRUE.equals(SuspendSupport.suspendedOne(it.pkg))
@@ -10785,6 +10785,10 @@ public class FreezeListActivity extends BaseActivity {
                 keepOrderBeforeUnfreeze();
                 rebindCells();
                 launch(it);
+                // 副应用顺带解冻放到主应用拉起之后，别挡在打开的路径上
+                if (subKey != null) {
+                    unfreezeSubQuiet(subKey);
+                }
                 reload();
             });
         });
