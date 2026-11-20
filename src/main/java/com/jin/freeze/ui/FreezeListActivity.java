@@ -785,6 +785,8 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
         }
+        // 旧版自动备份在内部存储根目录，升级后搬到 Download/凚/ 并清掉旧文件夹
+        AutoBackup.migrateAsync(this);
         // 先在进内容之前把壁纸准备好：解码有进程内缓存，首帧就可以直接挂上，不会先露一帧白底
         loadWallpaperFromPrefs();
         // 整页底板在窗口第一次显示之前就挂到窗口背景上：首帧就带着「全屏背景」设定的透明度，
@@ -12502,7 +12504,14 @@ public class FreezeListActivity extends BaseActivity {
                 Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
                 return;
             }
-            PrivShell.exec("am start --user " + it.userId + " -n " + comp, 15);
+            PrivShell.Result r = PrivShell.exec(
+                    "am start --user " + it.userId + " -n " + comp, 15);
+            if (r == null || r.timeout || (r.out != null && r.out.contains("Error"))) {
+                // 组件方式失败时退回 action/category，仍明确指定分身用户
+                PrivShell.exec("am start --user " + it.userId
+                        + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "
+                        + name, 15);
+            }
             return;
         }
         Intent i = getPackageManager().getLaunchIntentForPackage(name);
@@ -12510,13 +12519,32 @@ public class FreezeListActivity extends BaseActivity {
             Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
             return;
         }
-        // 面板里主动打开应用：正常离场，面板行为交给系统默认
-        try {
-            startActivity(i);
-        } catch (Exception e) {
-            Toast.makeText(this, "打开失败：" + e.getClass().getSimpleName(),
-                    Toast.LENGTH_SHORT).show();
-        }
+        // 系统里存在同名双开时，直接用 startActivity 会让 HyperOS 弹「主应用还是双开」：
+        // 统一改为在后台线程用 --user 0 明确启动，拿不到权限时才退回 startActivity。
+        // （PrivShell 探测会阻塞，不能放在主线程）
+        final Intent launch = i;
+        com.jin.freeze.JinApp.OPEN.execute(() -> {
+            String comp = launch.getComponent() == null ? null
+                    : launch.getComponent().flattenToShortString();
+            boolean done = false;
+            if (comp != null && PrivShell.available()) {
+                PrivShell.Result r = PrivShell.exec("am start --user 0 -n " + comp, 15);
+                done = r != null && !r.timeout && r.out != null && !r.out.contains("Error");
+            }
+            if (!done) {
+                main.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    try {
+                        startActivity(launch);
+                    } catch (Exception e) {
+                        Toast.makeText(this, "打开失败：" + e.getClass().getSimpleName(),
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
     }
 
     /**

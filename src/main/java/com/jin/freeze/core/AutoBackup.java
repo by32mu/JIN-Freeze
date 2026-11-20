@@ -18,7 +18,8 @@ import java.util.Set;
 
 /**
  * 名单自动备份：白名单、主副关联、冻结列表、标签归属等名单类数据，
- * 除了存在应用私有配置里，额外写一份到外部存储（Download/凚/名单自动备份.json）。
+ * 除了存在应用私有配置里，额外写一份到外部存储
+ * （Download/凚/.升级恢复白名单/名单自动备份.json，点开头的目录在各文件管理器里默认隐藏）。
  *
  * 正常覆盖升级不会动应用私有配置，本来就不会丢；这里兜底的是卸载重装、
  * 清理数据、换签名重装这类会清空配置的场景：启动时发现名单全空且存在自动备份，
@@ -27,7 +28,13 @@ import java.util.Set;
 public final class AutoBackup {
 
     private static final String PREFS = "freeze_list";
-    private static final String DIR = "凚";
+    private static final String DIR = "Download/凚/.升级恢复白名单";
+    /** 旧版本备份位置，升级后自动搬到新目录。 */
+    private static final String LEGACY_ROOT_DIR = "凚";
+    private static final String[] LEGACY_DIRS = {
+            LEGACY_ROOT_DIR,          // 2.9.95 及更早：内部存储根目录
+            "Download/凚"             // 2.9.96：Download/凚 根下
+    };
     private static final String FILE = "名单自动备份.json";
 
     private static final String[] SET_KEYS = {
@@ -54,6 +61,68 @@ public final class AutoBackup {
             return null;
         }
         return new File(dir, FILE);
+    }
+
+    /** 旧路径的备份；不存在返回 null。 */
+    private static File legacyFile() {
+        for (String dir : LEGACY_DIRS) {
+            File f = new File(Environment.getExternalStorageDirectory(), dir + "/" + FILE);
+            if (f.isFile()) {
+                return f;
+            }
+        }
+        return null;
+    }
+
+    /** 升级后把旧路径的备份搬到 Download/凚/.升级恢复白名单/，再清掉旧文件。 */
+    public static void migrateAsync(Context c) {
+        final Context app = c.getApplicationContext();
+        new Thread(() -> {
+            try {
+                adoptLegacy(app);
+            } catch (Throwable ignored) {
+            }
+        }, "jin-auto-backup-migrate").start();
+    }
+
+    private static void adoptLegacy(Context c) {
+        File old = legacyFile();
+        if (old == null) {
+            return;
+        }
+        File target = backupFile(c);
+        if (target == null) {
+            return;
+        }
+        if (!target.isFile()) {
+            try {
+                writeBackup(target, readAll(old).getBytes(StandardCharsets.UTF_8));
+            } catch (Throwable ignored) {
+                // 搬不动就保留旧文件，下次启动再试
+                return;
+            }
+        }
+        removeLegacy(old);
+    }
+
+    private static void removeLegacy(File old) {
+        boolean ok = old.delete();
+        if (!ok) {
+            PrivShell.Result r = PrivShell.exec("rm -f " + shellQuote(old.getAbsolutePath()), 10);
+            ok = r.code == 0;
+        }
+        if (!ok) {
+            return;
+        }
+        File dir = old.getParentFile();
+        File root = new File(Environment.getExternalStorageDirectory(), LEGACY_ROOT_DIR);
+        // 只清理根目录那个旧文件夹；Download/凚 里还有用户自己的文件，不能动
+        if (dir == null || !dir.equals(root)) {
+            return;
+        }
+        if (!dir.delete()) {
+            PrivShell.exec("rmdir " + shellQuote(dir.getAbsolutePath()), 10);
+        }
     }
 
     /** 后台写一份快照；没有存储权限等情况静默跳过，不影响正常使用。 */
@@ -98,7 +167,10 @@ public final class AutoBackup {
         if (f == null) {
             return;
         }
-        byte[] data = root.toString().getBytes(StandardCharsets.UTF_8);
+        writeBackup(f, root.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void writeBackup(File f, byte[] data) throws Exception {
         try (FileOutputStream out = new FileOutputStream(f)) {
             out.write(data);
         } catch (Throwable direct) {
@@ -137,6 +209,10 @@ public final class AutoBackup {
         }
         File f = backupFile(c);
         if (f == null || !f.isFile()) {
+            // 还没搬家的旧版备份（内部存储根目录）
+            f = legacyFile();
+        }
+        if (f == null || !f.isFile()) {
             return false;
         }
         String raw;
@@ -157,6 +233,10 @@ public final class AutoBackup {
             return false;
         }
         File f = backupFile(c);
+        if (f == null || !f.isFile()) {
+            // 还没搬家的旧版备份（内部存储根目录）
+            f = legacyFile();
+        }
         if (f == null) {
             return false;
         }

@@ -1872,7 +1872,13 @@ public class AppFreezeActivity extends BaseActivity {
                 Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
                 return;
             }
-            PrivShell.exec("am start --user " + a.userId + " -n " + comp, 15);
+            PrivShell.Result r = PrivShell.exec(
+                    "am start --user " + a.userId + " -n " + comp, 15);
+            if (r == null || r.timeout || (r.out != null && r.out.contains("Error"))) {
+                PrivShell.exec("am start --user " + a.userId
+                        + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "
+                        + a.pkg, 15);
+            }
             return;
         }
         Intent i = getPackageManager().getLaunchIntentForPackage(a.pkg);
@@ -1880,11 +1886,30 @@ public class AppFreezeActivity extends BaseActivity {
             Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
             return;
         }
-        try {
-            startActivity(i);
-        } catch (Exception e) {
-            Toast.makeText(this, "打开失败：" + e.getClass().getSimpleName(), Toast.LENGTH_SHORT).show();
-        }
+        // 有双开时直接用 startActivity 会弹「主应用还是双开」：在后台线程明确 --user 0 启动
+        final Intent launch = i;
+        IO.execute(() -> {
+            String comp = launch.getComponent() == null ? null
+                    : launch.getComponent().flattenToShortString();
+            boolean done = false;
+            if (comp != null && PrivShell.available()) {
+                PrivShell.Result r = PrivShell.exec("am start --user 0 -n " + comp, 15);
+                done = r != null && !r.timeout && r.out != null && !r.out.contains("Error");
+            }
+            if (!done) {
+                main.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    try {
+                        startActivity(launch);
+                    } catch (Exception e) {
+                        Toast.makeText(this, "打开失败：" + e.getClass().getSimpleName(),
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
     }
 
     /** 在分身用户下解析启动组件（「包/类」）；解析不到返回 null。 */
