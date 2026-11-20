@@ -232,6 +232,13 @@ public final class Ui {
 
     /** 指定高度版本：heightPx 传 WRAP_CONTENT 以外时固定高度，内部滚动区用 weight 撑开。 */
     public static void roundDialog(Dialog dialog, View root, int widthInsetDp, int heightPx) {
+        int width = root.getContext().getResources().getDisplayMetrics().widthPixels
+                - dp(root.getContext(), widthInsetDp);
+        roundDialogWidth(dialog, root, width, heightPx);
+    }
+
+    /** 直接指定宽度（px）的版本，给需要收窄的小弹窗用。 */
+    public static void roundDialogWidth(Dialog dialog, View root, int widthPx, int heightPx) {
         Window w = dialog.getWindow();
         if (w == null) {
             return;
@@ -246,9 +253,51 @@ public final class Ui {
             }
         });
         root.setClipToOutline(true);
-        int width = root.getContext().getResources().getDisplayMetrics().widthPixels
-                - dp(root.getContext(), widthInsetDp);
-        w.setLayout(width, heightPx);
+        w.setLayout(widthPx, heightPx);
+    }
+
+    /**
+     * 失败/短提示小弹窗：比系统 AlertDialog 更窄，圆角卡片，按钮只有一句。
+     * 冻结失败、解冻失败、打开失败这类提示统一用它。
+     */
+    public static android.app.AlertDialog smallDialog(Context c, String title,
+                                                      CharSequence message, String button) {
+        LinearLayout card = new LinearLayout(c);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackgroundResource(R.drawable.bg_dialog);
+        int pad = dp(c, 16);
+        card.setPadding(pad, dp(c, 14), pad, dp(c, 6));
+        card.addView(text(c, title, 14, TEXT_PRIMARY, true));
+        if (message != null && message.length() > 0) {
+            TextView m = text(c, message, 12, TEXT_SECONDARY, false);
+            m.setLineSpacing(0, 1.15f);
+            LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            mlp.topMargin = dp(c, 8);
+            card.addView(m, mlp);
+        }
+        TextView b = text(c, button, 12, BLUE, true);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        android.util.TypedValue ripple = new android.util.TypedValue();
+        if (c.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)) {
+            b.setBackgroundResource(ripple.resourceId);
+        }
+        b.setPadding(dp(c, 12), 0, dp(c, 12), 0);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(c, 32));
+        blp.gravity = Gravity.END;
+        blp.topMargin = dp(c, 4);
+        card.addView(b, blp);
+
+        final android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(c)
+                .setView(card).create();
+        b.setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+        int screen = c.getResources().getDisplayMetrics().widthPixels;
+        int width = Math.min(screen - dp(c, 72), dp(c, 280));
+        roundDialogWidth(dialog, card, width, ViewGroup.LayoutParams.WRAP_CONTENT);
+        return dialog;
     }
 
     /**

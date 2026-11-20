@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -174,8 +175,8 @@ public final class SwipeFreeze {
         return false;
     }
 
-    private static Map<String, String> appTabMap(Context context) {
-        Map<String, String> map = new LinkedHashMap<>();
+    private static Map<String, Set<String>> appTabMap(Context context) {
+        Map<String, Set<String>> map = new LinkedHashMap<>();
         String raw = prefs(context).getString(KEY_APP_TABS, "");
         if (raw.isEmpty()) {
             return map;
@@ -188,9 +189,25 @@ public final class SwipeFreeze {
             }
             for (int i = 0; i < names.length(); i++) {
                 String pkg = names.optString(i, "");
-                String tab = o.optString(pkg, "");
-                if (!pkg.isEmpty() && !tab.isEmpty()) {
-                    map.put(pkg, tab);
+                if (pkg.isEmpty()) {
+                    continue;
+                }
+                Set<String> tabs = new LinkedHashSet<>();
+                // 新版本存数组（一个应用可属于多个标签），旧版本存单个字符串
+                Object v = o.opt(pkg);
+                if (v instanceof JSONArray) {
+                    JSONArray arr = (JSONArray) v;
+                    for (int k = 0; k < arr.length(); k++) {
+                        String tab = arr.optString(k, "");
+                        if (!tab.isEmpty()) {
+                            tabs.add(tab);
+                        }
+                    }
+                } else if (v instanceof String && !((String) v).isEmpty()) {
+                    tabs.add((String) v);
+                }
+                if (!tabs.isEmpty()) {
+                    map.put(pkg, tabs);
                 }
             }
         } catch (Exception ignored) {
@@ -224,7 +241,7 @@ public final class SwipeFreeze {
     public static String buildConfig(Context context) {
         // 名单里可能带「包名@用户」的分身键；hook 侧只认包名，这里统一还原并去重
         Set<String> raw = prefs(context).getStringSet(KEY_PKGS, new HashSet<>());
-        Map<String, String> mapping = appTabMap(context);
+        Map<String, Set<String>> mapping = appTabMap(context);
         Map<String, String> labels = new LinkedHashMap<>();
         for (Tag tag : allTabs(context)) {
             labels.put(tag.id, tag.name);
@@ -236,15 +253,22 @@ public final class SwipeFreeze {
             if (!pkgs.add(pkg)) {
                 continue;
             }
-            String tab = mapping.get(key);
-            if (tab == null) {
-                tab = mapping.get(pkg);
+            Set<String> mapped = mapping.get(key);
+            if (mapped == null) {
+                mapped = mapping.get(pkg);
             }
-            if (tab == null || !containsTab(allTabs(context), tab)) {
-                tab = isSystemApp(context, pkg) ? TAB_SYSTEM : TAB_USER;
-            }
+            // 一个应用可能同时属于多个标签，全部带上；没有归属或标签已被删时落回内置标签
             Set<String> set = new HashSet<>();
-            set.add(tab);
+            if (mapped != null) {
+                for (String tab : mapped) {
+                    if (containsTab(allTabs(context), tab)) {
+                        set.add(tab);
+                    }
+                }
+            }
+            if (set.isEmpty()) {
+                set.add(isSystemApp(context, pkg) ? TAB_SYSTEM : TAB_USER);
+            }
             tags.put(pkg, set);
         }
         Set<String> selected = selectedTags(context);

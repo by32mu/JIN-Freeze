@@ -16,17 +16,18 @@ import com.jin.freeze.R;
 import java.util.List;
 
 /**
- * 「更改标签页」的统一弹窗：顶部显示应用图标与名称，下面列出所有标签，
- * 当前标签只做标记不参与点击，其余标签点一下即迁入。
+ * 「加入标签」的统一弹窗：顶部显示应用图标与名称，下面列出所有标签。
+ * 点一下勾选即加入，再点一下取消即移出；一个应用可以同时属于多个标签，
+ * 勾选后弹窗不关闭，方便连续勾选，点「完成」退出。
  */
 public final class MoveTabDialog {
 
-    /** 一个可迁入的标签；current 表示应用当前所在标签。 */
+    /** 一个可勾选的标签；current 表示应用当前是否属于该标签，弹窗会就地翻转。 */
     public static final class Tab {
         public final String id;
         public final String name;
         public final boolean visible;
-        public final boolean current;
+        public boolean current;
 
         public Tab(String id, String name, boolean visible, boolean current) {
             this.id = id;
@@ -36,21 +37,22 @@ public final class MoveTabDialog {
         }
     }
 
-    public interface OnPick {
-        void onPick(Tab tab);
+    public interface OnToggle {
+        /** 收到时 current 已经是点击后的状态；回调里可以再改回去表示拒绝这次勾选。 */
+        void onToggle(Tab tab);
     }
 
     private MoveTabDialog() {
     }
 
     public static void show(android.content.Context c, CharSequence appLabel, Drawable icon,
-                            List<Tab> tabs, OnPick onPick) {
+                            List<Tab> tabs, OnToggle onToggle) {
         final Dialog dialog = new Dialog(c);
         LinearLayout root = new LinearLayout(c);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(0, Ui.dp(c, 12), 0, Ui.dp(c, 4));
 
-        // 应用图标放最上面，先确认这次要移动的是哪个应用
+        // 应用图标放最上面，先确认这次要处理的是哪个应用
         ImageView head = new ImageView(c);
         if (icon != null) {
             head.setImageDrawable(icon);
@@ -73,7 +75,7 @@ public final class MoveTabDialog {
         nameLp.rightMargin = Ui.dp(c, 16);
         root.addView(name, nameLp);
 
-        TextView hint = Ui.text(c, "移动到", 12, Ui.TEXT_SECONDARY, false);
+        TextView hint = Ui.text(c, "加入标签（可多选，再点取消）", 12, Ui.TEXT_SECONDARY, false);
         hint.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -83,19 +85,19 @@ public final class MoveTabDialog {
 
         divider(c, root, 14);
         for (Tab t : tabs) {
-            root.addView(buildRow(c, dialog, t, onPick));
+            root.addView(buildRow(c, t, onToggle));
         }
 
-        TextView cancel = Ui.text(c, "取消", 13, Ui.TEXT_SECONDARY, false);
-        cancel.setGravity(Gravity.CENTER);
-        cancel.setBackgroundResource(R.drawable.bg_menu_item);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(
+        TextView done = Ui.text(c, "完成", 13, Ui.primary(c), true);
+        done.setGravity(Gravity.CENTER);
+        done.setBackgroundResource(R.drawable.bg_menu_item);
+        done.setOnClickListener(v -> dialog.dismiss());
+        LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 38));
-        cancelLp.leftMargin = Ui.dp(c, 8);
-        cancelLp.rightMargin = Ui.dp(c, 8);
-        cancelLp.topMargin = Ui.dp(c, 2);
-        root.addView(cancel, cancelLp);
+        doneLp.leftMargin = Ui.dp(c, 8);
+        doneLp.rightMargin = Ui.dp(c, 8);
+        doneLp.topMargin = Ui.dp(c, 2);
+        root.addView(done, doneLp);
 
         dialog.setContentView(root);
         dialog.show();
@@ -109,8 +111,8 @@ public final class MoveTabDialog {
         }
     }
 
-    private static View buildRow(android.content.Context c, final Dialog dialog,
-                                 final Tab t, final OnPick onPick) {
+    private static View buildRow(android.content.Context c, final Tab t,
+                                 final OnToggle onToggle) {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -120,27 +122,31 @@ public final class MoveTabDialog {
         ImageView ic = new ImageView(c);
         ic.setImageResource(R.drawable.ic_action_tag);
         ic.setImageTintList(ColorStateList.valueOf(
-                t.current ? Ui.TEXT_SECONDARY : Ui.primary(c)));
+                t.current ? Ui.primary(c) : Ui.TEXT_SECONDARY));
         row.addView(ic, new LinearLayout.LayoutParams(Ui.dp(c, 18), Ui.dp(c, 18)));
 
         String title = t.visible ? t.name : t.name + "（已隐藏）";
-        TextView label = Ui.text(c, title, 13, t.current ? Ui.TEXT_SECONDARY : Ui.TEXT_PRIMARY, false);
+        TextView label = Ui.text(c, title, 13, Ui.TEXT_PRIMARY, false);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         lp.leftMargin = Ui.dp(c, 10);
         row.addView(label, lp);
 
-        if (t.current) {
-            TextView tag = Ui.text(c, "当前", 11, Ui.TEXT_SECONDARY, false);
-            row.addView(tag);
-            row.setAlpha(0.55f);
-        } else {
-            row.setClickable(true);
-            row.setOnClickListener(v -> {
-                dialog.dismiss();
-                onPick.onPick(t);
-            });
-        }
+        // 右端勾选标记：已加入的标签显示圆形对勾
+        final ImageView check = new ImageView(c);
+        check.setImageResource(R.drawable.ic_check_badge);
+        check.setVisibility(t.current ? View.VISIBLE : View.GONE);
+        row.addView(check, new LinearLayout.LayoutParams(Ui.dp(c, 18), Ui.dp(c, 18)));
+
+        row.setClickable(true);
+        row.setOnClickListener(v -> {
+            t.current = !t.current;
+            onToggle.onToggle(t);
+            // 回调可能拒绝这次勾选（比如用户应用不能进系统应用标签），按最终状态刷新
+            check.setVisibility(t.current ? View.VISIBLE : View.GONE);
+            ic.setImageTintList(ColorStateList.valueOf(
+                    t.current ? Ui.primary(c) : Ui.TEXT_SECONDARY));
+        });
 
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 40));

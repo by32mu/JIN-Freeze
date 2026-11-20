@@ -1310,37 +1310,75 @@ public class AppFreezeActivity extends BaseActivity {
                 visibles.add(at, true);
             }
         }
-        String cur = "";
+        final String key = storageKey(a.pkg, a.userId);
+        // 旧数据是单个标签字符串，新数据是数组；一个应用可以同时加入多个标签
+        java.util.Set<String> mine = new java.util.LinkedHashSet<>();
         try {
-            cur = new JSONObject(fp.getString("app_tabs", "{}"))
-                    .optString(storageKey(a.pkg, a.userId), "");
+            Object v = new JSONObject(fp.getString("app_tabs", "{}")).opt(key);
+            if (v instanceof JSONArray) {
+                JSONArray arr = (JSONArray) v;
+                for (int i = 0; i < arr.length(); i++) {
+                    String id = arr.optString(i, "");
+                    if (!id.isEmpty()) {
+                        mine.add(id);
+                    }
+                }
+            } else if (v instanceof String && !((String) v).isEmpty()) {
+                mine.add((String) v);
+            }
         } catch (Exception ignored) {
         }
         // 没有显式归属时按系统标记落回内置标签，当前项才不会标错
-        if (cur.isEmpty()) {
-            cur = a.system ? "system" : "user";
+        if (mine.isEmpty()) {
+            mine.add(a.system ? "system" : "user");
         }
         List<MoveTabDialog.Tab> entries = new ArrayList<>();
         for (int i = 0; i < ids.size(); i++) {
             entries.add(new MoveTabDialog.Tab(ids.get(i), names.get(i), visibles.get(i),
-                    ids.get(i).equals(cur)));
+                    mine.contains(ids.get(i))));
         }
-        final String key = storageKey(a.pkg, a.userId);
         MoveTabDialog.show(this, a.label, a.icon, entries, target -> {
-            if (target.current) {
-                return;
-            }
             // 用户应用不允许进入内置的「系统应用」标签
-            if (!a.system && "system".equals(target.id)) {
+            if (target.current && !a.system && "system".equals(target.id)) {
+                target.current = false;
                 Toast.makeText(this, "用户应用禁止移入系统应用标签",
                         Toast.LENGTH_SHORT).show();
                 return;
             }
             try {
                 JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
-                o.put(key, target.id);
+                java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+                Object v = o.opt(key);
+                if (v instanceof JSONArray) {
+                    JSONArray arr = (JSONArray) v;
+                    for (int i = 0; i < arr.length(); i++) {
+                        String id = arr.optString(i, "");
+                        if (!id.isEmpty()) {
+                            set.add(id);
+                        }
+                    }
+                } else if (v instanceof String && !((String) v).isEmpty()) {
+                    set.add((String) v);
+                }
+                if (target.current) {
+                    set.add(target.id);
+                } else {
+                    set.remove(target.id);
+                }
+                if (set.isEmpty()) {
+                    o.remove(key);
+                } else {
+                    JSONArray arr = new JSONArray();
+                    for (String id : set) {
+                        arr.put(id);
+                    }
+                    o.put(key, arr);
+                }
                 fp.edit().putString("app_tabs", o.toString()).apply();
-                Toast.makeText(this, "已移动到「" + target.name + "」",
+                com.jin.freeze.core.SwipeFreeze.syncAsync(this);
+                Toast.makeText(this, target.current
+                                ? "已加入「" + target.name + "」"
+                                : "已从「" + target.name + "」移出",
                         Toast.LENGTH_SHORT).show();
             } catch (Exception ignored) {
             }
@@ -1403,13 +1441,8 @@ public class AppFreezeActivity extends BaseActivity {
                     a.suspended = false;
                     bindCell(a, cell);
                 } else {
-                    AlertDialog failDlg = new AlertDialog.Builder(this)
-                            .setTitle("解冻失败")
-                            .setMessage(a.label + "：" + Ui.pmReason(r, false))
-                            .setPositiveButton("知道了", null)
-                            .create();
-                    failDlg.show();
-                    Ui.roundAlertDialog(failDlg);
+                    Ui.smallDialog(this, "解冻失败",
+                            a.label + "：" + Ui.pmReason(r, false), "知道了");
                 }
             });
         });
@@ -1567,14 +1600,9 @@ public class AppFreezeActivity extends BaseActivity {
                     return;
                 }
                 if (!done) {
-                    AlertDialog failDlg = new AlertDialog.Builder(this)
-                            .setTitle(toFreeze ? "冻结失败" : "解冻失败")
-                            .setMessage(a.label + "：" + (blocked
-                                    ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(r, toFreeze)))
-                            .setPositiveButton("知道了", null)
-                            .create();
-                    failDlg.show();
-                    Ui.roundAlertDialog(failDlg);
+                    Ui.smallDialog(this, toFreeze ? "冻结失败" : "解冻失败",
+                            a.label + "：" + (blocked
+                                    ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(r, toFreeze)), "知道了");
                     return;
                 }
                 a.frozen = toFreeze;
@@ -1615,14 +1643,9 @@ public class AppFreezeActivity extends BaseActivity {
                     return;
                 }
                 if (!ok) {
-                    AlertDialog failDlg = new AlertDialog.Builder(this)
-                            .setTitle("解冻失败，无法打开")
-                            .setMessage(a.label + "：" + (failReason != null
-                                    ? failReason : Ui.pmReason(r, false)))
-                            .setPositiveButton("知道了", null)
-                            .create();
-                    failDlg.show();
-                    Ui.roundAlertDialog(failDlg);
+                    Ui.smallDialog(this, "解冻失败，无法打开",
+                            a.label + "：" + (failReason != null
+                                    ? failReason : Ui.pmReason(r, false)), "知道了");
                     refreshFrozen();
                     return;
                 }

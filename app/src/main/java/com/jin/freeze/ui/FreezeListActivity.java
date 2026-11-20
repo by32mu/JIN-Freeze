@@ -56,6 +56,7 @@ import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.ShizukuGate;
 import com.jin.freeze.core.SuspendDialog;
 import com.jin.freeze.core.SuspendSupport;
+import com.jin.freeze.core.AutoBackup;
 import com.jin.freeze.core.SwipeFreeze;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 
@@ -410,8 +411,8 @@ public class FreezeListActivity extends BaseActivity {
     };
     private final List<Item> items = new ArrayList<>();
     private final List<Tab> tabs = new ArrayList<>();
-    /** 应用 → 标签；没有映射（或映射到已删除标签）时按 FLAG_SYSTEM 落回内置标签。 */
-    private final Map<String, String> appTabs = new HashMap<>();
+    /** 应用 → 所属标签集合（可同时属于多个标签）；没有映射时按 FLAG_SYSTEM 落回内置标签。 */
+    private final Map<String, java.util.LinkedHashSet<String>> appTabs = new HashMap<>();
     private String currentTabId = TAB_USER;
 
     private TextView count;
@@ -661,8 +662,8 @@ public class FreezeListActivity extends BaseActivity {
                             blocked = true;
                             continue;
                         }
-                        if (!pickerTargetTab.equals(appTabs.get(key))) {
-                            appTabs.put(key, pickerTargetTab);
+                        // 加入标签：已有归属的其他标签保留，一个应用可同时出现在多个标签页
+                        if (addAppToTab(key, pickerTargetTab)) {
                             changed = true;
                         }
                     }
@@ -739,6 +740,23 @@ public class FreezeListActivity extends BaseActivity {
         ShizukuGate.installed(this);
         // 列表选中项不再有高亮框，清掉历史遗留的档位键
         prefs().edit().remove("accent_surface").remove("panel_accent_surface").apply();
+        // 卸载重装/清数据后把外部自动备份的名单恢复回来；已有数据时不动
+        if (AutoBackup.restoreIfFresh(this)) {
+            SwipeFreeze.syncAsync(this);
+        } else if (AutoBackup.isBlank(this)) {
+            // 清数据后「所有文件访问」会被系统收回，直接读不到备份：
+            // 后台借 root/Shizuku 再试一次，恢复成功就重开界面把名单刷回来
+            IO.execute(() -> {
+                if (AutoBackup.restoreIfFreshPrivileged(this)) {
+                    SwipeFreeze.syncAsync(this);
+                    runOnUiThread(() -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            recreate();
+                        }
+                    });
+                }
+            });
+        }
         // 先在进内容之前把壁纸准备好：解码有进程内缓存，首帧就可以直接挂上，不会先露一帧白底
         loadWallpaperFromPrefs();
         // 整页底板在窗口第一次显示之前就挂到窗口背景上：首帧就带着「全屏背景」设定的透明度，
@@ -2568,6 +2586,8 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        // 离开页面顺手刷新一次外部自动备份：白名单/关联/标签/名单都写进去
+        AutoBackup.snapshotAsync(this);
         // 长按翻标签的计时器在离开页面时清掉
         cancelBlankScrub();
         // 离开页面就把状态栏图标恢复成跟随深浅色，不残留过渡时的强制白色
@@ -2968,6 +2988,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         prefs().edit().putString(KEY_TABS, arr.toString()).apply();
         SwipeFreeze.syncAsync(this);
+        AutoBackup.snapshotAsync(this);
     }
 
     /** 标签排序：拖动完把新顺序写回 tabs 并重绘标签栏与当前列表。 */
@@ -3060,10 +3081,29 @@ public class FreezeListActivity extends BaseActivity {
             }
             for (int i = 0; i < names.length(); i++) {
                 String pkg = names.optString(i);
-                String tab = o.optString(pkg, "");
-                // 标签已被删掉时不做映射，tabIdOf 会按 FLAG_SYSTEM 落回内置标签
-                if (!pkg.isEmpty() && findTab(tab) != null) {
-                    appTabs.put(pkg, tab);
+                if (pkg.isEmpty()) {
+                    continue;
+                }
+                java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+                // 旧版本存的是单个标签字符串，新版本存数组，两种都要能读
+                Object v = o.opt(pkg);
+                if (v instanceof JSONArray) {
+                    JSONArray arr = (JSONArray) v;
+                    for (int k = 0; k < arr.length(); k++) {
+                        String tab = arr.optString(k, "");
+                        // 标签已被删掉时不做映射，tabsOf 会按 FLAG_SYSTEM 落回内置标签
+                        if (!tab.isEmpty() && findTab(tab) != null) {
+                            set.add(tab);
+                        }
+                    }
+                } else if (v instanceof String) {
+                    String tab = (String) v;
+                    if (!tab.isEmpty() && findTab(tab) != null) {
+                        set.add(tab);
+                    }
+                }
+                if (!set.isEmpty()) {
+                    appTabs.put(pkg, set);
                 }
             }
         } catch (Exception ignored) {
@@ -3072,23 +3112,83 @@ public class FreezeListActivity extends BaseActivity {
 
     private void saveAppTabs() {
         JSONObject o = new JSONObject();
-        for (Map.Entry<String, String> e : appTabs.entrySet()) {
+        for (Map.Entry<String, java.util.LinkedHashSet<String>> e : appTabs.entrySet()) {
             try {
-                o.put(e.getKey(), e.getValue());
+                JSONArray arr = new JSONArray();
+                for (String tab : e.getValue()) {
+                    arr.put(tab);
+                }
+                if (arr.length() > 0) {
+                    o.put(e.getKey(), arr);
+                }
             } catch (Exception ignored) {
             }
         }
         prefs().edit().putString(KEY_APP_TABS, o.toString()).apply();
         SwipeFreeze.syncAsync(this);
+        AutoBackup.snapshotAsync(this);
     }
 
-    /** 应用归属：没有显式映射（或映射到已删标签）时按 FLAG_SYSTEM 落回内置标签。 */
-    private String tabIdOf(Item it) {
-        String id = appTabs.get(it.pkg);
-        if (id != null && findTab(id) != null) {
+    /** 该应用所在的全部标签；没有显式归属时按 FLAG_SYSTEM 落回内置标签。 */
+    private Set<String> tabsOf(Item it) {
+        java.util.LinkedHashSet<String> set = appTabs.get(it.pkg);
+        if (set != null) {
+            java.util.LinkedHashSet<String> valid = new java.util.LinkedHashSet<>();
+            for (String id : set) {
+                if (findTab(id) != null) {
+                    valid.add(id);
+                }
+            }
+            if (!valid.isEmpty()) {
+                return valid;
+            }
+        }
+        java.util.LinkedHashSet<String> fallback = new java.util.LinkedHashSet<>();
+        fallback.add(it.system ? TAB_SYSTEM : TAB_USER);
+        return fallback;
+    }
+
+    private boolean inTab(Item it, String tabId) {
+        return tabsOf(it).contains(tabId);
+    }
+
+    /** 加入标签：保留原有归属，一个应用可以同时出现在多个标签页。 */
+    private boolean addAppToTab(String pkgKey, String tabId) {
+        java.util.LinkedHashSet<String> set = appTabs.get(pkgKey);
+        if (set == null) {
+            set = new java.util.LinkedHashSet<>();
+            appTabs.put(pkgKey, set);
+        }
+        return set.add(tabId);
+    }
+
+    /** 从某个标签移出；该应用在其他标签里的归属不受影响。 */
+    private boolean removeAppFromTab(String pkgKey, String tabId) {
+        java.util.LinkedHashSet<String> set = appTabs.get(pkgKey);
+        if (set == null || !set.remove(tabId)) {
+            return false;
+        }
+        if (set.isEmpty()) {
+            appTabs.remove(pkgKey);
+        }
+        return true;
+    }
+
+    /** 加入名单后要跳去的标签：优先「+」发起时的标签，否则取它所在第一个可见标签。 */
+    private String landingTabOf(Item it) {
+        Set<String> mine = tabsOf(it);
+        if (pickerTargetTab != null && mine.contains(pickerTargetTab)) {
+            return pickerTargetTab;
+        }
+        for (Tab t : tabs) {
+            if (t.visible && mine.contains(t.id)) {
+                return t.id;
+            }
+        }
+        for (String id : mine) {
             return id;
         }
-        return it.system ? TAB_SYSTEM : TAB_USER;
+        return firstVisibleTabId();
     }
 
     /** 标签排显示/收起：收起时把这一行的高度完全让给列表，并立刻重新测量，不等下次刷新。 */
@@ -3666,11 +3766,11 @@ public class FreezeListActivity extends BaseActivity {
         ok.setOnClickListener(v -> d.dismiss());
     }
 
-    /** 删除自定义标签：其应用清掉归属映射，按 FLAG_SYSTEM 回到内置标签，不丢数据。 */
+    /** 删除自定义标签：只摘掉这个标签的归属，应用还留在其他标签里，不丢数据。 */
     private void confirmDeleteTab(Tab tab, Runnable done) {
         int count = 0;
         for (Item it : items) {
-            if (tab.id.equals(tabIdOf(it))) {
+            if (tabsOf(it).contains(tab.id)) {
                 count++;
             }
         }
@@ -3689,7 +3789,7 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView body = new TextView(this);
-        body.setText("其中的 " + count + " 个应用会回到原来的「用户应用 / 系统应用」，不会丢失。");
+        body.setText("其中的 " + count + " 个应用只从这个标签移出；同时在其他标签里的应用照常保留，不会丢失。");
         body.setTextSize(13);
         body.setTextColor(getColor(R.color.text_secondary));
         body.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
@@ -3730,9 +3830,11 @@ public class FreezeListActivity extends BaseActivity {
         applySettingsAlignment(del);
         buttons[0].setOnClickListener(v -> del.dismiss());
         buttons[1].setOnClickListener(v -> {
+            // 只摘掉被删标签的归属，应用还留在其他标签里
             List<String> back = new ArrayList<>();
-            for (Map.Entry<String, String> e : appTabs.entrySet()) {
-                if (tab.id.equals(e.getValue())) {
+            for (Map.Entry<String, java.util.LinkedHashSet<String>> e : appTabs.entrySet()) {
+                e.getValue().remove(tab.id);
+                if (e.getValue().isEmpty()) {
                     back.add(e.getKey());
                 }
             }
@@ -4166,7 +4268,7 @@ public class FreezeListActivity extends BaseActivity {
         String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
         List<Item> shown = new ArrayList<>();
         for (Item it : items) {
-            if (!currentTabId.equals(tabIdOf(it))) {
+            if (!inTab(it, currentTabId)) {
                 continue;
             }
             if (!q.isEmpty() && !matchesQuery(it, q)) {
@@ -4252,7 +4354,7 @@ public class FreezeListActivity extends BaseActivity {
         if (added == null) {
             return;
         }
-        String tabId = tabIdOf(added);
+        String tabId = landingTabOf(added);
         Tab tab = findTab(tabId);
         if (tab == null || !tab.visible) {
             Toast.makeText(this, "已加入名单，但所在标签已隐藏", Toast.LENGTH_SHORT).show();
@@ -4949,36 +5051,44 @@ public class FreezeListActivity extends BaseActivity {
         return null;
     }
 
-    /** 长按不动松手：把应用移入另一个标签；一个应用只属于一个标签。 */
+    /** 长按不动松手：勾选应用的标签归属；一个应用可以同时加入多个标签。 */
     private void showMoveDialog(Item it) {
         if (tabs.size() <= 1) {
             Toast.makeText(this, "只有一个标签，先在布局设置里新建标签", Toast.LENGTH_SHORT).show();
             return;
         }
-        String cur = tabIdOf(it);
+        Set<String> mine = tabsOf(it);
         List<MoveTabDialog.Tab> entries = new ArrayList<>();
         for (Tab t : tabs) {
-            entries.add(new MoveTabDialog.Tab(t.id, t.name, t.visible, t.id.equals(cur)));
+            entries.add(new MoveTabDialog.Tab(t.id, t.name, t.visible, mine.contains(t.id)));
         }
         MoveTabDialog.show(this, it.label, it.icon, entries, target -> {
             Tab t = findTab(target.id);
-            if (t == null || target.current) {
+            if (t == null) {
+                return;
+            }
+            if (!target.current) {
+                // 取消勾选：只从这个标签移出，应用在其他标签里照样保留
+                if (removeAppFromTab(it.pkg, t.id)) {
+                    saveAppTabs();
+                    Toast.makeText(this, "已从「" + t.name + "」移出",
+                            Toast.LENGTH_SHORT).show();
+                }
+                render();
                 return;
             }
             // 用户应用不允许进入内置的「系统应用」标签
             if (!it.system && TAB_SYSTEM.equals(t.id)) {
+                target.current = false;
                 Toast.makeText(this, "用户应用禁止移入系统应用标签", Toast.LENGTH_SHORT).show();
                 return;
             }
-            moveToTab(it, t);
+            if (addAppToTab(it.pkg, t.id)) {
+                saveAppTabs();
+                Toast.makeText(this, "已加入「" + t.name + "」", Toast.LENGTH_SHORT).show();
+            }
+            render();
         });
-    }
-
-    private void moveToTab(Item it, Tab target) {
-        appTabs.put(it.pkg, target.id);
-        saveAppTabs();
-        Toast.makeText(this, "已移动到「" + target.name + "」", Toast.LENGTH_SHORT).show();
-        render();
     }
 
     // ---------------- 长按底部操作单 ----------------
@@ -5557,18 +5667,23 @@ public class FreezeListActivity extends BaseActivity {
         });
     }
 
-    /** 批量改标签页：弹一个标签选择框，选中后全部移过去。 */
+    /** 批量加标签：选中项全部加入目标标签，已在里面的应用保留原有归属、不会重复。 */
     private void batchMoveTab() {
         List<Tab> targets = new ArrayList<>();
-        Set<String> curLabels = new HashSet<>();
-        for (Item it : batchTargets) {
-            curLabels.add(tabIdOf(it));
-        }
         for (Tab t : tabs) {
-            if (!curLabels.contains(t.id)) targets.add(t);
+            boolean all = true;
+            for (Item it : batchTargets) {
+                if (!inTab(it, t.id)) {
+                    all = false;
+                    break;
+                }
+            }
+            if (!all) {
+                targets.add(t);
+            }
         }
         if (targets.isEmpty()) {
-            Toast.makeText(this, "选中项已全部在同一标签，或只有一个标签", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "选中项已全部在这些标签里", Toast.LENGTH_SHORT).show();
             exitSelectMode();
             return;
         }
@@ -5579,7 +5694,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         int n = batchTargets.size();
         AlertDialog pick = new AlertDialog.Builder(this)
-                .setTitle("把 " + n + " 个应用移动到…")
+                .setTitle("把 " + n + " 个应用加入…")
                 .setItems(names, (d, w) -> {
                     Tab target = targets.get(w);
                     // 用户应用不允许进入内置的「系统应用」标签
@@ -5592,15 +5707,17 @@ public class FreezeListActivity extends BaseActivity {
                             }
                         }
                     }
-                    int moved = 0;
+                    int added = 0;
                     for (Item it : batchTargets) {
-                        appTabs.put(it.pkg, target.id);
-                        moved++;
+                        if (addAppToTab(it.pkg, target.id)) {
+                            added++;
+                        }
                     }
                     saveAppTabs();
                     exitSelectMode();
                     render();
-                    Toast.makeText(this, "已移动 " + moved + " 个到「" + target.name + "」", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "已加入 " + added + " 个到「" + target.name + "」",
+                            Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton("取消", (d, w) -> exitSelectMode())
                 .setOnCancelListener(d -> exitSelectMode())
@@ -5765,6 +5882,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         prefs().edit().putString(KEY_SUB_PAIRS, sb.toString()).apply();
+        AutoBackup.snapshotAsync(this);
         refreshPairEntry();
     }
 
@@ -5793,6 +5911,7 @@ public class FreezeListActivity extends BaseActivity {
         prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
         // 白名单变化要同步给 LSPosed 侧的划卡/锁屏冻结，白名单应用一律不冻
         SwipeFreeze.syncAsync(this);
+        AutoBackup.snapshotAsync(this);
         // 列表格子的白名单标识随状态即时刷新
         rebindCells();
     }
@@ -5814,6 +5933,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
         SwipeFreeze.syncAsync(this);
+        AutoBackup.snapshotAsync(this);
         refreshWhitelistEntry();
         rebindCells();
         Toast.makeText(this, (add ? "已加入白名单 " : "已移出白名单 ") + n + " 个应用",
@@ -6186,13 +6306,7 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private void showPmError(String title, Item it, String reason) {
-        AlertDialog err = new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setMessage(it.label + "：" + reason)
-                .setPositiveButton("知道了", null)
-                .create();
-        err.show();
-        Ui.roundAlertDialog(err);
+        Ui.smallDialog(this, title, it.label + "：" + reason, "知道了");
         reload();
     }
 
@@ -6299,13 +6413,8 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 if (!ok) {
-                    AlertDialog failOne = new AlertDialog.Builder(this)
-                            .setTitle("已移出名单，但解冻失败")
-                            .setMessage(it.label + "：" + Ui.pmReason(r, false))
-                            .setPositiveButton("知道了", null)
-                            .create();
-                    failOne.show();
-                    Ui.roundAlertDialog(failOne);
+                    Ui.smallDialog(this, "已移出名单，但解冻失败",
+                            it.label + "：" + Ui.pmReason(r, false), "知道了");
                 }
                 reload();
             });
@@ -8327,6 +8436,14 @@ public class FreezeListActivity extends BaseActivity {
         aboutEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
         box.addView(aboutEntry);
 
+        // 关于凚下方：致谢名单（赞赏与测试名单，点开查看）
+        TextView thanksEntry = new TextView(this);
+        thanksEntry.setText("致谢名单");
+        thanksEntry.setTextSize(12);
+        thanksEntry.setTextColor(getColor(R.color.blue));
+        thanksEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        box.addView(thanksEntry);
+
         // 最底部：赞赏开发者（点开显示收款码，可保存到相册）
         TextView donateEntry = new TextView(this);
         donateEntry.setText("赞赏开发者");
@@ -8476,6 +8593,10 @@ public class FreezeListActivity extends BaseActivity {
         aboutEntry.setOnClickListener(v -> {
             dialog.dismiss();
             showAboutDialog();
+        });
+        thanksEntry.setOnClickListener(v -> {
+            dialog.dismiss();
+            showThanksDialog();
         });
 
         // 未展开范围滑块：半屏固定显示「不侵入半屏」的最大值；全屏可手动调节并记忆
@@ -9480,6 +9601,120 @@ public class FreezeListActivity extends BaseActivity {
             lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
             lp.y = 0;
             w.setAttributes(lp);
+        }
+    }
+
+    /** 致谢名单：与关于同款圆角卡片，高度随名单内容自适应，过高时内部滚动。 */
+    private void showThanksDialog() {
+        int pad = Ui.dp(this, 20);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(pad, Ui.dp(this, 22), pad, Ui.dp(this, 8));
+
+        TextView title = Ui.text(this, "致谢名单", 19, Ui.TEXT_PRIMARY, true);
+        title.setGravity(Gravity.CENTER);
+        card.addView(title);
+
+        TextView subtitle = Ui.text(this, "愿你每一天都如你所愿", 12, Ui.TEXT_SECONDARY, false);
+        subtitle.setGravity(Gravity.CENTER);
+        subtitle.setPadding(0, Ui.dp(this, 6), 0, 0);
+        card.addView(subtitle);
+
+        addThanksSection(card, "赞赏名单",
+                new String[][]{{"酷安@知岁的里昂", null}});
+        addThanksSection(card, "测试专员",
+                new String[][]{{"酷安@知岁的里昂", null}});
+
+        TextView close = new TextView(this);
+        close.setText("感谢");
+        close.setTextSize(14);
+        close.setTypeface(null, android.graphics.Typeface.BOLD);
+        close.setTextColor(getColor(R.color.blue));
+        close.setGravity(Gravity.CENTER);
+        close.setPadding(0, Ui.dp(this, 14), 0, Ui.dp(this, 12));
+
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int widthPx = Math.min(Math.round(screenW * 0.86f), Ui.dp(this, 340));
+
+        final int radiusPx = Ui.dp(this, 24);
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setBackgroundResource(R.drawable.bg_dialog);
+        shell.setClipToOutline(true);
+        shell.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override
+            public void getOutline(View v, android.graphics.Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), radiusPx);
+            }
+        });
+
+        android.widget.ScrollView scroller = new android.widget.ScrollView(this);
+        scroller.setFillViewport(false);
+        scroller.addView(card);
+        shell.addView(scroller, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        shell.addView(close, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final android.app.Dialog d = new android.app.Dialog(this);
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        d.setContentView(shell);
+        android.view.Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
+        }
+        close.setOnClickListener(v -> d.dismiss());
+        close.setFocusable(false);
+        d.show();
+        if (w != null) {
+            android.view.WindowManager.LayoutParams lp = w.getAttributes();
+            lp.width = widthPx;
+            lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            lp.gravity = Gravity.CENTER;
+            w.setAttributes(lp);
+        }
+        // 名单多时收在屏幕 70% 以内，超出部分交给内部滚动
+        shell.post(() -> {
+            int maxH = Math.round(screenH * 0.70f);
+            if (shell.getHeight() > maxH && close.getHeight() > 0) {
+                LinearLayout.LayoutParams slp =
+                        (LinearLayout.LayoutParams) scroller.getLayoutParams();
+                slp.height = maxH - close.getHeight();
+                scroller.setLayoutParams(slp);
+            }
+        });
+    }
+
+    /** 致谢卡片里的小节：小节标题 + 浅底药丸行（左侧名单，右侧可带金额）。 */
+    private void addThanksSection(LinearLayout card, String heading, String[][] rows) {
+        TextView h = Ui.text(this, heading, 12, Ui.TEXT_SECONDARY, true);
+        h.setPadding(0, Ui.dp(this, 20), 0, Ui.dp(this, 8));
+        card.addView(h);
+        for (String[] row : rows) {
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(Gravity.CENTER_VERTICAL);
+            int hpad = Ui.dp(this, 14);
+            int vpad = Ui.dp(this, 12);
+            line.setPadding(hpad, vpad, hpad, vpad);
+            android.graphics.drawable.GradientDrawable bg =
+                    new android.graphics.drawable.GradientDrawable();
+            bg.setColor(getColor(R.color.soft_bg));
+            bg.setCornerRadius(Ui.dp(this, 14));
+            line.setBackground(bg);
+
+            TextView name = Ui.text(this, row[0], 13, Ui.TEXT_PRIMARY, false);
+            line.addView(name, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            if (row.length > 1 && row[1] != null) {
+                TextView amount = Ui.text(this, row[1], 12, Ui.primary(this), true);
+                line.addView(amount);
+            }
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = Ui.dp(this, 8);
+            card.addView(line, lp);
         }
     }
 
@@ -11762,13 +11997,7 @@ public class FreezeListActivity extends BaseActivity {
                     for (String f : fails) {
                         sb.append("\n\n").append(f);
                     }
-                    AlertDialog failBatch = new AlertDialog.Builder(this)
-                            .setTitle(freeze ? "冻结失败" : "解冻失败")
-                            .setMessage(sb.toString())
-                            .setPositiveButton("知道了", null)
-                            .create();
-                    failBatch.show();
-                    Ui.roundAlertDialog(failBatch);
+                    Ui.smallDialog(this, freeze ? "冻结失败" : "解冻失败", sb.toString(), "知道了");
                 }
                 // 冻结且没有失败项时，按设置在本轮刷新完成后收起列表
                 if (freeze && fails.isEmpty()) {
@@ -11897,14 +12126,9 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 if (!ok) {
-                    AlertDialog failOpen = new AlertDialog.Builder(this)
-                            .setTitle("解冻失败，无法打开")
-                            .setMessage(it.label + "：" + (failReason != null
-                                    ? failReason : Ui.pmReason(r, false)))
-                            .setPositiveButton("知道了", null)
-                            .create();
-                    failOpen.show();
-                    Ui.roundAlertDialog(failOpen);
+                    Ui.smallDialog(this, "解冻失败，无法打开",
+                            it.label + "：" + (failReason != null
+                                    ? failReason : Ui.pmReason(r, false)), "知道了");
                     reload();
                     return;
                 }
