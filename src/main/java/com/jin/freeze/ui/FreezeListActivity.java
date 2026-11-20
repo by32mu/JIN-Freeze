@@ -5598,6 +5598,8 @@ public class FreezeListActivity extends BaseActivity {
             cur.remove(key);
         }
         prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+        // 白名单变化要同步给 LSPosed 侧的划卡/锁屏冻结，白名单应用一律不冻
+        SwipeFreeze.syncAsync(this);
         // 列表格子的白名单标识随状态即时刷新
         rebindCells();
     }
@@ -5618,6 +5620,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+        SwipeFreeze.syncAsync(this);
         refreshWhitelistEntry();
         rebindCells();
         Toast.makeText(this, (add ? "已加入白名单 " : "已移出白名单 ") + n + " 个应用",
@@ -9062,6 +9065,7 @@ public class FreezeListActivity extends BaseActivity {
                 Set<String> cur = whitelistSet();
                 cur.removeAll(checked);
                 prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+                SwipeFreeze.syncAsync(this);
                 refreshWhitelistEntry();
                 rebindCells();
                 Toast.makeText(this, "已移出白名单 " + checked.size() + " 个应用",
@@ -10948,6 +10952,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         prefs().edit().putStringSet(KEY_WHITELIST, next).apply();
+        SwipeFreeze.syncAsync(this);
         refreshWhitelistEntry();
         rebindCells();
         return next.size();

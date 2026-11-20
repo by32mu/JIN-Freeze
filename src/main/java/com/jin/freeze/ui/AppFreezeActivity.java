@@ -383,6 +383,16 @@ public class AppFreezeActivity extends BaseActivity {
         return pkg + "@" + userId;
     }
 
+    /** 白名单与冻结列表共用 freeze_list 里的 freeze_whitelist，白名单应用不会被冻结。 */
+    private boolean isWhitelisted(String pkg, int userId) {
+        Set<String> raw = getSharedPreferences("freeze_list", MODE_PRIVATE)
+                .getStringSet("freeze_whitelist", null);
+        if (raw == null || raw.isEmpty()) {
+            return false;
+        }
+        return raw.contains(pkg) || raw.contains(instanceKey(pkg, userId));
+    }
+
     /** 名单存储键：主用户用纯包名（兼容旧数据），分身才带「@用户」。 */
     private static String storageKey(String pkg, int userId) {
         return userId == 0 ? pkg : instanceKey(pkg, userId);
@@ -1476,6 +1486,10 @@ public class AppFreezeActivity extends BaseActivity {
         if (working) {
             return;
         }
+        if (!a.frozen && isWhitelisted(a.pkg, a.userId)) {
+            Toast.makeText(this, a.label + " 在白名单里，不会被冻结", Toast.LENGTH_SHORT).show();
+            return;
+        }
         boolean toFreeze = !a.frozen;
         if (prefs().getBoolean(KEY_SKIP_CONFIRM, false)) {
             runToggle(a);
@@ -1608,6 +1622,16 @@ public class AppFreezeActivity extends BaseActivity {
         for (App a : all) {
             if (selected.contains(instanceKey(a.pkg, a.userId))) {
                 targetApps.add(a);
+            }
+        }
+        if (freeze) {
+            // 白名单应用任何通道都不冻，批量冻结时直接跳过
+            int before = targetApps.size();
+            targetApps.removeIf(a -> isWhitelisted(a.pkg, a.userId));
+            int skipped = before - targetApps.size();
+            if (skipped > 0) {
+                Toast.makeText(this, "已跳过白名单应用 " + skipped + " 个",
+                        Toast.LENGTH_SHORT).show();
             }
         }
         if (targetApps.isEmpty()) {

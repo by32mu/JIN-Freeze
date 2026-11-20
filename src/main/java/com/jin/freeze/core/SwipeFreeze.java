@@ -250,6 +250,17 @@ public final class SwipeFreeze {
         Set<String> selected = selectedTags(context);
         Set<String> lockSelected = lockSelectedTags(context);
 
+        // 白名单里的应用任何冻结通道都不冻：直接从名单里剔除，划卡/锁屏共用这份名单
+        Set<String> white = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getStringSet("freeze_whitelist", null);
+        if (white != null && !white.isEmpty()) {
+            Set<String> whitePkgs = new HashSet<>();
+            for (String key : white) {
+                whitePkgs.add(packagePart(key));
+            }
+            pkgs.removeAll(whitePkgs);
+        }
+
         JSONObject root = new JSONObject();
         try {
             root.put("version", 1);
