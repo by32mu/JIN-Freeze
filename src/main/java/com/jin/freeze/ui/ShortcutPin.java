@@ -167,6 +167,16 @@ public final class ShortcutPin {
         Intent intent = new Intent(ACTION_LAUNCH).putExtra(KEY_PACKAGE, launchKey);
         Bitmap bmp = appIcon(ctx, pkg, icon);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (Boolean.FALSE.equals(miuiShortcutAllowed(ctx))) {
+                // MIUI/HyperOS 的「桌面快捷方式」权限没开时，系统不会弹确认框：
+                // 只提醒一句，让用户自己去「设置 → 应用设置 → 权限 → 其他权限」里打开
+                if (token != null) {
+                    QUEUE.clear();
+                }
+                Toast.makeText(ctx, "请先开启「桌面快捷方式」权限",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
             if (!ShortcutManagerCompat.isRequestPinShortcutSupported(ctx)) {
                 Toast.makeText(ctx, "添加到桌面失败：当前桌面不支持固定快捷方式",
                         Toast.LENGTH_LONG).show();
@@ -175,7 +185,8 @@ public final class ShortcutPin {
             IconCompat iconCompat = bmp != null
                     ? IconCompat.createWithBitmap(bmp)
                     : IconCompat.createWithResource(ctx, R.drawable.ic_launcher);
-            CharSequence label = name == null || name.length() == 0 ? appLabel(ctx, pkg) : name;
+            CharSequence label = name == null || name.length() == 0
+                    ? fallbackLabel(ctx, key) : name;
             ShortcutInfoCompat info = new ShortcutInfoCompat.Builder(ctx, shortcutId)
                     .setIcon(iconCompat)
                     .setShortLabel(label)
@@ -194,7 +205,7 @@ public final class ShortcutPin {
             Intent legacy = new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
             legacy.putExtra(Intent.EXTRA_SHORTCUT_INTENT, intent);
             legacy.putExtra(Intent.EXTRA_SHORTCUT_NAME,
-                    name == null || name.length() == 0 ? appLabel(ctx, pkg) : name);
+                    name == null || name.length() == 0 ? fallbackLabel(ctx, key) : name);
             if (bmp != null) {
                 legacy.putExtra(Intent.EXTRA_SHORTCUT_ICON, bmp);
             } else {
@@ -266,6 +277,50 @@ public final class ShortcutPin {
             }
         }
         return LaunchTarget.bitmap(d, size);
+    }
+
+    /** 批量/恢复没有显式名称时：重命名过的用自定义名，否则用系统应用名。 */
+    private static CharSequence fallbackLabel(Context c, String key) {
+        String custom = customName(c, key);
+        return custom.isEmpty() ? appLabel(c, packagePart(key)) : custom;
+    }
+
+    /**
+     * MIUI/HyperOS 的「桌面快捷方式」权限对应自身的 AppOps 10017：
+     * 允许 / 拒绝 / 其它（或非小米设备、取不到）三种结果，后者返回 null 不拦。
+     */
+    private static Boolean miuiShortcutAllowed(Context c) {
+        if (!"xiaomi".equalsIgnoreCase(Build.MANUFACTURER)) {
+            return null;
+        }
+        try {
+            android.app.AppOpsManager am = (android.app.AppOpsManager)
+                    c.getSystemService(Context.APP_OPS_SERVICE);
+            if (am == null) {
+                return null;
+            }
+            java.lang.reflect.Method m = android.app.AppOpsManager.class.getMethod(
+                    "checkOpNoThrow", int.class, int.class, String.class);
+            int mode = (int) m.invoke(am, 10017,
+                    android.os.Process.myUid(), c.getPackageName());
+            if (mode == android.app.AppOpsManager.MODE_ALLOWED) {
+                return Boolean.TRUE;
+            }
+            return mode == android.app.AppOpsManager.MODE_IGNORED ? Boolean.FALSE : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** 名单里保存的自定义显示名（空 = 没重命名）。 */
+    private static String customName(Context c, String key) {
+        try {
+            String raw = c.getSharedPreferences("freeze_list", Context.MODE_PRIVATE)
+                    .getString("app_names", "{}");
+            return new org.json.JSONObject(raw).optString(key, "");
+        } catch (Throwable ignored) {
+            return "";
+        }
     }
 
     private static CharSequence appLabel(Context c, String pkg) {
