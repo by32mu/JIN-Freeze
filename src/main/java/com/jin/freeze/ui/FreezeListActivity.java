@@ -707,6 +707,21 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
 
+    /** 恢复时「导入文件」：系统文件选择器任选一份备份，不限目录与文件名。 */
+    private final ActivityResultLauncher<String[]> backupImportPicker =
+            registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+                if (uri == null) {
+                    return;
+                }
+                try {
+                    getContentResolver().takePersistableUriPermission(uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Throwable ignored) {
+                    // 个别提供方不给长期权限，本次读取仍可用
+                }
+                importBackupUri(uri);
+            });
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -9930,6 +9945,7 @@ public class FreezeListActivity extends BaseActivity {
         JinApp.IO.execute(() -> {
             File out = null;
             String err = null;
+            String path = null;
             try {
                 File dir = backupDir();
                 if (!dir.exists() && !dir.mkdirs()) {
@@ -9941,48 +9957,100 @@ public class FreezeListActivity extends BaseActivity {
                 FileOutputStream fos = new FileOutputStream(out);
                 fos.write(text.getBytes("UTF-8"));
                 fos.close();
+                path = out.getAbsolutePath();
             } catch (Exception e) {
                 err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             }
+            if (path == null) {
+                // 分区存储写不进 Download 时，用 root/Shizuku 写同一路径
+                File dir = new File("/storage/emulated/0/Download/凚/备份");
+                String name = BACKUP_FILE_PREFIX
+                        + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".json";
+                File target = new File(dir, name);
+                PrivShell.Result r = PrivShell.exec("mkdir -p '" + dir.getAbsolutePath()
+                        + "' && printf '%s' '" + text + "' > '" + target.getAbsolutePath() + "'", 20);
+                if (r != null && r.code == 0) {
+                    out = target;
+                    path = target.getAbsolutePath();
+                    err = null;
+                }
+            }
             final File f = out;
             final String msg = err;
+            final String savedPath = path;
             main.post(() -> {
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
-                if (f == null || msg != null) {
+                if (savedPath == null) {
                     compactCard("备份失败", "写入备份文件失败：" + msg, null,
                             new String[]{"知道了"}, new Runnable[]{null});
                     return;
                 }
-                final String path = f.getAbsolutePath();
                 compactCard("备份完成",
                         "冻结列表 " + listCount + " 个 + 设置 " + settingCount + " 项 + 快捷方式 "
                                 + shortcutCount + " 个 + 白名单 " + whiteCount + " 个 + 关联应用 "
-                                + pairCount + " 组\n" + path,
+                                + pairCount + " 组\n" + savedPath,
                         null, new String[]{"关闭", "复制路径"}, new Runnable[]{null, () -> {
                             android.content.ClipboardManager cm = (android.content.ClipboardManager)
                                     getSystemService(CLIPBOARD_SERVICE);
-                            cm.setPrimaryClip(ClipData.newPlainText("备份文件路径", path));
+                            cm.setPrimaryClip(ClipData.newPlainText("备份文件路径", savedPath));
                             Toast.makeText(this, "路径已复制", Toast.LENGTH_SHORT).show();
                         }});
             });
         });
     }
 
-    /** 文件来源：按修改时间从新到旧列出备份文件。 */
+    /** 文件来源：后台确认能否读取备份目录，再按修改时间从新到旧列出备份文件。 */
     private void showRestoreFiles() {
-        File[] arr = backupDir().listFiles((d, n) ->
-                n.startsWith(BACKUP_FILE_PREFIX) && n.endsWith(".json"));
-        List<File> files = new ArrayList<>();
-        if (arr != null) {
-            Collections.addAll(files, arr);
-        }
+        JinApp.IO.execute(() -> {
+            // Android 11+ 分区存储：非本应用创建的 Download 文件要「所有文件访问」才读得到；
+            // root/Shizuku 可用时直接读，不需要该权限。
+            boolean noAccess = android.os.Build.VERSION.SDK_INT >= 30
+                    && !android.os.Environment.isExternalStorageManager()
+                    && PrivShell.mode() != PrivShell.Mode.ROOT;
+            main.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (noAccess) {
+                    showAllFilesAccessCard();
+                    return;
+                }
+                showRestoreFilesNow();
+            });
+        });
+    }
+
+    /** 缺少「所有文件访问」时的替代入口：去授权，或手动导入备份文件。 */
+    private void showAllFilesAccessCard() {
+        compactCard("读取备份需要授权",
+                "Android 11 起，应用默认读不到 Download 里旧版本创建的文件，卸载重装后更明显。"
+                        + "开启「所有文件访问」即可直接读取 /storage/emulated/0/Download/凚/备份；"
+                        + "也可以点「导入文件」手动选备份。",
+                null, new String[]{"取消", "去授权", "导入文件"}, new Runnable[]{null, () -> {
+                    try {
+                        startActivity(new Intent(
+                                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (Exception e) {
+                        try {
+                            startActivity(new Intent(
+                                    android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }, () -> backupImportPicker.launch(new String[]{"*/*"})});
+    }
+
+    private void showRestoreFilesNow() {
+        List<File> files = collectBackupFiles();
         files.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
         if (files.isEmpty()) {
             compactCard("还没有备份文件",
-                    "可以先做一次备份，或者用「粘贴备份文本」恢复之前复制的备份串",
-                    null, new String[]{"知道了"}, new Runnable[]{null});
+                    "可以先做一次备份、用「粘贴备份文本」恢复备份串，或「导入文件」选手机里任意位置的备份",
+                    null, new String[]{"取消", "导入文件"}, new Runnable[]{null,
+                            () -> backupImportPicker.launch(new String[]{"*/*"})});
             return;
         }
         final AlertDialog[] ref = new AlertDialog[1];
@@ -10005,7 +10073,67 @@ public class FreezeListActivity extends BaseActivity {
         sv.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 260)));
         ref[0] = compactCard("选择备份文件", "共 " + files.size() + " 份，按时间从新到旧",
-                sv, new String[]{"取消"}, new Runnable[]{null});
+                sv, new String[]{"取消", "导入文件"}, new Runnable[]{null,
+                        () -> {
+                            dismiss(ref);
+                            backupImportPicker.launch(new String[]{"*/*"});
+                        }});
+    }
+
+    /** 备份文件来源：当前备份目录 + 旧版本/用户手工放置的路径，按绝对路径去重。 */
+    private List<File> collectBackupFiles() {
+        List<File> files = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        File external = android.os.Environment.getExternalStorageDirectory();
+        File[] dirs = {
+                backupDir(),
+                new File("/storage/emulated/0/Download/凚/备份"),
+                new File("/storage/emulated/0/Download/凚"),
+                new File("/storage/emulated/0/凚/备份"),
+                new File(external, "Download/凚/备份"),
+                new File(external, "凚/备份")
+        };
+        for (File dir : dirs) {
+            File[] arr = dir.listFiles((d, n) -> {
+                String low = n.toLowerCase(Locale.US);
+                return low.endsWith(".json") || low.endsWith(".txt");
+            });
+            if (arr != null) {
+                for (File f : arr) {
+                    if (f.isFile() && seen.add(f.getAbsolutePath())) {
+                        files.add(f);
+                    }
+                }
+            }
+            if (arr == null) {
+                // 应用无权列目录（分区存储）时用 root/Shizuku 列
+                addRootListedFiles(files, seen, dir);
+            }
+        }
+        return files;
+    }
+
+    /** 用 root/Shizuku 列目录里的备份文件，绕开分区存储限制。 */
+    private void addRootListedFiles(List<File> files, java.util.Set<String> seen, File dir) {
+        PrivShell.Result r = PrivShell.exec(
+                "ls -1p '" + dir.getAbsolutePath() + "' 2>/dev/null", 10);
+        if (r == null || r.out == null) {
+            return;
+        }
+        for (String line : r.out.split("\\r?\\n")) {
+            String n = line.trim();
+            if (n.isEmpty() || n.endsWith("/")) {
+                continue;
+            }
+            String low = n.toLowerCase(Locale.US);
+            if (!(low.endsWith(".json") || low.endsWith(".txt"))) {
+                continue;
+            }
+            File f = new File(dir, n);
+            if (seen.add(f.getAbsolutePath())) {
+                files.add(f);
+            }
+        }
     }
 
     private void readBackupFile(final File f) {
@@ -10025,33 +10153,91 @@ public class FreezeListActivity extends BaseActivity {
             } catch (Exception e) {
                 err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             }
+            if (text == null) {
+                // 分储存储下应用读不到 Download 里的文件，改用 root/Shizuku 读
+                PrivShell.Result r = PrivShell.exec(
+                        "cat '" + f.getAbsolutePath() + "' 2>/dev/null", 20);
+                if (r != null && r.code == 0 && r.out != null && !r.out.isEmpty()) {
+                    text = r.out;
+                    err = null;
+                }
+            }
+            finishReadBackup(text, err, f.getName());
+        });
+    }
+
+    /** 导入的文件：读 URI 内容后走与目录备份相同的解析。 */
+    private void importBackupUri(final Uri uri) {
+        JinApp.IO.execute(() -> {
+            String text = null;
+            String err = null;
+            try {
+                java.io.InputStream in = getContentResolver().openInputStream(uri);
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    bo.write(buf, 0, n);
+                }
+                in.close();
+                text = new String(bo.toByteArray(), "UTF-8");
+            } catch (Exception e) {
+                err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            }
+            finishReadBackup(text, err, displayNameOf(uri));
+        });
+    }
+
+    private String displayNameOf(Uri uri) {
+        try {
+            android.database.Cursor c = getContentResolver().query(uri,
+                    new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
+                    null, null, null);
+            if (c != null) {
+                try {
+                    if (c.moveToFirst()) {
+                        String n = c.getString(0);
+                        if (n != null && !n.isEmpty()) {
+                            return n;
+                        }
+                    }
+                } finally {
+                    c.close();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        String seg = uri.getLastPathSegment();
+        return seg == null ? "导入的备份" : seg;
+    }
+
+    private void finishReadBackup(final String text, final String err, final String name) {
+        main.post(() -> {
+            if (isFinishing() || isDestroyed()) {
+                return;
+            }
             final String raw = text;
             final String msg = err;
-            main.post(() -> {
-                if (isFinishing() || isDestroyed()) {
-                    return;
-                }
-                if (raw == null) {
-                    compactCard("读取失败", "这个备份文件读不出来：" + msg, null,
-                            new String[]{"知道了"}, new Runnable[]{null});
-                    return;
-                }
-                if (parseBackup(decodeIfText(raw)) == null) {
-                    compactCard("无法恢复",
-                            "这个文件不是凚的备份（缺少 " + BACKUP_TEXT_PREFIX
-                                    + " 标识或内容已损坏），未改动任何配置",
-                            null, new String[]{"知道了"}, new Runnable[]{null});
-                    return;
-                }
-                startRestore(raw, f.getName());
-            });
+            if (raw == null) {
+                compactCard("读取失败", "这个备份文件读不出来：" + msg, null,
+                        new String[]{"知道了"}, new Runnable[]{null});
+                return;
+            }
+            if (parseAnyBackup(decodeIfText(raw)) == null) {
+                compactCard("无法恢复",
+                        "这个文件不是凚的备份（新格式 " + BACKUP_TEXT_PREFIX
+                                + " 串、旧版名单或旧 JSON 都能识别），未改动任何配置",
+                        null, new String[]{"知道了"}, new Runnable[]{null});
+                return;
+            }
+            startRestore(raw, name);
         });
     }
 
     /** 文本来源：只认新备份串，不符合格式直接提示，不做旧版兼容。 */
     private void showRestorePaste() {
         EditText input = new EditText(this);
-        input.setHint("粘贴 " + BACKUP_TEXT_PREFIX + " 开头的备份文本（备份文件内容也可直接粘进来）");
+        input.setHint("粘贴 " + BACKUP_TEXT_PREFIX + " 开头的备份串；旧版备份文本（[用户应用]…）也能直接粘");
         input.setTextSize(12);
         input.setTypeface(android.graphics.Typeface.MONOSPACE);
         input.setGravity(Gravity.TOP | Gravity.START);
@@ -10070,9 +10256,10 @@ public class FreezeListActivity extends BaseActivity {
                         Toast.makeText(this, "请先粘贴备份内容", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    if (parseBackup(decodeIfText(raw)) == null) {
+                    if (parseAnyBackup(decodeIfText(raw)) == null) {
                         compactCard("无法恢复",
-                                "这段内容不是凚的备份（缺少 format 标识或内容已损坏），未改动任何配置",
+                                "这段内容不是凚的备份（新格式 " + BACKUP_TEXT_PREFIX
+                                        + " 串、旧版名单或旧 JSON 都能识别），未改动任何配置",
                                 null, new String[]{"知道了"}, new Runnable[]{null});
                         return;
                     }
@@ -10091,9 +10278,9 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 解析成功后按范围三选一。 */
     private void startRestore(String raw, String source) {
-        JSONObject data = parseBackup(decodeIfText(raw));
+        JSONObject data = parseAnyBackup(decodeIfText(raw));
         if (data == null) {
-            Toast.makeText(this, "格式不对：需要 " + BACKUP_TEXT_PREFIX + " 开头的备份文本",
+            Toast.makeText(this, "格式不对：需要凚的备份文本（新格式或旧版名单）",
                     Toast.LENGTH_SHORT).show();
             return;
         }
@@ -10457,12 +10644,19 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
+    /** 文本解码：新格式 JIN:、旧压缩串 FWB1: / DJLB: 都解压，其余按明文处理。 */
     private String decodeIfText(String raw) {
         if (raw == null) {
             return null;
         }
         String t = raw.trim();
-        return t.startsWith(BACKUP_TEXT_PREFIX) ? decodeBackupText(t) : t;
+        if (t.startsWith(BACKUP_TEXT_PREFIX)) {
+            return decodeBackupText(t);
+        }
+        if (t.startsWith("FWB1:") || t.startsWith("DJLB:")) {
+            return decodeDeflated(t.substring(5));
+        }
+        return t;
     }
 
     /** 文本编码：UTF-8 → Deflate(9) → Base64，无换行，整串可复制。 */
@@ -10478,13 +10672,18 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 文本解码：只认 JIN: 前缀（旧 FWB1: 不兼容），解压后交给 parseBackup 校验。 */
+    /** 文本解码：JIN: 前缀，解压后交给 parseBackup 校验。 */
     private String decodeBackupText(String raw) {
         if (raw == null || !raw.startsWith(BACKUP_TEXT_PREFIX)) {
             return null;
         }
+        return decodeDeflated(raw.substring(BACKUP_TEXT_PREFIX.length()));
+    }
+
+    /** Base64 → Deflate 解压成 UTF-8 文本，旧备份串共用。 */
+    private String decodeDeflated(String b64) {
         try {
-            byte[] data = Base64.decode(raw.substring(BACKUP_TEXT_PREFIX.length()), Base64.NO_WRAP);
+            byte[] data = Base64.decode(b64, Base64.NO_WRAP);
             InflaterInputStream in = new InflaterInputStream(new ByteArrayInputStream(data));
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
@@ -10497,6 +10696,129 @@ public class FreezeListActivity extends BaseActivity {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** 备份解析：新格式 → 旧 JSON（无 format 字段）→ 旧版纯文本名单，逐级兼容。 */
+    private JSONObject parseAnyBackup(String text) {
+        JSONObject o = parseBackup(text);
+        if (o != null) {
+            return o;
+        }
+        if (text == null) {
+            return null;
+        }
+        try {
+            JSONObject loose = new JSONObject(text.trim());
+            if (loose.optJSONObject("freeze") == null
+                    && loose.optJSONObject("settings") == null) {
+                return null;
+            }
+            loose.put("format", BACKUP_FORMAT);
+            if (!loose.has("version")) {
+                loose.put("version", BACKUP_VERSION);
+            }
+            return loose;
+        } catch (Exception ignored) {
+        }
+        return parseLegacyText(text);
+    }
+
+    /** 旧版纯文本名单：[用户应用] / [系统应用] / [设置] 分区，或每行一个包名。 */
+    private JSONObject parseLegacyText(String text) {
+        if (text == null) {
+            return null;
+        }
+        JSONArray pkgs = new JSONArray();
+        JSONObject settings = new JSONObject();
+        boolean hasHeader = false;
+        boolean inSettings = false;
+        for (String line0 : text.split("\\r?\\n")) {
+            String line = line0.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (line.startsWith("[")) {
+                hasHeader = true;
+                inSettings = line.contains("设置");
+                continue;
+            }
+            if (inSettings) {
+                int eq = line.indexOf('=');
+                if (eq > 0) {
+                    putLegacySetting(settings, line.substring(0, eq).trim(),
+                            line.substring(eq + 1).trim());
+                }
+                continue;
+            }
+            if (isPackageName(line)) {
+                pkgs.put(line);
+            } else if (!hasHeader) {
+                return null;
+            }
+        }
+        if (pkgs.length() == 0 && settings.length() == 0) {
+            return null;
+        }
+        try {
+            JSONObject root = new JSONObject();
+            root.put("format", BACKUP_FORMAT);
+            root.put("version", BACKUP_VERSION);
+            root.put("appVersion", "旧版备份");
+            JSONObject freeze = new JSONObject();
+            freeze.put("pkgs", pkgs);
+            freeze.put("count", pkgs.length());
+            root.put("freeze", freeze);
+            if (settings.length() > 0) {
+                root.put("settings", settings);
+            }
+            return root;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 旧版设置行 key=value，按 true/false、数字、文本三类还原类型。 */
+    private void putLegacySetting(JSONObject settings, String key, String value) {
+        if (key.isEmpty() || !ownSettingKey(key)) {
+            return;
+        }
+        try {
+            JSONObject one = new JSONObject();
+            if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
+                one.put("type", "boolean");
+                one.put("value", Boolean.parseBoolean(value));
+            } else {
+                try {
+                    one.put("type", "int");
+                    one.put("value", Integer.parseInt(value));
+                } catch (NumberFormatException e) {
+                    one.put("type", "string");
+                    one.put("value", value);
+                }
+            }
+            settings.put(key, one);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private boolean isPackageName(String s) {
+        String[] parts = s.split("\\.");
+        if (parts.length < 2) {
+            return false;
+        }
+        for (String p : parts) {
+            if (p.isEmpty()) {
+                return false;
+            }
+            for (int i = 0; i < p.length(); i++) {
+                char c = p.charAt(i);
+                boolean ok = Character.isLetterOrDigit(c) || c == '_';
+                if (!ok) {
+                    return false;
+                }
+            }
+        }
+        return Character.isLetter(parts[0].charAt(0));
     }
 
     /** 写回配置：跳过名单键与划卡冻结/运行态/壁纸键，其余按原类型写。 */
@@ -10672,13 +10994,14 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private File backupDir() {
-        // 用户指定备份路径：/storage/emulated/0/Download/凚/备份
+        // 备份路径固定为下载目录：/storage/emulated/0/Download/凚/备份
         File dir = new File("/storage/emulated/0/Download/凚/备份");
         if (!dir.exists()) dir.mkdirs();
-        if (dir.exists() && dir.canWrite()) {
+        if (dir.exists()) {
+            // 应用无权写入（Android 11+ 分区存储）时，读写都走 root/Shizuku 兜底
             return dir;
         }
-        // 兜底：Download 目录不可写时退回应用内部存储
+        // 兜底：目录建不出来时退回应用内部存储
         File base = getExternalFilesDir(null);
         if (base == null) base = getFilesDir();
         File fallback = new File(base, BACKUP_DIR);
