@@ -21,11 +21,17 @@ import java.util.concurrent.Executors;
  */
 public final class AppIconCache {
 
-    private static final int MAX_ENTRIES = 192;
+    /**
+     * 内存缓存上限（单位 KB，与 sizeOf 的口径一致）。
+     * 之前直接拿 192 当上限，实际只够存 1 个 72dp 图标，冷启动第二次渲染时
+     * 图标全部落空、只能先显示占位图，看起来就是列表「先空一片、再慢慢补全」。
+     */
+    private static final int MAX_KB = (int) Math.min(48L * 1024L,
+            Math.max(16L * 1024L, Runtime.getRuntime().maxMemory() / 1024L / 8L));
     private static final String DIR_NAME = "jin_icons";
 
     private static final LruCache<String, Bitmap> CACHE =
-            new LruCache<String, Bitmap>(MAX_ENTRIES) {
+            new LruCache<String, Bitmap>(MAX_KB) {
                 @Override
                 protected int sizeOf(String key, Bitmap value) {
                     return Math.max(1, value.getByteCount() / 1024);

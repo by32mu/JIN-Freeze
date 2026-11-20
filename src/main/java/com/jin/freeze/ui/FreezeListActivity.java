@@ -3705,6 +3705,13 @@ public class FreezeListActivity extends BaseActivity {
             items.addAll(quickItems(wanted, order, custom));
             render();
         }
+        // 首帧已经画出的图标：正式刷新重建 Item 时直接沿用，避免整表闪成占位图再补回来
+        final Map<String, Drawable> iconMemo = new HashMap<>();
+        for (Item it : items) {
+            if (it.icon != null) {
+                iconMemo.put(it.pkg, it.icon);
+            }
+        }
         IO.execute(() -> {
             Set<String> disabled = disabledPackages();
             boolean truthOk = disabled != null;
@@ -3747,6 +3754,10 @@ public class FreezeListActivity extends BaseActivity {
                     it.label = pm.getApplicationLabel(ai).toString();
                     // 首屏只取内存缓存，未命中的图标在下面并行解码，避免串行 loadIcon 拖慢
                     it.icon = AppIconCache.peek(this, pkg);
+                    if (it.icon == null) {
+                        // 首帧已经画过这个包：沿用同一张图标，整表不闪
+                        it.icon = iconMemo.get(key);
+                    }
                     it.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
                             | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
                 } else {
