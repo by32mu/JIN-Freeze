@@ -138,12 +138,14 @@ public class ShortcutProviderActivity extends Activity {
         int icon;
         if (which == IDX_FREEZE) {
             target = new Intent(this, QuickLaunchActivity.class)
-                    .setAction(QuickLaunchActivity.ACTION_FREEZE_ALL);
+                    .setAction(QuickLaunchActivity.ACTION_FREEZE_ALL)
+                    .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
             name = getString(R.string.sc_freeze_all);
             icon = R.drawable.ic_shortcut_freeze;
         } else if (which == IDX_UNFREEZE) {
             target = new Intent(this, QuickLaunchActivity.class)
-                    .setAction(QuickLaunchActivity.ACTION_UNFREEZE_ALL);
+                    .setAction(QuickLaunchActivity.ACTION_UNFREEZE_ALL)
+                    .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
             name = getString(R.string.sc_unfreeze_all);
             icon = R.drawable.ic_shortcut_unfreeze;
         } else {

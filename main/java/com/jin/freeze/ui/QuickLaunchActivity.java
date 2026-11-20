@@ -1,11 +1,14 @@
 package com.jin.freeze.ui;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.widget.Toast;
 
 import com.jin.freeze.core.LaunchTarget;
@@ -20,8 +23,8 @@ import java.util.Set;
 /**
  * 桌面快捷方式的启动中转：快捷方式 Intent 只带 key，这里取回真实目标再启动。
  * 导出页面直接 startActivity，未导出页面按「root 强启」开关走 su。
- * 「一键冻结 / 一键解冻」在本页的透明窗口里执行：窗口不画内容、不抢焦点，
- * 只是让应用在批处理期间保持前台，结果提示才能作为前台 toast 上屏（后台会被系统丢掉）。
+ * 「一键冻结 / 一键解冻」立刻 finish 让出 top 后台执行：凚 占据 top 会延迟桌面的
+ * 图标塌缩 relayout，把桌面滑动吞掉；结果提示走 FrozenTip 悬浮胶囊，后台也能上屏。
  */
 public class QuickLaunchActivity extends Activity {
 
@@ -36,10 +39,17 @@ public class QuickLaunchActivity extends Activity {
         super.onCreate(savedInstanceState);
         String action = getIntent() == null ? null : getIntent().getAction();
         if (ACTION_FREEZE_ALL.equals(action) || ACTION_UNFREEZE_ALL.equals(action)) {
-            // 窗口是透明的、不画任何内容，只是为了在批处理这一两秒里让应用处于前台——
-            // 否则「已全部冻结」提示会作为后台 toast 被系统直接丢掉（logcat: Suppressing toast … by user request）
-            setupTransparentBars();
-            runBatch(ACTION_FREEZE_ALL.equals(action));
+            // 批量期间不再让凚 占住前台占位：凚 占据 top 会延迟桌面的图标塌缩 relayout，
+            // 把桌面滑动吞掉（真机实测）。改成起线程后立刻 finish，桌面马上恢复可滑；
+            // 结果提示走 FrozenTip 悬浮胶囊，后台也能上屏，不必为等 toast 上屏而保持窗口。
+            boolean freeze = ACTION_FREEZE_ALL.equals(action);
+            if (Settings.canDrawOverlays(this)) {
+                runBatch(freeze);
+            } else {
+                // 没有悬浮窗权限：后台的结果胶囊上不了屏。先等 JinApp 的 appops 自授予
+                // 落地（进程刚起时可能还没跑完），仍然没有就弹框引导去开启。
+                runBatchAfterPermissionCheck(freeze);
+            }
             return;
         }
         if (ACTION_OPEN_FREEZE_LIST.equals(action)) {
@@ -218,50 +228,67 @@ public class QuickLaunchActivity extends Activity {
     }
 
     /**
-     * 中转窗不画内容，但系统栏会跟着窗口一起出现：
-     * 1. 窗口不抢焦点、不接触摸，桌面仍然是系统栏外观的持有者，状态栏图标明暗全程不动；
-     * 2. 系统栏颜色显式设成透明，避免窗口现身那一瞬间按主题默认值铺一条黑底；
-     * 3. 不主动设置 light/dark appearance——那会在窗口出现时闪一次再恢复。
-     */
-    private void setupTransparentBars() {
-        android.view.Window w = getWindow();
-        w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
-        w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.setDimAmount(0f);
-        w.setStatusBarColor(android.graphics.Color.TRANSPARENT);
-        w.setNavigationBarColor(android.graphics.Color.TRANSPARENT);
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-            android.view.WindowManager.LayoutParams lp = w.getAttributes();
-            lp.layoutInDisplayCutoutMode =
-                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-            w.setAttributes(lp);
-        }
-        w.getDecorView().setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-    }
-
-    /**
      * 一键冻结 / 一键解冻。
-     * 窗口是透明的、不画任何内容，只是为了在批处理这一两秒里让应用处于前台——
-     * 否则「已全部冻结」提示会作为后台 toast 被系统直接丢掉（logcat: Suppressing toast … by user request）。
+     * 批量在后台线程跑，但这里立刻 finish 让出 top——凚 占据 top 会延迟桌面的图标塌缩
+     * relayout，把桌面滑动吞掉；结果提示走 FrozenTip 悬浮胶囊，后台也能上屏，无需保持窗口。
      */
     private void runBatch(final boolean freeze) {
+        new Thread(() -> doBatch(freeze), "shortcut-batch").start();
+        // 立即让出 top：桌面马上恢复可滑动。批量在线程里继续跑，完成后 FrozenTip 悬浮胶囊上屏。
+        finish();
+        overridePendingTransition(0, 0);
+    }
+
+    /** 没有悬浮窗权限时的批量入口：等自授予落地，仍没有就引导用户去开，开了再执行。 */
+    private void runBatchAfterPermissionCheck(final boolean freeze) {
         new Thread(() -> {
+            boolean ok = Settings.canDrawOverlays(this);
+            // 进程刚起时 JinApp 的 appops 自授予可能还没跑完：最多重试 1 秒
+            for (int i = 0; i < 10 && !ok; i++) {
+                SystemClock.sleep(100);
+                ok = Settings.canDrawOverlays(this);
+            }
+            if (!ok) {
+                runOnUiThread(() -> promptOverlayPermission(freeze));
+                return;
+            }
             doBatch(freeze);
-            // 提示入队后再多留一会才结束窗口，等 toast 真正上屏，
-            // 避免刚入队应用就回到桌面被判成后台提示丢掉
-            runOnUiThread(() -> getWindow().getDecorView().postDelayed(this::finish, 1200));
-        }, "shortcut-batch").start();
+            runOnUiThread(() -> {
+                finish();
+                overridePendingTransition(0, 0);
+            });
+        }, "shortcut-batch-perm").start();
+    }
+
+    /** 长按一键冻结/解冻没有悬浮窗权限：提示去开启，否则桌面看不到任何结果提示。 */
+    private void promptOverlayPermission(boolean freeze) {
+        new AlertDialog.Builder(this)
+                .setTitle("需要悬浮窗权限")
+                .setMessage("长按图标一键" + (freeze ? "冻结" : "解冻")
+                        + "时，凚 要用悬浮窗在桌面显示「已全部" + (freeze ? "冻结" : "解冻")
+                        + "」提示。请为 凚 开启「显示在其他应用上层」权限后重试。")
+                .setPositiveButton("去开启", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (Exception ignored) {
+                    }
+                    finish();
+                    overridePendingTransition(0, 0);
+                })
+                .setNegativeButton("取消", (d, w) -> {
+                    finish();
+                    overridePendingTransition(0, 0);
+                })
+                .setCancelable(false)
+                .show();
     }
 
     private void doBatch(boolean freeze) {
         android.content.SharedPreferences sp = getSharedPreferences("freeze_list", MODE_PRIVATE);
         Set<String> pkgs = new HashSet<>(sp.getStringSet("pkgs", new HashSet<>()));
         if (pkgs.isEmpty()) {
-            FrozenTip.show(this, "冻结名单为空");
+            FrozenTip.showCapsule(this, "冻结名单为空");
             return;
         }
         // 冻结白名单：快捷方式的一键冻结同样不处理白名单里的应用
@@ -292,9 +319,9 @@ public class QuickLaunchActivity extends Activity {
         if (todo.isEmpty()) {
             // 快路径（状态已满足）也按用户指定文案提示；全在白名单时说明真实情况
             if (freeze && allWhitelisted) {
-                FrozenTip.show(this, "白名单应用不冻结");
+                FrozenTip.showCapsule(this, "白名单应用不冻结");
             } else {
-                FrozenTip.show(this, freeze ? "已全部冻结" : "已全部解冻");
+                FrozenTip.showCapsule(this, freeze ? "已全部冻结" : "已全部解冻");
             }
             return;
         }
@@ -367,7 +394,7 @@ public class QuickLaunchActivity extends Activity {
             toastLong(sb.toString());
         } else {
             // 全部成功：桌面长按菜单进来的一键冻结/解冻，提示整批结果
-            FrozenTip.show(this, freeze ? "已全部冻结" : "已全部解冻");
+            FrozenTip.showCapsule(this, freeze ? "已全部冻结" : "已全部解冻");
         }
     }
 

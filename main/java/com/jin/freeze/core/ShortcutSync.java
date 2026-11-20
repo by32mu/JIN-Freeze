@@ -47,13 +47,17 @@ public final class ShortcutSync {
             list.add(build(ctx, DYN_PREFIX + ID_FREEZE_ALL,
                     R.string.sc_freeze_all, R.string.sc_freeze_all_long,
                     R.drawable.ic_shortcut_freeze,
+                    // NO_ANIMATION：批量执行本来就看不见界面，
+                    // 打开过渡动画期间系统会吞掉桌面滑动，直接取消掉
                     new Intent(ctx, QuickLaunchActivity.class)
-                            .setAction(QuickLaunchActivity.ACTION_FREEZE_ALL)));
+                            .setAction(QuickLaunchActivity.ACTION_FREEZE_ALL)
+                            .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)));
             list.add(build(ctx, DYN_PREFIX + ID_UNFREEZE_ALL,
                     R.string.sc_unfreeze_all, R.string.sc_unfreeze_all_long,
                     R.drawable.ic_shortcut_unfreeze,
                     new Intent(ctx, QuickLaunchActivity.class)
-                            .setAction(QuickLaunchActivity.ACTION_UNFREEZE_ALL)));
+                            .setAction(QuickLaunchActivity.ACTION_UNFREEZE_ALL)
+                            .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)));
             sm.setDynamicShortcuts(list);
         } catch (Exception e) {
             android.util.Log.e("ShortcutSync", "publish dynamic shortcuts failed", e);
