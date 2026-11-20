@@ -35,6 +35,12 @@ public final class FrozenTip {
     /** 同一套自绘提示，只换文案（例如「无需冻结」），字号/尺寸/位置/圆角/时长保持一致。 */
     public static void show(Context c, String text) {
         Context app = c.getApplicationContext();
+        // Toast 构造要求当前线程有 Looper：快捷方式批量执行在工作线程里调到这里，
+        // 直接 new Toast 会 NPE 崩溃（shortcut-batch 线程），统一投到主线程再建
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> showOnMain(app, text));
+    }
+
+    private static void showOnMain(Context app, String text) {
         boolean night = (app.getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
 

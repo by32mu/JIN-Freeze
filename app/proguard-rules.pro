@@ -33,7 +33,6 @@
 -keep class com.jin.freeze.ui.FreezeListActivity { *; }
 -keep class com.jin.freeze.ui.AppFreezeActivity { *; }
 -keep class com.jin.freeze.ui.QuickLaunchActivity { *; }
--keep class com.jin.freeze.ui.ShortcutBatchService { *; }
 -keep class com.jin.freeze.ui.ShortcutProviderActivity { *; }
 
 # 兜底：任何继承系统组件基类的类都保留类名与无参构造
