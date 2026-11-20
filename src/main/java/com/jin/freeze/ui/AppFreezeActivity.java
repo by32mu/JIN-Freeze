@@ -27,6 +27,7 @@ import android.widget.Toast;
 
 import com.jin.freeze.R;
 import com.jin.freeze.core.AppIconCache;
+import com.jin.freeze.core.Pinyin;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.SuspendSupport;
 import com.jin.freeze.core.SwipeFreeze;
@@ -72,6 +73,8 @@ public class AppFreezeActivity extends BaseActivity {
         String label;
         String pkg;
         int userId;
+        /** 名称的拼音首字母（懒计算，供搜索用）。 */
+        String py;
         Drawable icon;
         boolean system;
         boolean frozen;
@@ -807,6 +810,19 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
 
+    /** 名称、包名、多用户后缀命中；中文名称再按拼音首字母命中（如 wx → 微信）。 */
+    private static boolean matchesQuery(App a, String q) {
+        if (a.label.toLowerCase(Locale.ROOT).contains(q)
+                || a.pkg.toLowerCase(Locale.ROOT).contains(q)
+                || (a.userId != 0 && String.valueOf(a.userId).contains(q))) {
+            return true;
+        }
+        if (a.py == null) {
+            a.py = Pinyin.initials(a.label);
+        }
+        return !a.py.isEmpty() && a.py.contains(q);
+    }
+
     /** 搜索、标签（用户/系统）与冻结状态三者取交集；状态一律从 App.frozen 读，不另记一份。 */
     private void render(String query) {
         if (grid == null) {
@@ -831,14 +847,8 @@ public class AppFreezeActivity extends BaseActivity {
             if (stateFilter == 2 && a.frozen) {
                 continue;
             }
-            if (!q.isEmpty()) {
-                // 支持按多用户后缀搜：输入 999 / 10 也能找到对应分身/双开实例
-                boolean hit = a.label.toLowerCase(Locale.ROOT).contains(q)
-                        || a.pkg.toLowerCase(Locale.ROOT).contains(q)
-                        || (a.userId != 0 && String.valueOf(a.userId).contains(q));
-                if (!hit) {
-                    continue;
-                }
+            if (!q.isEmpty() && !matchesQuery(a, q)) {
+                continue;
             }
             shown.add(a);
         }
@@ -863,12 +873,21 @@ public class AppFreezeActivity extends BaseActivity {
             int cmp = String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
             return cmp != 0 ? cmp : String.CASE_INSENSITIVE_ORDER.compare(x.pkg, y.pkg);
         });
-        // 勾选只保留当前可见的项：切标签/筛选/搜索后，批量与「确定」不会带上看不见的应用
-        Set<String> shownPkgs = new HashSet<>();
-        for (App a : shown) {
-            shownPkgs.add(instanceKey(a.pkg, a.userId));
+        // 勾选只随标签/冻结筛选收紧：搜索只影响显示，不能把用户已经勾好的应用取消掉
+        Set<String> allowed = new HashSet<>();
+        for (App a : all) {
+            if (a.system != showSystem) {
+                continue;
+            }
+            if (stateFilter == 1 && !a.frozen) {
+                continue;
+            }
+            if (stateFilter == 2 && a.frozen) {
+                continue;
+            }
+            allowed.add(instanceKey(a.pkg, a.userId));
         }
-        selected.retainAll(shownPkgs);
+        selected.retainAll(allowed);
         updateBatchBar();
         if (listView()) {
             for (App a : shown) {

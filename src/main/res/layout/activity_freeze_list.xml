@@ -239,12 +239,14 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- 一键冻结：悬浮按钮，位置由布局设置里的两个滑块控制，滚动时保持可见 -->
+    <!-- 一键冻结：悬浮按钮，位置由布局设置里的两个滑块控制，滚动时保持可见。
+         clickable=true：底栏自身吃掉点击，避免点在底栏空白/边缘时穿透到下面被完全遮住的图标 -->
     <LinearLayout
         android:id="@+id/fab_group"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:background="@drawable/bg_fab_group"
+        android:clickable="true"
         android:elevation="8dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"

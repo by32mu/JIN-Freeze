@@ -51,6 +51,7 @@ import com.jin.freeze.R;
 import com.jin.freeze.JinApp;
 import com.jin.freeze.core.AppIconCache;
 import com.jin.freeze.core.LaunchTarget;
+import com.jin.freeze.core.Pinyin;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.ShizukuGate;
 import com.jin.freeze.core.SuspendDialog;
@@ -309,6 +310,8 @@ public class FreezeListActivity extends BaseActivity {
         boolean frozen;
         /** 走降级通道（pm suspend）冻结：显示成冻结态，另在图标右下角加区分标识。 */
         boolean suspended;
+        /** 名称的拼音首字母（懒计算，供搜索用）。 */
+        String py;
     }
 
     private static final class Cell {
@@ -812,6 +815,19 @@ public class FreezeListActivity extends BaseActivity {
         editBtn = findViewById(R.id.edit);
         grid = findViewById(R.id.grid);
         scrollView = grid;
+        // 底部留白（与半屏底栏同高）里滑进来的图标会被裁掉看不见，
+        // 但触摸仍会落到那些图标上。这里把留白区的按下事件交给 RecyclerView 自己处理：
+        // 点击不触发图标，拖动照常滚动。
+        if (grid != null) {
+            grid.addOnItemTouchListener(new androidx.recyclerview.widget.RecyclerView.SimpleOnItemTouchListener() {
+                @Override
+                public boolean onInterceptTouchEvent(androidx.recyclerview.widget.RecyclerView rv,
+                                                     android.view.MotionEvent e) {
+                    return e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN
+                            && e.getY() > rv.getHeight() - rv.getPaddingBottom();
+                }
+            });
+        }
         fabGroup = findViewById(R.id.fab_group);
         search = findViewById(R.id.search);
         tabBar = findViewById(R.id.tab_bar);
@@ -2310,7 +2326,12 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 手势起点是否落在列表的空白处（没压到应用图标本身，格子留白与名称行都算空白）。 */
     private boolean inBlankListArea(float rawX, float rawY) {
-        return inGridArea(rawX, rawY) && !onAppIcon(rawX, rawY);
+        // 悬浮按钮浮在列表之上，按在它上面不算空白：否则长按冻结按钮会同时武装
+        // 「长按空白滑标签」，两边各震一次
+        return inGridArea(rawX, rawY)
+                && !inView(fabGroup, rawX, rawY)
+                && !inView(unfreezeFab, rawX, rawY)
+                && !onAppIcon(rawX, rawY);
     }
 
     /** 边缘触发模式下的专属条带：这里的长按交给切形态手势（面板上方的遮罩区也算）。 */
@@ -2989,14 +3010,16 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         java.util.List<AppActionSheet.TextItem> items = new java.util.ArrayList<>();
-        items.add(new AppActionSheet.TextItem(R.drawable.ic_action_tag, "改名", null,
+        items.add(new AppActionSheet.TextItem(R.drawable.ic_action_tag, "重命名", null,
                 () -> showTabNameDialog(t, this::renderTabBar)));
         // 只认显式设过的默认：没有设置时 defaultTabId() 会回落到第一个标签，
         // 这里不能拿它判断，否则永远显示「已开启」且点一下就变成取消
         final String explicitDefault = prefs().getString(KEY_DEFAULT_TAB, null);
         final boolean isDefault = t.id.equals(explicitDefault);
-        items.add(new AppActionSheet.TextItem(R.drawable.ic_action_move, "排序", null,
+        items.add(new AppActionSheet.TextItem(R.drawable.ic_action_move, "排序标签", null,
                 () -> showTabSortDialog(null)));
+        items.add(new AppActionSheet.TextItem(R.drawable.ic_add, "新建标签", null,
+                () -> showTabNameDialog(null, null)));
         items.add(new AppActionSheet.TextItem(R.drawable.ic_action_home,
                 "每次默认进入此标签", isDefault ? "已开启" : "未开启", !isDefault, () -> {
             if (isDefault) {
@@ -4125,6 +4148,19 @@ public class FreezeListActivity extends BaseActivity {
         return set;
     }
 
+    /** 名称、包名、多用户后缀命中；中文名称再按拼音首字母命中（如 wx → 微信）。 */
+    private boolean matchesQuery(Item it, String q) {
+        if (it.label.toLowerCase(Locale.ROOT).contains(q)
+                || it.pkg.toLowerCase(Locale.ROOT).contains(q)
+                || (it.userId != 0 && String.valueOf(it.userId).contains(q))) {
+            return true;
+        }
+        if (it.py == null) {
+            it.py = Pinyin.initials(it.label);
+        }
+        return !it.py.isEmpty() && it.py.contains(q);
+    }
+
     /** 当前标签 + 搜索取交集；标签内渲染与「仅当前标签」的批量操作都走这里。 */
     private List<Item> filtered() {
         String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
@@ -4133,10 +4169,7 @@ public class FreezeListActivity extends BaseActivity {
             if (!currentTabId.equals(tabIdOf(it))) {
                 continue;
             }
-            if (!q.isEmpty()
-                    && !it.label.toLowerCase(Locale.ROOT).contains(q)
-                    && !it.pkg.toLowerCase(Locale.ROOT).contains(q)
-                    && !(it.userId != 0 && String.valueOf(it.userId).contains(q))) {
+            if (!q.isEmpty() && !matchesQuery(it, q)) {
                 continue;
             }
             shown.add(it);
@@ -4159,10 +4192,7 @@ public class FreezeListActivity extends BaseActivity {
         String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
         List<Item> shown = new ArrayList<>();
         for (Item it : items) {
-            if (!q.isEmpty()
-                    && !it.label.toLowerCase(Locale.ROOT).contains(q)
-                    && !it.pkg.toLowerCase(Locale.ROOT).contains(q)
-                    && !(it.userId != 0 && String.valueOf(it.userId).contains(q))) {
+            if (!q.isEmpty() && !matchesQuery(it, q)) {
                 continue;
             }
             shown.add(it);
@@ -4238,9 +4268,7 @@ public class FreezeListActivity extends BaseActivity {
             Toast.makeText(this, "已加入「" + tab.name + "」", Toast.LENGTH_SHORT).show();
         }
         String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
-        if (!q.isEmpty()
-                && !added.label.toLowerCase(Locale.ROOT).contains(q)
-                && !added.pkg.toLowerCase(Locale.ROOT).contains(q)) {
+        if (!q.isEmpty() && !matchesQuery(added, q)) {
             search.setText("");
             render();
         }
@@ -6526,39 +6554,6 @@ public class FreezeListActivity extends BaseActivity {
         moveDoneFab.setTranslationY(y);
     }
 
-    /**
-     * 长按震动走 Vibrator 直出，并用 ALARM 用途提交通道：
-     * 不指定用途时系统按 TOUCH 计，本机「触感」强度为 OFF 会直接忽略（IGNORED_FOR_SETTINGS）；
-     * ALARM 用途不受触感开关/强度影响，保证长按一定震。
-     */
-    private void forceVibrate() {
-        android.os.Vibrator vib;
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            android.os.VibratorManager vm =
-                    (android.os.VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE);
-            vib = vm == null ? null : vm.getDefaultVibrator();
-        } else {
-            vib = (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
-        }
-        if (vib == null || !vib.hasVibrator()) {
-            android.util.Log.w("JinPm", "long-press vibrate skipped: no vibrator");
-            return;
-        }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            android.os.VibrationEffect effect = android.os.VibrationEffect.createOneShot(
-                    30, android.os.VibrationEffect.DEFAULT_AMPLITUDE);
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                vib.vibrate(effect, android.os.VibrationAttributes.createForUsage(
-                        android.os.VibrationAttributes.USAGE_ALARM));
-            } else {
-                vib.vibrate(effect, new android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_ALARM).build());
-            }
-        } else {
-            vib.vibrate(30);
-        }
-    }
-
     /** 长按冻结按钮展开一键解冻；3 秒无操作或点空白处收回。 */
     private void setupUnfreezeFab() {
         unfreezeFab = findViewById(R.id.btn_unfreeze_fab);
@@ -6581,9 +6576,14 @@ public class FreezeListActivity extends BaseActivity {
         });
         if (freezeBtn != null) {
             // 长按固定可用：弹出解冻图标并震动（原设置项已移除）
+            // 关掉按钮自身的系统长按反馈，避免与下面显式的一次叠加成两段震动
             freezeBtn.setHapticFeedbackEnabled(false);
             freezeBtn.setOnLongClickListener(v -> {
-                forceVibrate();
+                // 与长按空白处、长按图标用同一套长按反馈，手感保持一致
+                if (fabGroup != null) {
+                    fabGroup.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
+                            android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                }
                 expandUnfreezeFab();
                 return true;
             });
@@ -7610,7 +7610,7 @@ public class FreezeListActivity extends BaseActivity {
                 row.addView(sortBtn);
                 // 内置标签也能改名（只改显示名，不影响它承载用户/系统应用的性质）；删除仍只限自定义标签
                 TextView rename = new TextView(this);
-                rename.setText("改名");
+                rename.setText("重命名");
                 rename.setTextSize(11);
                 rename.setTextColor(getColor(R.color.blue));
                 rename.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
@@ -9375,7 +9375,7 @@ public class FreezeListActivity extends BaseActivity {
         card.addView(featureTitle);
 
         String featureText = "· 使用先知：需 root 或 Shizuku，无联网，尚未开源；\n"
-                + "· 名单与标签：可自建、改名、隐藏、排序并可设每次默认进入的标签页，长按标签页可改名、排序等；\n"
+                + "· 名单与标签：可自建、重命名、隐藏、排序并可设每次默认进入的标签页，长按标签页可重命名、排序等；\n"
                 + "· 白名单：加入白名单的应用不会被冻结，列表仍保留图标，有白名单标识；\n"
                 + "· 关联应用：打开主可静默解冻副，冻结主也冻结副；\n"
                 + "· 一键冻结：底部按钮默认冻住全部列表；\n"
