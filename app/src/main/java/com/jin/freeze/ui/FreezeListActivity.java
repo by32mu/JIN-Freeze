@@ -639,18 +639,15 @@ public class FreezeListActivity extends BaseActivity {
                     normalized.add(storageKey(packagePart(key), userIdPart(key)));
                 }
                 Set<String> cur = new HashSet<>(pkgs());
-                Set<String> added = new LinkedHashSet<>();
-                for (String key : normalized) {
-                    if (!cur.contains(key)) {
-                        added.add(key);
-                    }
-                }
-                // 在哪个标签点「+」就加进哪个标签；用户应用禁止进入「系统应用」标签
-                if (!added.isEmpty() && pickerTargetTab != null) {
-                    boolean changed = false;
-                    boolean blocked = false;
+                // 添加应用是「把应用放进当前标签」的入口：已在名单里的应用也能再添加，
+                // 从而同时出现在多个标签页；长按图标的「更改标签页」才是移动。
+                Set<String> listedNow = new LinkedHashSet<>();
+                boolean changed = false;
+                boolean blocked = false;
+                boolean allAlready = true;
+                if (pickerTargetTab != null) {
                     PackageManager pm = getPackageManager();
-                    for (String key : added) {
+                    for (String key : normalized) {
                         boolean system = false;
                         try {
                             ApplicationInfo ai = pm.getApplicationInfo(packagePart(key), 0);
@@ -662,9 +659,23 @@ public class FreezeListActivity extends BaseActivity {
                             blocked = true;
                             continue;
                         }
-                        // 加入标签：已有归属的其他标签保留，一个应用可同时出现在多个标签页
-                        if (addAppToTab(key, pickerTargetTab)) {
+                        if (cur.contains(key)) {
+                            // 已在名单：只补当前标签，原有标签保留
+                            if (tabsOfKey(key, system).contains(pickerTargetTab)) {
+                                continue;
+                            }
+                            if (addAppToTab(key, pickerTargetTab, system)) {
+                                changed = true;
+                                allAlready = false;
+                            }
+                        } else {
+                            // 新加入名单的应用只进当前标签
+                            java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+                            set.add(pickerTargetTab);
+                            appTabs.put(key, set);
+                            listedNow.add(key);
                             changed = true;
+                            allAlready = false;
                         }
                     }
                     if (changed) {
@@ -673,11 +684,16 @@ public class FreezeListActivity extends BaseActivity {
                     if (blocked) {
                         Toast.makeText(this, "用户应用禁止移入系统应用标签",
                                 Toast.LENGTH_SHORT).show();
+                    } else if (allAlready && !normalized.isEmpty()) {
+                        Toast.makeText(this, "选中项都已在「" + tabNameOf(pickerTargetTab) + "」",
+                                Toast.LENGTH_SHORT).show();
                     }
                 }
+                String reveal = !listedNow.isEmpty() ? listedNow.iterator().next()
+                        : (normalized.isEmpty() ? null : normalized.get(0));
                 pickerTargetTab = null;
-                if (!added.isEmpty()) {
-                    pendingRevealPkg = added.iterator().next();
+                if (reveal != null) {
+                    pendingRevealPkg = reveal;
                 }
                 cur.addAll(normalized);
                 prefs().edit().putStringSet(KEY_PKGS, cur).apply();
@@ -3131,7 +3147,12 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 该应用所在的全部标签；没有显式归属时按 FLAG_SYSTEM 落回内置标签。 */
     private Set<String> tabsOf(Item it) {
-        java.util.LinkedHashSet<String> set = appTabs.get(it.pkg);
+        return tabsOfKey(it.pkg, it.system);
+    }
+
+    /** 按实例键取标签归属，添加应用页拿到的是键、没有 Item 时用这个。 */
+    private Set<String> tabsOfKey(String pkgKey, boolean system) {
+        java.util.LinkedHashSet<String> set = appTabs.get(pkgKey);
         if (set != null) {
             java.util.LinkedHashSet<String> valid = new java.util.LinkedHashSet<>();
             for (String id : set) {
@@ -3144,7 +3165,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         java.util.LinkedHashSet<String> fallback = new java.util.LinkedHashSet<>();
-        fallback.add(it.system ? TAB_SYSTEM : TAB_USER);
+        fallback.add(system ? TAB_SYSTEM : TAB_USER);
         return fallback;
     }
 
@@ -3152,11 +3173,30 @@ public class FreezeListActivity extends BaseActivity {
         return tabsOf(it).contains(tabId);
     }
 
+    /** 当前标签之外，该应用是否还属于别的标签（属于时只做当前标签的移除）。 */
+    private boolean inOtherTabs(Item it) {
+        for (String id : tabsOf(it)) {
+            if (!id.equals(currentTabId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String tabNameOf(String id) {
+        Tab t = findTab(id);
+        return t == null ? id : t.name;
+    }
+
     /** 加入标签：保留原有归属，一个应用可以同时出现在多个标签页。 */
-    private boolean addAppToTab(String pkgKey, String tabId) {
+    private boolean addAppToTab(String pkgKey, String tabId, boolean system) {
         java.util.LinkedHashSet<String> set = appTabs.get(pkgKey);
         if (set == null) {
             set = new java.util.LinkedHashSet<>();
+            // 没有显式归属时应用本来落在「用户应用 / 系统应用」标签里：
+            // 先把这份隐式归属写进集合，否则加入新标签后它会从原标签消失，
+            // 看起来像被「移动」而不是「同时出现在多个标签」
+            set.add(system ? TAB_SYSTEM : TAB_USER);
             appTabs.put(pkgKey, set);
         }
         return set.add(tabId);
@@ -5051,7 +5091,7 @@ public class FreezeListActivity extends BaseActivity {
         return null;
     }
 
-    /** 长按不动松手：勾选应用的标签归属；一个应用可以同时加入多个标签。 */
+    /** 长按不动松手：把应用移动到某个标签；要同时放在多个标签请走「添加应用」。 */
     private void showMoveDialog(Item it) {
         if (tabs.size() <= 1) {
             Toast.makeText(this, "只有一个标签，先在布局设置里新建标签", Toast.LENGTH_SHORT).show();
@@ -5065,29 +5105,25 @@ public class FreezeListActivity extends BaseActivity {
         MoveTabDialog.show(this, it.label, it.icon, entries, target -> {
             Tab t = findTab(target.id);
             if (t == null) {
-                return;
-            }
-            if (!target.current) {
-                // 取消勾选：只从这个标签移出，应用在其他标签里照样保留
-                if (removeAppFromTab(it.pkg, t.id)) {
-                    saveAppTabs();
-                    Toast.makeText(this, "已从「" + t.name + "」移出",
-                            Toast.LENGTH_SHORT).show();
-                }
-                render();
-                return;
+                return true;
             }
             // 用户应用不允许进入内置的「系统应用」标签
             if (!it.system && TAB_SYSTEM.equals(t.id)) {
-                target.current = false;
                 Toast.makeText(this, "用户应用禁止移入系统应用标签", Toast.LENGTH_SHORT).show();
-                return;
+                return false;
             }
-            if (addAppToTab(it.pkg, t.id)) {
-                saveAppTabs();
-                Toast.makeText(this, "已加入「" + t.name + "」", Toast.LENGTH_SHORT).show();
+            if (mine.size() == 1 && mine.contains(t.id)) {
+                Toast.makeText(this, "已在「" + t.name + "」", Toast.LENGTH_SHORT).show();
+                return true;
             }
+            // 移动语义：覆盖原有归属，应用不会再留在原标签
+            java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+            set.add(t.id);
+            appTabs.put(it.pkg, set);
+            saveAppTabs();
             render();
+            Toast.makeText(this, "已移动到「" + t.name + "」", Toast.LENGTH_SHORT).show();
+            return true;
         });
     }
 
@@ -5709,7 +5745,7 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     int added = 0;
                     for (Item it : batchTargets) {
-                        if (addAppToTab(it.pkg, target.id)) {
+                        if (addAppToTab(it.pkg, target.id, it.system)) {
                             added++;
                         }
                     }
@@ -5768,11 +5804,22 @@ public class FreezeListActivity extends BaseActivity {
         List<String> order = savedOrder();
         List<Item> toUnfreeze = new ArrayList<>();
         Set<String> suspended = new HashSet<>();
+        int fullCount = 0;
+        int tabOnly = 0;
         for (Item it : targets) {
+            // 单纯「从列表移除」且还在其它标签页：只移出当前标签；
+            // 「移除并解冻」是要真的解冻，必须把所有标签页里的归属一起清掉
+            if (!alsoUnfreeze && inOtherTabs(it)) {
+                removeAppFromTab(it.pkg, currentTabId);
+                // 不动内存 items：整份名单仍要留给「用户应用」等标签用
+                tabOnly++;
+                continue;
+            }
             cur.remove(it.pkg);
             appTabs.remove(it.pkg);
             order.remove(it.pkg);
             items.remove(it);
+            fullCount++;
             if (alsoUnfreeze && it.frozen) {
                 toUnfreeze.add(it);
                 if (it.suspended && it.userId == 0) suspended.add(it.pkg);
@@ -5808,7 +5855,16 @@ public class FreezeListActivity extends BaseActivity {
         saveAppTabs();
         SwipeFreeze.syncAsync(this);
         reload();
-        Toast.makeText(this, (alsoUnfreeze ? "已移除并解冻 " : "已从列表移除 ") + n + " 个应用", Toast.LENGTH_SHORT).show();
+        String tabName = tabNameOf(currentTabId);
+        String tip;
+        if (fullCount == 0) {
+            tip = "已从「" + tabName + "」移除 " + tabOnly + " 个应用，其它标签页仍保留";
+        } else if (tabOnly == 0) {
+            tip = (alsoUnfreeze ? "已移除并解冻 " : "已从列表移除 ") + fullCount + " 个应用";
+        } else {
+            tip = "已从「" + tabName + "」移除 " + tabOnly + " 个，另 " + fullCount + " 个已从列表移除";
+        }
+        Toast.makeText(this, tip, Toast.LENGTH_SHORT).show();
     }
 
     /** 运行：已冻结的先解冻再打开。 */
@@ -6343,6 +6399,23 @@ public class FreezeListActivity extends BaseActivity {
         if (working) {
             return;
         }
+        // 应用还在别的标签页里：只从当前标签移出，别把它从整个名单删掉。
+        // 注意不能动内存里的 items：它存的是整份名单，删掉后切到「用户应用」等标签
+        // 也会看不到这个应用（要等重新加载才回来），只靠 render 按当前标签过滤即可。
+        if (inOtherTabs(it)) {
+            removeAppFromTab(it.pkg, currentTabId);
+            saveAppTabs();
+            if (it.pkg.equals(selectedPkg)) {
+                selectedPkg = null;
+            }
+            if (it.pkg.equals(draggingPkg)) {
+                draggingPkg = null;
+            }
+            render();
+            Toast.makeText(this, "已从「" + tabNameOf(currentTabId) + "」移除",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
         Set<String> cur = pkgs();
         cur.remove(it.pkg);
         prefs().edit().putStringSet(KEY_PKGS, cur).apply();
@@ -6372,7 +6445,7 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 移除列表并解冻：先把应用移出名单（含标签归属与顺序），再真正解冻。
+     * 移除列表并解冻：把应用从所有标签页与名单里一起摘掉，再真正解冻。
      * 解冻失败要单独报 pm 的真实原因，不能把「已移出」当成整体成功。
      */
     private void removeAndUnfreeze(Item it) {

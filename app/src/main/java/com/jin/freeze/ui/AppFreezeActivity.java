@@ -1339,49 +1339,24 @@ public class AppFreezeActivity extends BaseActivity {
         }
         MoveTabDialog.show(this, a.label, a.icon, entries, target -> {
             // 用户应用不允许进入内置的「系统应用」标签
-            if (target.current && !a.system && "system".equals(target.id)) {
-                target.current = false;
+            if (!a.system && "system".equals(target.id)) {
                 Toast.makeText(this, "用户应用禁止移入系统应用标签",
                         Toast.LENGTH_SHORT).show();
-                return;
+                return false;
             }
             try {
+                // 移动语义：覆盖原有归属，只留目标标签
                 JSONObject o = new JSONObject(fp.getString("app_tabs", "{}"));
-                java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
-                Object v = o.opt(key);
-                if (v instanceof JSONArray) {
-                    JSONArray arr = (JSONArray) v;
-                    for (int i = 0; i < arr.length(); i++) {
-                        String id = arr.optString(i, "");
-                        if (!id.isEmpty()) {
-                            set.add(id);
-                        }
-                    }
-                } else if (v instanceof String && !((String) v).isEmpty()) {
-                    set.add((String) v);
-                }
-                if (target.current) {
-                    set.add(target.id);
-                } else {
-                    set.remove(target.id);
-                }
-                if (set.isEmpty()) {
-                    o.remove(key);
-                } else {
-                    JSONArray arr = new JSONArray();
-                    for (String id : set) {
-                        arr.put(id);
-                    }
-                    o.put(key, arr);
-                }
+                JSONArray arr = new JSONArray();
+                arr.put(target.id);
+                o.put(key, arr);
                 fp.edit().putString("app_tabs", o.toString()).apply();
                 com.jin.freeze.core.SwipeFreeze.syncAsync(this);
-                Toast.makeText(this, target.current
-                                ? "已加入「" + target.name + "」"
-                                : "已从「" + target.name + "」移出",
+                Toast.makeText(this, "已移动到「" + target.name + "」",
                         Toast.LENGTH_SHORT).show();
             } catch (Exception ignored) {
             }
+            return true;
         });
     }
 

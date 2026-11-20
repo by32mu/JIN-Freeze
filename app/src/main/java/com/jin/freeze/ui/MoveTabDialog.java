@@ -16,18 +16,18 @@ import com.jin.freeze.R;
 import java.util.List;
 
 /**
- * 「加入标签」的统一弹窗：顶部显示应用图标与名称，下面列出所有标签。
- * 点一下勾选即加入，再点一下取消即移出；一个应用可以同时属于多个标签，
- * 勾选后弹窗不关闭，方便连续勾选，点「完成」退出。
+ * 「更改标签页」弹窗：顶部显示应用图标与名称，下面列出所有标签。
+ * 点击某个标签即把应用移动到该标签（覆盖原有归属）并关闭。
+ * 需要让同一个应用同时出现在多个标签，走「添加应用」入口。
  */
 public final class MoveTabDialog {
 
-    /** 一个可勾选的标签；current 表示应用当前是否属于该标签，弹窗会就地翻转。 */
+    /** 一个可选标签；current 表示应用当前所在的标签，行右侧显示勾。 */
     public static final class Tab {
         public final String id;
         public final String name;
         public final boolean visible;
-        public boolean current;
+        public final boolean current;
 
         public Tab(String id, String name, boolean visible, boolean current) {
             this.id = id;
@@ -37,16 +37,16 @@ public final class MoveTabDialog {
         }
     }
 
-    public interface OnToggle {
-        /** 收到时 current 已经是点击后的状态；回调里可以再改回去表示拒绝这次勾选。 */
-        void onToggle(Tab tab);
+    public interface OnPick {
+        /** 点了某个标签；返回 false 表示拒绝本次移动（弹窗保持打开）。 */
+        boolean onPick(Tab tab);
     }
 
     private MoveTabDialog() {
     }
 
     public static void show(android.content.Context c, CharSequence appLabel, Drawable icon,
-                            List<Tab> tabs, OnToggle onToggle) {
+                            List<Tab> tabs, OnPick onPick) {
         final Dialog dialog = new Dialog(c);
         LinearLayout root = new LinearLayout(c);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -75,7 +75,7 @@ public final class MoveTabDialog {
         nameLp.rightMargin = Ui.dp(c, 16);
         root.addView(name, nameLp);
 
-        TextView hint = Ui.text(c, "加入标签（可多选，再点取消）", 12, Ui.TEXT_SECONDARY, false);
+        TextView hint = Ui.text(c, "移动到标签", 12, Ui.TEXT_SECONDARY, false);
         hint.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -85,10 +85,10 @@ public final class MoveTabDialog {
 
         divider(c, root, 14);
         for (Tab t : tabs) {
-            root.addView(buildRow(c, t, onToggle));
+            root.addView(buildRow(c, dialog, t, onPick));
         }
 
-        TextView done = Ui.text(c, "完成", 13, Ui.primary(c), true);
+        TextView done = Ui.text(c, "取消", 13, Ui.TEXT_SECONDARY, false);
         done.setGravity(Gravity.CENTER);
         done.setBackgroundResource(R.drawable.bg_menu_item);
         done.setOnClickListener(v -> dialog.dismiss());
@@ -111,8 +111,8 @@ public final class MoveTabDialog {
         }
     }
 
-    private static View buildRow(android.content.Context c, final Tab t,
-                                 final OnToggle onToggle) {
+    private static View buildRow(android.content.Context c, final Dialog dialog, final Tab t,
+                                 final OnPick onPick) {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -132,20 +132,17 @@ public final class MoveTabDialog {
         lp.leftMargin = Ui.dp(c, 10);
         row.addView(label, lp);
 
-        // 右端勾选标记：已加入的标签显示圆形对勾
-        final ImageView check = new ImageView(c);
+        // 右端勾选标记：应用当前所在的标签
+        ImageView check = new ImageView(c);
         check.setImageResource(R.drawable.ic_check_badge);
         check.setVisibility(t.current ? View.VISIBLE : View.GONE);
         row.addView(check, new LinearLayout.LayoutParams(Ui.dp(c, 18), Ui.dp(c, 18)));
 
         row.setClickable(true);
         row.setOnClickListener(v -> {
-            t.current = !t.current;
-            onToggle.onToggle(t);
-            // 回调可能拒绝这次勾选（比如用户应用不能进系统应用标签），按最终状态刷新
-            check.setVisibility(t.current ? View.VISIBLE : View.GONE);
-            ic.setImageTintList(ColorStateList.valueOf(
-                    t.current ? Ui.primary(c) : Ui.TEXT_SECONDARY));
+            if (onPick.onPick(t)) {
+                dialog.dismiss();
+            }
         });
 
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
