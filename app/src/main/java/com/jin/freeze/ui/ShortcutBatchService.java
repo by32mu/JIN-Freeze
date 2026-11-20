@@ -45,7 +45,7 @@ public class ShortcutBatchService extends Service {
         android.content.SharedPreferences sp = getSharedPreferences("freeze_list", MODE_PRIVATE);
         Set<String> pkgs = new HashSet<>(sp.getStringSet("pkgs", new HashSet<>()));
         if (pkgs.isEmpty()) {
-            toast("冻结名单为空");
+            FrozenTip.show(this, "冻结名单为空");
             return;
         }
         // 冻结白名单：快捷方式的一键冻结同样不处理白名单里的应用
@@ -54,9 +54,13 @@ public class ShortcutBatchService extends Service {
         // 暂停态对「冻结」来说等同于已到位；对「解冻」来说必须再撤一次暂停
         Set<String> suspendedBefore = SuspendSupport.suspendedAmong(SuspendSupport.cached(this));
         List<String> todo = new ArrayList<>();
+        boolean allWhitelisted = whitelist != null;
         for (String pkg : pkgs) {
             if (whitelist != null && whitelist.contains(pkg)) {
                 continue;
+            }
+            if (whitelist != null) {
+                allWhitelisted = false;
             }
             boolean suspended = suspendedBefore.contains(pkg);
             // 已经是目标状态的不再执行 pm：重复整批调用是原来耗时的主要来源之一
@@ -70,6 +74,12 @@ public class ShortcutBatchService extends Service {
             }
         }
         if (todo.isEmpty()) {
+            // 与冻结按钮同一套自绘提示：全部已到位 / 全在白名单时也给出反馈
+            if (freeze) {
+                FrozenTip.show(this, allWhitelisted ? "白名单应用不冻结" : "无需冻结");
+            } else {
+                FrozenTip.show(this, "无需解冻");
+            }
             return;
         }
         // 一次 su + 限并发跑完整批：pm 每条都要拉起一个 app_process，
@@ -139,6 +149,9 @@ public class ShortcutBatchService extends Service {
                 sb.append("\n\n").append(f);
             }
             toast(sb.toString());
+        } else {
+            // 全部成功：与冻结按钮完全同款提示
+            FrozenTip.show(this, freeze ? "已冻结" : "已解冻");
         }
     }
 

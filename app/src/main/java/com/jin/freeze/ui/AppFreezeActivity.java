@@ -1402,7 +1402,7 @@ public class AppFreezeActivity extends BaseActivity {
                 ? R.drawable.bg_card_selected : R.drawable.bg_card);
     }
 
-    /** 添加页内解冻：成功静默恢复彩色，失败展示 pm 真实输出。 */
+    /** 添加页内解冻：成功后恢复彩色并给出「已解冻」，失败展示 pm 真实输出。 */
     private void doPickUnfreeze(App a, Cell cell) {
         IO.execute(() -> {
             PrivShell.Result r = execPm(a.pkg, a.userId, false);
@@ -1415,6 +1415,7 @@ public class AppFreezeActivity extends BaseActivity {
                     a.frozen = false;
                     a.suspended = false;
                     bindCell(a, cell);
+                    Toast.makeText(this, "已解冻", Toast.LENGTH_SHORT).show();
                 } else {
                     Ui.smallDialog(this, "解冻失败",
                             a.label + "：" + Ui.pmReason(r, false), "知道了");
@@ -1511,6 +1512,7 @@ public class AppFreezeActivity extends BaseActivity {
             return;
         }
         if (working) {
+            Toast.makeText(this, "正在执行其他操作，请稍后再试", Toast.LENGTH_SHORT).show();
             return;
         }
         if (!a.frozen && isWhitelisted(a.pkg, a.userId)) {
@@ -1585,8 +1587,8 @@ public class AppFreezeActivity extends BaseActivity {
                 render(search.getText().toString().trim());
                 updateBatchBar();
                 refreshFrozen();
-                Toast.makeText(this, (toFreeze ? "已冻结 " : "已解冻 ") + a.label,
-                        Toast.LENGTH_SHORT).show();
+                // 长按图标菜单触发的提示走系统默认 Toast
+                Toast.makeText(this, toFreeze ? "已冻结" : "已解冻", Toast.LENGTH_SHORT).show();
             });
         });
     }
@@ -1862,15 +1864,20 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     private void launch(App a) {
+        // 分身要在它自己的用户下解析启动组件：主应用被冻结时 PackageManager 会返回 null，
+        // 直接判定「没有可启动的界面」，而桌面仍能打开双开
+        if (a.userId != 0) {
+            String comp = resolveCloneLauncher(a.pkg, a.userId);
+            if (comp == null) {
+                Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            PrivShell.exec("am start --user " + a.userId + " -n " + comp, 15);
+            return;
+        }
         Intent i = getPackageManager().getLaunchIntentForPackage(a.pkg);
         if (i == null) {
             Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        // 分身要在它自己的用户下启动，否则打开的是主应用
-        if (a.userId != 0 && i.getComponent() != null) {
-            PrivShell.exec("am start --user " + a.userId + " -n "
-                    + i.getComponent().flattenToShortString(), 15);
             return;
         }
         try {
@@ -1878,5 +1885,22 @@ public class AppFreezeActivity extends BaseActivity {
         } catch (Exception e) {
             Toast.makeText(this, "打开失败：" + e.getClass().getSimpleName(), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /** 在分身用户下解析启动组件（「包/类」）；解析不到返回 null。 */
+    private String resolveCloneLauncher(String pkg, int userId) {
+        // 注意必须带 -a/-c/-p：resolve-activity 的位置参数是 URI，不是包名
+        PrivShell.Result r = PrivShell.exec("cmd package resolve-activity --brief --user "
+                + userId + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "
+                + pkg + " | tail -n 1", 10);
+        String out = r.out == null ? "" : r.out.trim();
+        if (out.contains("/")) {
+            return out;
+        }
+        Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+        if (i != null && i.getComponent() != null) {
+            return i.getComponent().flattenToShortString();
+        }
+        return null;
     }
 }

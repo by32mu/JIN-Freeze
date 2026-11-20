@@ -133,8 +133,10 @@ public class QuickLaunchActivity extends Activity {
             }
             PrivShell.exec("pm unsuspend --user " + userId + " " + pkg
                     + "; pm enable --user " + userId + " " + pkg, 30);
-            Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
-            if (launch == null || launch.getComponent() == null) {
+            // 主应用被冻结时 getLaunchIntentForPackage 会返回 null，不能作为分身能否启动的依据：
+            // 改成在分身自己的用户下解析启动组件
+            String comp = resolveCloneComponent(pkg, userId);
+            if (comp == null) {
                 runOnUiThread(() -> {
                     Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
                     finish();
@@ -142,7 +144,7 @@ public class QuickLaunchActivity extends Activity {
                 return;
             }
             PrivShell.Result start = PrivShell.exec("am start --user " + userId + " -n "
-                    + launch.getComponent().flattenToShortString(), 15);
+                    + comp, 15);
             boolean failed = start == null || start.timeout
                     || (start.out != null && start.out.contains("Error"));
             runOnUiThread(() -> {
@@ -153,6 +155,21 @@ public class QuickLaunchActivity extends Activity {
                 finish();
             });
         }, "jin-launch-clone").start();
+    }
+
+    /** 在分身用户下解析启动组件（「包/类」）；解析不到返回 null。 */
+    private String resolveCloneComponent(String pkg, int userId) {
+        // 注意必须带 -a/-c/-p：resolve-activity 的位置参数是 URI，不是包名
+        PrivShell.Result r = PrivShell.exec("cmd package resolve-activity --brief --user "
+                + userId + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "
+                + pkg + " | tail -n 1", 10);
+        String out = r.out == null ? "" : r.out.trim();
+        if (out.contains("/")) {
+            return out;
+        }
+        Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+        return i == null || i.getComponent() == null ? null
+                : i.getComponent().flattenToShortString();
     }
 
     private void finishWith(LaunchTarget.Target t) {

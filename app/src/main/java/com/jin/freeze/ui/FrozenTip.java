@@ -40,16 +40,17 @@ public final class FrozenTip {
 
         TextView tv = new TextView(app);
         tv.setText(text);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        // 与系统 Toast 同量级：14sp 正文、左右 16dp 上下 10dp，跟在别处看到的提示一样大
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         tv.setTextColor(night ? TEXT_DARK : TEXT_LIGHT);
         // 纯文字：没有图标，文字在底板上居中
         tv.setGravity(Gravity.CENTER);
-        int padH = dp(app, 11);
-        int padV = dp(app, 4);
+        int padH = dp(app, 16);
+        int padV = dp(app, 10);
         tv.setPadding(padH, padV, padH, padV);
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(night ? BG_DARK : BG_LIGHT);
-        bg.setCornerRadius(dp(app, 18));
+        bg.setCornerRadius(dp(app, 22));
         bg.setStroke(dp(app, 1), night ? EDGE_DARK : EDGE_LIGHT);
         tv.setBackground(bg);
 

@@ -101,6 +101,16 @@ public final class AppActionSheet {
             // 默认空实现：不支持排序的页面不用 override
         }
 
+        /** 是否显示「重命名」：只有冻结列表支持给应用改显示名。 */
+        default boolean renameEnabled() {
+            return false;
+        }
+
+        /** 重命名列表中的应用（只改显示名，不动包名与系统设置）。 */
+        default void renameApp() {
+            // 默认空实现：不支持重命名的页面不用 override
+        }
+
         /** 从本次长按进入多选态（ActionSheet 自己 dismiss，调用方负责进入 selectMode）。 */
         default void startMultiSelect() {
             // 默认空实现：不支持多选的页面不用 override
@@ -205,6 +215,11 @@ public final class AppActionSheet {
         if (actions.multiSelectEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_check_badge, "多选",
                     actions::startMultiSelect, fg, iconFg);
+        }
+        // 重命名：放在多选下面，只改列表里的显示名称
+        if (actions.renameEnabled()) {
+            addItem(c, content, sheet, R.drawable.ic_action_edit, "重命名",
+                    actions::renameApp, fg, iconFg);
         }
         addItem(c, content, sheet, R.drawable.ic_action_app_info, "在其他应用中配置", actions::appSettings, fg, iconFg);
         if (actions.pinHomeEnabled()) {

@@ -194,6 +194,16 @@ public class FreezeListActivity extends BaseActivity {
     /** 标签：内置「用户应用 / 系统应用」+ 自定义；顺序、显隐、名称与每个应用的归属都落盘。 */
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
+    /** 设置里「其他」分组的折叠状态：备份/恢复/关于凚/致谢名单/赞赏开发者只藏这一组。 */
+    private static final String KEY_SETTINGS_OTHER_COLLAPSED = "settings_other_collapsed";
+    /** 设置里「手势功能 / 列表图标 / 底部冻结按钮」三块的折叠状态。 */
+    private static final String KEY_SETTINGS_GESTURE_COLLAPSED = "settings_gesture_collapsed";
+    private static final String KEY_SETTINGS_ICON_COLLAPSED = "settings_icon_collapsed";
+    private static final String KEY_SETTINGS_FAB_COLLAPSED = "settings_fab_collapsed";
+    private static final String KEY_SETTINGS_OPACITY_COLLAPSED = "settings_opacity_collapsed";
+    private static final String KEY_SETTINGS_WALLPAPER_COLLAPSED = "settings_wallpaper_collapsed";
+    /** 应用自定义显示名：JSON「实例键 → 名称」，只影响列表显示，不改包名。 */
+    private static final String KEY_APP_NAMES = "app_names";
     private static final String KEY_CURRENT_TAB = "current_tab";
     /** 默认标签：进入冻结列表时优先停在这里；空表示没设置，按顺序落到第一个可见标签。 */
     private static final String KEY_DEFAULT_TAB = "default_tab";
@@ -231,7 +241,7 @@ public class FreezeListActivity extends BaseActivity {
     /** 点 ▼ 展开后的固定高度（dp）；实际按底部底栏上沿收窄，不覆盖底栏。 */
     private static final int LAYOUT_EXPAND_DEFAULT_DP = 727;
     /** 底部冻结按钮「距底部」可调范围上限（dp）。 */
-    private static final int FAB_DY_MAX = 30;
+    private static final int FAB_DY_MAX = 88;
     /** 半屏顶部小白条开关：关掉后隐藏把手、高度沿用记住的值。 */
     private static final String KEY_PANEL_HANDLE = "panel_handle_enabled";
     /** 冻结成功后是否自动收起列表（全屏/半屏各自记忆，回到进入前的应用）。 */
@@ -427,6 +437,8 @@ public class FreezeListActivity extends BaseActivity {
     private final Handler searchHandler = new Handler(Looper.getMainLooper());
     private final Runnable searchRunnable = this::render;
     private LinearLayout fabGroup;
+    /** 全屏页底部导航栏（经典三键）高度：悬浮按钮贴底时要减掉，否则会被导航栏压住。 */
+    private int navBottomInsetPx;
     /** 长按冻结按钮浮出的一键解冻小图标。 */
     private View unfreezeFab;
     /** 移动图标模式覆盖在冻结按钮上的「完成」勾选。 */
@@ -828,6 +840,16 @@ public class FreezeListActivity extends BaseActivity {
                             ? 0 : Math.max(bars.top, statusBarReservePx);
                     insetTarget.setPadding(bars.left, top, bars.right,
                             Math.max(bars.bottom, ime.bottom));
+                    // 全屏页的悬浮冻结按钮直接挂在 page_root 上，不跟着内层 padding 走：
+                    // 经典三键导航时底部要再让出一块，否则按钮会被导航栏压住（半屏面板自身已避让）
+                    if (!panelMode) {
+                        navBottomInsetPx = bars.bottom;
+                        if (fabGroup != null) {
+                            fabGroup.post(FreezeListActivity.this::applyFabPosition);
+                        }
+                    } else {
+                        navBottomInsetPx = 0;
+                    }
                     return insets;
                 });
 
@@ -1014,10 +1036,23 @@ public class FreezeListActivity extends BaseActivity {
 
         // 一键冻结不做前置确认，直接执行
         freezeBtn.setOnClickListener(v -> {
-            if (batchTargets().isEmpty()) {
+            if (working) {
                 return;
             }
-            runBatch(true, batchTargets());
+            List<Item> targets = allTargets();
+            if (targets.isEmpty() && !pkgs().isEmpty()) {
+                // 冷启动 / 刚切标签时内存列表可能还没装载，第一次点击会被当成「没有目标」：
+                // 先用 PackageInfo 快速补一份再取一次，避免用户要点两次
+                Set<String> wanted = pkgs();
+                items.clear();
+                items.addAll(quickItems(wanted, savedOrder(), customOrder()));
+                targets = allTargets();
+            }
+            if (targets.isEmpty()) {
+                FrozenTip.show(this, "冻结名单为空");
+                return;
+            }
+            runBatch(true, targets);
         });
 
         pendingAction = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_ACTION);
@@ -3173,6 +3208,118 @@ public class FreezeListActivity extends BaseActivity {
         return tabsOf(it).contains(tabId);
     }
 
+    /** 应用自定义显示名（空 = 用系统名称）。 */
+    private String customName(String pkgKey) {
+        try {
+            JSONObject o = new JSONObject(prefs().getString(KEY_APP_NAMES, "{}"));
+            return o.optString(pkgKey, "");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private void setCustomName(String pkgKey, String name) {
+        try {
+            JSONObject o = new JSONObject(prefs().getString(KEY_APP_NAMES, "{}"));
+            String v = name == null ? "" : name.trim();
+            if (v.isEmpty()) {
+                o.remove(pkgKey);
+            } else {
+                o.put(pkgKey, v);
+            }
+            prefs().edit().putString(KEY_APP_NAMES, o.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** 把自定义名套到条目上；分身仍保留「(用户号)」后缀，便于区分。 */
+    private void applyCustomLabel(Item it) {
+        String cn = customName(it.pkg);
+        if (cn.isEmpty()) {
+            return;
+        }
+        it.label = cn + (it.userId != 0 ? cloneTag(it.userId) : "");
+    }
+
+    /** 长按菜单「重命名」：框里预填当前名称，留空恢复系统名称。 */
+    private void showRenameAppDialog(Item it) {
+        String system = systemLabel(it.pkg);
+        String custom = customName(it.pkg);
+        String initial = custom.isEmpty() ? system : custom;
+        showRenameDialog("重命名应用", initial, "显示名称（留空恢复原名）", name -> {
+            // 改回系统原名时不再存冗余的自定义名
+            setCustomName(it.pkg, name.equals(system) ? "" : name);
+            AutoBackup.snapshotAsync(this);
+            reload();
+            Toast.makeText(this, name.isEmpty() ? "已恢复系统名称" : "已重命名为「" + name + "」",
+                    Toast.LENGTH_SHORT).show();
+            return true;
+        });
+    }
+
+    /** 系统给的应用名（不含分身后缀）；取不到时退回包名。 */
+    private String systemLabel(String pkgKey) {
+        try {
+            ApplicationInfo ai = getPackageManager().getApplicationInfo(packagePart(pkgKey), 0);
+            return getPackageManager().getApplicationLabel(ai).toString();
+        } catch (Exception e) {
+            return packagePart(pkgKey);
+        }
+    }
+
+    /**
+     * 设置里分组标题右侧的折叠把手：点箭头收起/展开 body，状态落盘。
+     * 标识沿用设置底部展开/收起那颗三角图标，紧贴在标题文字右边。
+     * 标题自身的点击（打开说明）保持不变，只有箭头负责折叠。
+     */
+    private LinearLayout collapsibleHead(TextView title, View body, String key) {
+        return collapsibleHead(title, body, key, null);
+    }
+
+    private LinearLayout collapsibleHead(TextView title, View body, String key,
+                                         final Runnable onExpand) {
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        // 标题可能已经先加进了别的容器（设置里部分栏位先 add 再整理），
+        // 直接 addView 会抛「child already has a parent」，先摘下来
+        android.view.ViewParent tp = title.getParent();
+        if (tp instanceof ViewGroup) {
+            ((ViewGroup) tp).removeView(title);
+        }
+        // 标题自带的上下留白挪到整行上：文字与箭头都按整行垂直居中，才会在同一条线上
+        int padTop = title.getPaddingTop();
+        int padBottom = title.getPaddingBottom();
+        title.setPadding(title.getPaddingLeft(), 0, title.getPaddingRight(), 0);
+        head.setPadding(0, padTop, 0, padBottom);
+        head.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        final boolean[] collapsed = {prefs().getBoolean(key, false)};
+        final ImageView arrow = new ImageView(this);
+        arrow.setImageResource(collapsed[0]
+                ? R.drawable.ic_chevron_down : R.drawable.ic_chevron_up);
+        arrow.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        int size = Ui.dp(this, 20);
+        arrow.setPadding(Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3));
+        arrow.setClickable(true);
+        arrow.setContentDescription("展开或收起");
+        body.setVisibility(collapsed[0] ? View.GONE : View.VISIBLE);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(size, size);
+        alp.leftMargin = Ui.dp(this, 1);
+        arrow.setOnClickListener(v -> {
+            collapsed[0] = !collapsed[0];
+            prefs().edit().putBoolean(key, collapsed[0]).apply();
+            body.setVisibility(collapsed[0] ? View.GONE : View.VISIBLE);
+            arrow.setImageResource(collapsed[0]
+                    ? R.drawable.ic_chevron_down : R.drawable.ic_chevron_up);
+            if (!collapsed[0] && onExpand != null) {
+                onExpand.run();
+            }
+        });
+        head.addView(arrow, alp);
+        return head;
+    }
+
     /** 当前标签之外，该应用是否还属于别的标签（属于时只做当前标签的移除）。 */
     private boolean inOtherTabs(Item it) {
         for (String id : tabsOf(it)) {
@@ -3983,6 +4130,7 @@ public class FreezeListActivity extends BaseActivity {
             if (userId != 0) {
                 it.label += cloneTag(userId);
             }
+            applyCustomLabel(it);
             map.put(key, it);
         }
         List<Item> list = new ArrayList<>();
@@ -4094,6 +4242,7 @@ public class FreezeListActivity extends BaseActivity {
                 if (userId != 0) {
                     it.label += cloneTag(userId);
                 }
+                applyCustomLabel(it);
                 kept.add(key);
                 map.put(key, it);
             }
@@ -4325,7 +4474,22 @@ public class FreezeListActivity extends BaseActivity {
 
     /**
      * 一键冻结 / 长按解冻的处理范围：
-     * 勾选「仅冻结/解冻当前标签」时等于当前标签（含搜索过滤），否则是整份名单（只保留搜索过滤）。
+     * 这两个按钮始终处理整份名单（只保留搜索过滤），不受「仅冻结/解冻当前标签」影响。
+     */
+    private List<Item> allTargets() {
+        String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
+        List<Item> shown = new ArrayList<>();
+        for (Item it : items) {
+            if (!q.isEmpty() && !matchesQuery(it, q)) {
+                continue;
+            }
+            shown.add(it);
+        }
+        return shown;
+    }
+
+    /**
+     * 其余批量入口（多选等）仍按「仅冻结/解冻当前标签」取范围。
      */
     private List<Item> batchTargets() {
         if (batchCurrentTabOnly) {
@@ -5333,7 +5497,12 @@ public class FreezeListActivity extends BaseActivity {
 
             @Override
             public void toggleFreeze() {
-                FreezeListActivity.this.toggleFreeze(it);
+                // 长按图标菜单触发：提示走系统默认 Toast
+                if (it.frozen) {
+                    unfreezeSingle(it, true);
+                } else {
+                    freezeSingle(it, true);
+                }
             }
 
             @Override
@@ -5423,6 +5592,16 @@ public class FreezeListActivity extends BaseActivity {
             public void startMultiSelect() {
                 enterSelectMode();
                 toggleSelect(it);
+            }
+
+            @Override
+            public boolean renameEnabled() {
+                return true;
+            }
+
+            @Override
+            public void renameApp() {
+                showRenameAppDialog(it);
             }
         });
     }
@@ -6073,6 +6252,10 @@ public class FreezeListActivity extends BaseActivity {
         }
         int uid = userIdPart(key);
         String suffix = uid == 0 ? "" : cloneTag(uid);
+        String custom = customName(key);
+        if (!custom.isEmpty()) {
+            return custom + suffix;
+        }
         try {
             ApplicationInfo ai = getPackageManager().getApplicationInfo(packagePart(key), 0);
             return getPackageManager().getApplicationLabel(ai) + suffix;
@@ -6109,8 +6292,13 @@ public class FreezeListActivity extends BaseActivity {
         return it;
     }
 
-    /** 只冻结当前应用；已冻结时直接提示，不重复执行。成功静默，失败给 pm 真实输出。 */
+    /** 只冻结当前应用；已冻结时直接提示，不重复执行。 */
     private void freezeSingle(Item it) {
+        freezeSingle(it, false);
+    }
+
+    /** @param systemToast 长按图标菜单触发时用系统默认 Toast，其它入口沿用自绘提示 */
+    private void freezeSingle(Item it, boolean systemToast) {
         if (working) {
             return;
         }
@@ -6192,7 +6380,9 @@ public class FreezeListActivity extends BaseActivity {
                 it.frozen = true;
                 it.suspended = suspendedFinal;
                 rebindCells();
-                if (showFrozenTip) {
+                if (systemToast) {
+                    Toast.makeText(this, "已冻结", Toast.LENGTH_SHORT).show();
+                } else if (showFrozenTip) {
                     FrozenTip.show(this);
                 }
                 if (panelDismissAfterFreeze) {
@@ -6204,6 +6394,11 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private void unfreezeSingle(Item it) {
+        unfreezeSingle(it, false);
+    }
+
+    /** @param systemToast 长按图标菜单触发时用系统默认 Toast */
+    private void unfreezeSingle(Item it, boolean systemToast) {
         if (working) {
             return;
         }
@@ -6224,6 +6419,11 @@ public class FreezeListActivity extends BaseActivity {
                 it.frozen = false;
                 it.suspended = false;
                 rebindCells();
+                if (systemToast) {
+                    Toast.makeText(this, "已解冻", Toast.LENGTH_SHORT).show();
+                } else if (showFrozenTip) {
+                    FrozenTip.show(this, "已解冻");
+                }
                 reload();
             });
         });
@@ -6600,8 +6800,9 @@ public class FreezeListActivity extends BaseActivity {
         int x = fabCenterX() + Ui.dp(this, fabDx);
         x = Math.max(inset, Math.min(fabMaxX(), x));
         int topLimit = (scrollView == null ? 0 : scrollView.getTop()) + inset;
-        // 偏移 0 就是真正贴底，安全区由根布局的 inset padding 让出，这里不再重复加
-        int bottomLimit = parent.getHeight() - fabGroup.getHeight();
+        // 偏移 0 就是真正贴底，安全区由根布局的 inset padding 让出，这里不再重复加；
+        // 但 fab 挂在 page_root 上、不吃内层 padding，经典导航键的高度要在这里自己扣掉
+        int bottomLimit = parent.getHeight() - fabGroup.getHeight() - navBottomInsetPx;
         int y = bottomLimit - Ui.dp(this, fabDy);
         y = Math.max(topLimit, Math.min(bottomLimit, y));
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) fabGroup.getLayoutParams();
@@ -6627,7 +6828,7 @@ public class FreezeListActivity extends BaseActivity {
             }
             int maxX = Math.max(0, (w - fabGroup.getWidth()) / 2 - Ui.dp(this, 8));
             int x = Math.max(-maxX, Math.min(maxX, Ui.dp(this, fabDx)));
-            // 只允许往上抬，范围受 0-14dp 限制
+            // 只允许往上抬，范围受 0-88dp 限制
             int maxUp = Ui.dp(this, FAB_DY_MAX);
             int y = Math.max(-maxUp, Math.min(0, -Ui.dp(this, fabDy)));
             fabGroup.setTranslationX(x);
@@ -6746,7 +6947,13 @@ public class FreezeListActivity extends BaseActivity {
         unfreezeFab.setOnClickListener(v -> {
             collapseUnfreezeFab();
             if (!working) {
-                runBatch(false, batchTargets());
+                // 长按解冻同样作用于整份名单
+                List<Item> targets = allTargets();
+                if (targets.isEmpty()) {
+                    FrozenTip.show(this, "冻结名单为空");
+                    return;
+                }
+                runBatch(false, targets);
             }
         });
         // 点击/按住解冻图标都算操作，重新计时
@@ -7878,13 +8085,19 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(tabTitle);
         box.addView(tabList);
         box.addView(newTab);
-        box.addView(fabTitle);
-        box.addView(sizeValue);
-        box.addView(fabSizeBar);
-        box.addView(xValue);
-        box.addView(xBar);
-        box.addView(yValue);
-        box.addView(yBar);
+        // 按钮大小/偏移收进这一层，标题右侧箭头负责折叠
+        final LinearLayout fabBody = new LinearLayout(this);
+        fabBody.setOrientation(LinearLayout.VERTICAL);
+        fabBody.addView(sizeValue);
+        fabBody.addView(fabSizeBar);
+        fabBody.addView(xValue);
+        fabBody.addView(xBar);
+        fabBody.addView(yValue);
+        fabBody.addView(yBar);
+        final LinearLayout fabHead = collapsibleHead(fabTitle, fabBody,
+                KEY_SETTINGS_FAB_COLLAPSED);
+        box.addView(fabHead);
+        box.addView(fabBody);
 
         // 透明度：紧挨「距底部」，与上面几条同一套小字样式；两种形态各自记忆
         final TextView fabAlphaLabel = new TextView(this);
@@ -7926,8 +8139,9 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
             }
         });
-        box.addView(fabAlphaLabel);
-        box.addView(fabAlphaBar);
+        // 按钮底板透明度也归「底部冻结按钮」这一组，跟着标题一起折叠
+        fabBody.addView(fabAlphaLabel);
+        fabBody.addView(fabAlphaBar);
 
         // 手势功能：标题可点开说明；下面是长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的
         // 触发距离滑块，实时生效；整块最后插到「标签」上面
@@ -7939,6 +8153,10 @@ public class FreezeListActivity extends BaseActivity {
         gestureTitle.setTextColor(getColor(R.color.text_primary));
         gestureTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
         gestureTitle.setOnClickListener(v -> showGestureHintDialog());
+
+        // 手势滑块与边缘设置收进这一层，标题右侧箭头负责折叠
+        final LinearLayout gestureBody = new LinearLayout(this);
+        gestureBody.setOrientation(LinearLayout.VERTICAL);
 
         final TextView upLabel = new TextView(this);
         upLabel.setTextSize(11);
@@ -7996,11 +8214,13 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
 
-        gestureSec.addView(gestureTitle);
-        gestureSec.addView(upLabel);
-        gestureSec.addView(upBar);
-        gestureSec.addView(downLabel);
-        gestureSec.addView(downBar);
+        gestureSec.addView(collapsibleHead(gestureTitle, gestureBody,
+                KEY_SETTINGS_GESTURE_COLLAPSED));
+        gestureSec.addView(gestureBody);
+        gestureBody.addView(upLabel);
+        gestureBody.addView(upBar);
+        gestureBody.addView(downLabel);
+        gestureBody.addView(downBar);
 
         // 只在屏幕左右边缘区域长按滑动才切换形态，避免和列表里的滑动操作误触
         final LinearLayout edgeLeftBox = new LinearLayout(this);
@@ -8083,11 +8303,11 @@ public class FreezeListActivity extends BaseActivity {
             edgeRightBox.setVisibility(vis);
             applyEdgeGestureExclusion();
         });
-        gestureSec.addView(edgeBox);
-        gestureSec.addView(edgeLeftBox);
-        gestureSec.addView(edgeRightBox);
+        gestureBody.addView(edgeBox);
+        gestureBody.addView(edgeLeftBox);
+        gestureBody.addView(edgeRightBox);
         // 震动反馈跟着手势功能走，放在「屏幕边缘触发上下手势」这一组下面
-        gestureSec.addView(scrubVibBox);
+        gestureBody.addView(scrubVibBox);
         int edgeVis = gestureEdgeOnly ? View.VISIBLE : View.GONE;
         edgeLeftBox.setVisibility(edgeVis);
         edgeRightBox.setVisibility(edgeVis);
@@ -8161,7 +8381,12 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
             }
         });
-        ias.addView(iconAdjustTitle);
+        // 图标样式/列数/大小收进这一层，标题右侧箭头负责折叠
+        final LinearLayout iconBody = new LinearLayout(this);
+        iconBody.setOrientation(LinearLayout.VERTICAL);
+        ias.addView(collapsibleHead(iconAdjustTitle, iconBody,
+                KEY_SETTINGS_ICON_COLLAPSED));
+        ias.addView(iconBody);
         // 冻结图标样式：与「关联应用」那一行同字号的入口，点开选全彩 / 一半灰度一半彩色
         final TextView iconStyleEntry = new TextView(this);
         iconStyleEntry.setText(iconStyleEntryText());
@@ -8170,12 +8395,12 @@ public class FreezeListActivity extends BaseActivity {
         iconStyleEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
         iconStyleEntry.setOnClickListener(v -> showIconStyleDialog());
         layoutIconStyleEntry = iconStyleEntry;
-        ias.addView(iconStyleEntry);
-        ias.addView(colsValue);
-        ias.addView(colsBar);
-        ias.addView(sizeLabel);
-        ias.addView(sizeBar);
-        box.addView(ias, Math.max(0, box.indexOfChild(fabTitle)));
+        iconBody.addView(iconStyleEntry);
+        iconBody.addView(colsValue);
+        iconBody.addView(colsBar);
+        iconBody.addView(sizeLabel);
+        iconBody.addView(sizeBar);
+        box.addView(ias, Math.max(0, box.indexOfChild(fabHead)));
         // 手势触发距离整栏放在「标签（点击看说明）」上面
         box.addView(gestureSec, Math.max(0, box.indexOfChild(tabTitle)));
         // 手势功能栏与「列表空白处长按手势」绑定：永远紧跟在它下面
@@ -8224,9 +8449,13 @@ public class FreezeListActivity extends BaseActivity {
 
         wpRow.addView(wpPick);
         wpRow.addView(wpClear);
-        wps.addView(wpTitle);
-        wps.addView(wpState);
-        wps.addView(wpRow);
+        // 壁纸状态/操作/模糊/同步选项都收进这一层，标题右侧箭头可折叠
+        final LinearLayout wpBody = new LinearLayout(this);
+        wpBody.setOrientation(LinearLayout.VERTICAL);
+        wps.addView(collapsibleHead(wpTitle, wpBody, KEY_SETTINGS_WALLPAPER_COLLAPSED));
+        wps.addView(wpBody);
+        wpBody.addView(wpState);
+        wpBody.addView(wpRow);
 
         // 壁纸自己的模糊度：0 完全清晰（默认），只影响这张壁纸，不动透明度/背景模糊那几条
         final TextView wpBlurLabel = new TextView(this);
@@ -8265,8 +8494,8 @@ public class FreezeListActivity extends BaseActivity {
                 applyWallpaperBackground();
             }
         });
-        wps.addView(wpBlurLabel);
-        wps.addView(wpBlurBar);
+        wpBody.addView(wpBlurLabel);
+        wpBody.addView(wpBlurBar);
 
         // 长按应用的选项框是否也换成壁纸底：取半屏那张图（含它的模糊度），半屏/全屏共用这一个开关
         android.widget.CheckBox wpSheet = new android.widget.CheckBox(this);
@@ -8276,7 +8505,7 @@ public class FreezeListActivity extends BaseActivity {
         wpSheet.setChecked(prefs().getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false));
         wpSheet.setOnCheckedChangeListener((b, on) ->
                 prefs().edit().putBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, on).apply());
-        wps.addView(wpSheet);
+        wpBody.addView(wpSheet);
         // 关联应用：独立一栏，放在自定义壁纸上面；点进去管理主副应用关联
         LinearLayout pairSec = new LinearLayout(this);
         pairSec.setOrientation(LinearLayout.VERTICAL);
@@ -8342,6 +8571,17 @@ public class FreezeListActivity extends BaseActivity {
         // 整个界面透明度区块先收进 its，最后整体插到「底部冻结按钮调节」上面
         LinearLayout its = new LinearLayout(this);
         its.setOrientation(LinearLayout.VERTICAL);
+        // 「界面透明度」：下面收着背景与搜索框两条透明度，标题右侧箭头可折叠
+        TextView uiOpacityTitle = new TextView(this);
+        uiOpacityTitle.setText("界面透明度");
+        uiOpacityTitle.setTextSize(12);
+        uiOpacityTitle.setTextColor(getColor(R.color.text_primary));
+        uiOpacityTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
+        final LinearLayout itsBody = new LinearLayout(this);
+        itsBody.setOrientation(LinearLayout.VERTICAL);
+        its.addView(collapsibleHead(uiOpacityTitle, itsBody,
+                KEY_SETTINGS_OPACITY_COLLAPSED));
+        its.addView(itsBody);
 
         if (panelMode) {
             // 半屏外侧（上方遮罩）透明度：越大越透明，背后页面看得越清
@@ -8373,8 +8613,8 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            its.addView(outerLabel);
-            its.addView(outerBar);
+            itsBody.addView(outerLabel);
+            itsBody.addView(outerBar);
 
             // 半屏内侧（面板本体）透明度
             final TextView innerLabel = new TextView(this);
@@ -8405,8 +8645,8 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            its.addView(innerLabel);
-            its.addView(innerBar);
+            itsBody.addView(innerLabel);
+            itsBody.addView(innerBar);
         } else {
             // 全屏背景透明度：整页底板（含状态栏那条）一起淡出
             final TextView bgLabel = new TextView(this);
@@ -8417,7 +8657,7 @@ public class FreezeListActivity extends BaseActivity {
             int bgStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
             bgBar.setProgress(bgStart);
-            bgLabel.setText("全屏背景透明度：" + bgStart + "%");
+            bgLabel.setText("全屏背景：" + bgStart + "%");
             bgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -8425,7 +8665,7 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
-                    bgLabel.setText("全屏背景透明度：" + p + "%");
+                    bgLabel.setText("全屏背景：" + p + "%");
                     // 真正改窗口底板 alpha 与模糊的是 applyFullscreenSurface（整页背景唯一出口）
                     applyFullscreenSurface();
                 }
@@ -8438,8 +8678,8 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            its.addView(bgLabel);
-            its.addView(bgBar);
+            itsBody.addView(bgLabel);
+            itsBody.addView(bgBar);
         }
 
         // 搜索框透明度：只属于全屏（半屏底部没有搜索框）；独立档位，与背景档位解耦
@@ -8452,7 +8692,7 @@ public class FreezeListActivity extends BaseActivity {
             searchBar.setMax(100);
             int searchStart = 100 - searchPct();
             searchBar.setProgress(searchStart);
-            searchLabel.setText("搜索框透明度：" + searchStart + "%");
+            searchLabel.setText("搜索框：" + searchStart + "%");
             searchBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -8461,7 +8701,7 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     // 滑块值 = 透明度：0 不透明，100 全透明
                     prefs().edit().putInt(lk(KEY_SEARCH_SURFACE), 100 - p).apply();
-                    searchLabel.setText("搜索框透明度：" + p + "%");
+                    searchLabel.setText("搜索框：" + p + "%");
                     applySearchSurface();
                 }
 
@@ -8473,17 +8713,17 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            its.addView(searchLabel);
-            its.addView(searchBar);
+            itsBody.addView(searchLabel);
+            itsBody.addView(searchBar);
         }
-        box.addView(its, Math.max(0, box.indexOfChild(fabTitle)));
+        box.addView(its, Math.max(0, box.indexOfChild(fabHead)));
 
         // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
         TextView backupTitle = new TextView(this);
-        backupTitle.setText("备份与恢复");
+        backupTitle.setText("其他");
         backupTitle.setTextSize(12);
         backupTitle.setTextColor(getColor(R.color.text_primary));
-        backupTitle.setPadding(0, Ui.dp(this, 12), 0, 0);
+        backupTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4));
 
         TextView backupEntry = new TextView(this);
         backupEntry.setText("备份");
@@ -8524,6 +8764,26 @@ public class FreezeListActivity extends BaseActivity {
         donateEntry.setTextColor(getColor(R.color.blue));
         donateEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
         box.addView(donateEntry);
+
+        // 「其他」标题可点：折叠下面的备份、恢复、关于凚、致谢名单、赞赏开发者；
+        // 版本号单独放在折叠区外，始终可见
+        final LinearLayout otherGroup = new LinearLayout(this);
+        otherGroup.setOrientation(LinearLayout.VERTICAL);
+        for (View child : new View[]{backupEntry, restoreEntry, aboutEntry, thanksEntry, donateEntry}) {
+            box.removeView(child);
+            otherGroup.addView(child);
+        }
+        final Runnable scrollToOther = () -> otherGroup.postDelayed(() -> {
+            View parent = (View) box.getParent();
+            if (parent instanceof android.widget.ScrollView) {
+                android.widget.ScrollView sv = (android.widget.ScrollView) parent;
+                sv.smoothScrollTo(0, Math.max(0,
+                        otherGroup.getBottom() - sv.getHeight() + Ui.dp(this, 12)));
+            }
+        }, 60);
+        box.addView(collapsibleHead(backupTitle, otherGroup,
+                KEY_SETTINGS_OTHER_COLLAPSED, scrollToOther));
+        box.addView(otherGroup);
 
         // 赞赏入口下方显示当前版本号
         TextView versionText = Ui.text(this, "", 11, Ui.TEXT_SECONDARY, false);
@@ -11558,6 +11818,10 @@ public class FreezeListActivity extends BaseActivity {
         android.view.Window w = dialog.getWindow();
         if (w != null) {
             w.setBackgroundDrawableResource(android.R.color.transparent);
+            // 卡片收窄：备份/恢复这类弹窗不必撑满屏宽，上限 320dp、两侧至少 32dp
+            int width = Math.min(getResources().getDisplayMetrics().widthPixels - Ui.dp(this, 64),
+                    Ui.dp(this, 320));
+            w.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
         }
         return dialog;
     }
@@ -11923,8 +12187,9 @@ public class FreezeListActivity extends BaseActivity {
                 // 用和「已冻结」完全同一套自绘提示，只换文案
                 FrozenTip.show(this, whiteSkipped > 0 && skippedCount == 0
                         ? "白名单应用不冻结" : "无需冻结");
-            } else if (skippedCount == 0) {
-                Toast.makeText(this, "没有需要处理的应用", Toast.LENGTH_SHORT).show();
+            } else {
+                // 一键解冻没有可处理的目标：同样用自绘提示，尺寸与「已解冻」一致
+                FrozenTip.show(this, "无需解冻");
             }
             // 「冻结后收起列表」的自动收起保持原有判断，不受提示影响
             if (skippedCount > 0 && panelDismissAfterFreeze) {
@@ -12072,11 +12337,18 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     Ui.smallDialog(this, freeze ? "冻结失败" : "解冻失败", sb.toString(), "知道了");
                 }
+                // 冻结按设置决定是否提示；解冻固定给一次「已解冻」，与冻结按钮同一套提示
+                if (fails.isEmpty()) {
+                    if (freeze) {
+                        if (showFrozenTip) {
+                            FrozenTip.show(this);
+                        }
+                    } else {
+                        FrozenTip.show(this, "已解冻");
+                    }
+                }
                 // 冻结且没有失败项时，按设置在本轮刷新完成后收起列表
                 if (freeze && fails.isEmpty()) {
-                    if (showFrozenTip) {
-                        FrozenTip.show(this);
-                    }
                     if (panelDismissAfterFreeze) {
                         dismissAfterReload = true;
                     }
@@ -12221,15 +12493,21 @@ public class FreezeListActivity extends BaseActivity {
 
     private void launch(Item it) {
         String name = packagePart(it.pkg);
+        // 分身不能用主用户的 getLaunchIntentForPackage：主应用被冻结（disabled）时
+        // PackageManager 会返回 null，表现为「该应用没有可启动的界面」，而桌面能正常打开。
+        // 分身一律在它自己的用户下解析启动组件。
+        if (it.userId != 0) {
+            String comp = resolveCloneLauncher(name, it.userId);
+            if (comp == null) {
+                Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            PrivShell.exec("am start --user " + it.userId + " -n " + comp, 15);
+            return;
+        }
         Intent i = getPackageManager().getLaunchIntentForPackage(name);
         if (i == null) {
             Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        // 分身必须在它自己的用户下启动，否则会打开主应用
-        if (it.userId != 0 && i.getComponent() != null) {
-            PrivShell.exec("am start --user " + it.userId + " -n "
-                    + i.getComponent().flattenToShortString(), 15);
             return;
         }
         // 面板里主动打开应用：正常离场，面板行为交给系统默认
@@ -12241,12 +12519,34 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
+    /**
+     * 在指定用户（分身）下解析启动组件，返回「包/类」短名；解析不到返回 null。
+     * 走 shell 的 resolve-activity，不受主用户冻结影响。
+     */
+    private String resolveCloneLauncher(String pkg, int userId) {
+        // 注意必须带 -a/-c/-p：resolve-activity 的位置参数是 URI，不是包名
+        PrivShell.Result r = PrivShell.exec("cmd package resolve-activity --brief --user "
+                + userId + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "
+                + pkg + " | tail -n 1", 10);
+        String out = r.out == null ? "" : r.out.trim();
+        if (out.contains("/")) {
+            return out;
+        }
+        // 兜底：主用户可用时直接拿系统给的启动组件
+        Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+        if (i != null && i.getComponent() != null) {
+            return i.getComponent().flattenToShortString();
+        }
+        return null;
+    }
+
     /** 执行 pm，返回完整结果（含退出码与是否超时），成败不在这里判。 */
     private PrivShell.Result execPm(String pkg, boolean freeze) {
         return execPm(pkg, 0, freeze);
     }
 
     private PrivShell.Result execPm(String pkg, int userId, boolean freeze) {
+        // 主用户与分身各自独立：冻结主应用不会连带分身，双开仍可单独打开/冻结
         return PrivShell.exec(pmCommand(pkg, userId, freeze), 30);
     }
 

@@ -36,7 +36,9 @@ public final class AutoBackup {
     private static final String[] STRING_KEYS = {
             "tabs", "app_tabs", "order", "current_tab", "default_tab",
             // 主副关联名单按「主键=副键」的纯文本保存，不是字符串集合
-            "sub_app_pairs"
+            "sub_app_pairs",
+            // 应用自定义显示名
+            "app_names"
     };
 
     private AutoBackup() {
