@@ -28,7 +28,8 @@ public final class AppIconCache {
      */
     private static final int MAX_KB = (int) Math.min(48L * 1024L,
             Math.max(16L * 1024L, Runtime.getRuntime().maxMemory() / 1024L / 8L));
-    private static final String DIR_NAME = "jin_icons";
+    // v2：图标会先裁掉透明留白再统一放大，旧缓存里的图不再适用
+    private static final String DIR_NAME = "jin_icons2";
 
     private static final LruCache<String, Bitmap> CACHE =
             new LruCache<String, Bitmap>(MAX_KB) {
@@ -135,14 +136,68 @@ public final class AppIconCache {
 
     private static Bitmap toBitmap(Drawable d, int px) {
         try {
-            Bitmap bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888);
-            Canvas canvas = new Canvas(bmp);
+            Bitmap raw = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(raw);
             d.setBounds(0, 0, px, px);
             d.draw(canvas);
-            return bmp;
+            return normalize(raw, px);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 统一图标观感尺寸：先裁掉四周透明留白，再等比放大到固定画布。
+     * 部分设备/ROM 的主题图标、老式矩形图标自带不同大小的留白，直接铺满方框会显得忽大忽小；
+     * 裁白边后按同一留边比例重新排布，所有图标的实际占位就一致了。
+     */
+    private static Bitmap normalize(Bitmap src, int px) {
+        int w = src.getWidth();
+        int h = src.getHeight();
+        int left = w, top = h, right = -1, bottom = -1;
+        int[] row = new int[w];
+        for (int y = 0; y < h; y++) {
+            src.getPixels(row, 0, w, 0, y, w, 1);
+            for (int x = 0; x < w; x++) {
+                if ((row[x] >>> 24) > 10) {
+                    if (x < left) {
+                        left = x;
+                    }
+                    if (x > right) {
+                        right = x;
+                    }
+                    if (y < top) {
+                        top = y;
+                    }
+                    if (y > bottom) {
+                        bottom = y;
+                    }
+                }
+            }
+        }
+        // 全透明（或取不到内容边界）时保持原图，避免把异常图标画成空白
+        if (right < left || bottom < top) {
+            return src;
+        }
+        int cw = right - left + 1;
+        int ch = bottom - top + 1;
+        int margin = Math.max(2, Math.round(px * 0.06f));
+        int box = px - margin * 2;
+        float scale = Math.min((float) box / cw, (float) box / ch);
+        int dw = Math.max(1, Math.round(cw * scale));
+        int dh = Math.max(1, Math.round(ch * scale));
+        Bitmap out = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        android.graphics.Paint paint = new android.graphics.Paint(
+                android.graphics.Paint.FILTER_BITMAP_FLAG
+                        | android.graphics.Paint.ANTI_ALIAS_FLAG);
+        int ox = (px - dw) / 2;
+        int oy = (px - dh) / 2;
+        canvas.drawBitmap(src,
+                new android.graphics.Rect(left, top, right + 1, bottom + 1),
+                new android.graphics.Rect(ox, oy, ox + dw, oy + dh), paint);
+        src.recycle();
+        return out;
     }
 
     private static Bitmap readDisk(Context c, String pkg, int px) {

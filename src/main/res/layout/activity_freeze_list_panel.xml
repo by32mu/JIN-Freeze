@@ -53,6 +53,40 @@
                 android:orientation="horizontal" />
         </HorizontalScrollView>
 
+        <!-- 系统应用页提示：与全屏共用同一份「不再提醒」开关，任一处关掉两边都不再显示 -->
+        <LinearLayout
+            android:id="@+id/sys_hint_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/sys_hint"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="冻结系统应用可能影响系统功能"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/sys_hint_dismiss"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="8dp"
+                android:paddingTop="2dp"
+                android:paddingEnd="2dp"
+                android:paddingBottom="2dp"
+                android:text="不再提醒"
+                android:textColor="@color/blue"
+                android:textSize="12sp" />
+        </LinearLayout>
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
