@@ -1619,11 +1619,10 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 拖把手实时改内容高度；继续往下拉过下限再松手就关闭回桌面。 */
+    /** 拖把手实时改内容高度；拖到下限就停住，松手只记高度，不再因继续下拉而关闭面板。 */
     private final class PanelResizeListener implements View.OnTouchListener {
         private float downY;
         private int startContent;
-        private boolean closing;
 
         @Override
         public boolean onTouch(View v, android.view.MotionEvent e) {
@@ -1639,28 +1638,20 @@ public class FreezeListActivity extends BaseActivity {
                     downY = e.getRawY();
                     // 起手只记内容区高度，拖动过程与落盘都不含把手
                     startContent = panelContentPx;
-                    closing = false;
                     v.getParent().requestDisallowInterceptTouchEvent(true);
                     return true;
                 case android.view.MotionEvent.ACTION_MOVE: {
                     int raw = startContent - Math.round(e.getRawY() - downY);
                     panelContentPx = Math.max(panelMinHpx, Math.min(panelMaxHpx, raw));
                     setPanelHeight(panel, panelContentPx + panelHandleHeightPx());
-                    closing = raw < panelMinHpx - Ui.dp(FreezeListActivity.this, 40);
                     return true;
                 }
                 case android.view.MotionEvent.ACTION_UP:
                 case android.view.MotionEvent.ACTION_CANCEL: {
-                    if (closing) {
-                        finish();
-                        overridePendingTransition(0, 0);
-                    } else {
-                        // 只落盘内容高度，和布局设置那套参数互不覆盖
-                        int dp = Math.round(panelContentPx
-                                / getResources().getDisplayMetrics().density);
-                        prefs().edit().putInt(KEY_PANEL_HEIGHT, dp).apply();
-                    }
-                    closing = false;
+                    // 只落盘内容高度，和布局设置那套参数互不覆盖
+                    int dp = Math.round(panelContentPx
+                            / getResources().getDisplayMetrics().density);
+                    prefs().edit().putInt(KEY_PANEL_HEIGHT, dp).apply();
                     return true;
                 }
                 default:
@@ -7032,19 +7023,29 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 把「完成」勾选正中对齐到冻结按钮中心，跟随悬浮按钮的偏移与半屏位移。 */
+    /** 把「完成」勾选对齐到冻结按钮：冻结按钮多大它就多大，冻结图标在哪它就在哪。 */
     private void positionMoveDoneFab() {
         if (moveDoneFab == null || fabGroup == null
                 || moveDoneFab.getVisibility() != View.VISIBLE
                 || !(fabGroup.getParent() instanceof View)) {
             return;
         }
-        int w = moveDoneFab.getWidth() > 0 ? moveDoneFab.getWidth() : Ui.dp(this, 44);
-        int h = moveDoneFab.getHeight() > 0 ? moveDoneFab.getHeight() : Ui.dp(this, 44);
+        View freeze = findViewById(R.id.btn_freeze);
+        if (freeze == null) {
+            return;
+        }
+        int w = freeze.getWidth() > 0 ? freeze.getWidth() : Ui.dp(this, 40);
+        int h = freeze.getHeight() > 0 ? freeze.getHeight() : Ui.dp(this, 40);
+        ViewGroup.LayoutParams lp = moveDoneFab.getLayoutParams();
+        if (lp.width != w || lp.height != h) {
+            lp.width = w;
+            lp.height = h;
+            moveDoneFab.setLayoutParams(lp);
+        }
         int x = fabGroup.getLeft() + Math.round(fabGroup.getTranslationX())
-                + (fabGroup.getWidth() - w) / 2;
+                + freeze.getLeft() + Math.round(freeze.getTranslationX());
         int y = fabGroup.getTop() + Math.round(fabGroup.getTranslationY())
-                + (fabGroup.getHeight() - h) / 2;
+                + freeze.getTop() + Math.round(freeze.getTranslationY());
         moveDoneFab.setTranslationX(x);
         moveDoneFab.setTranslationY(y);
     }
@@ -8249,7 +8250,7 @@ public class FreezeListActivity extends BaseActivity {
         final TextView upLabel = new TextView(this);
         upLabel.setTextSize(11);
         upLabel.setTextColor(getColor(R.color.text_secondary));
-        upLabel.setText("上滑手势：" + gestureUpDp + "dp");
+        upLabel.setText("上滑手势触发距离：" + gestureUpDp + "dp");
 
         SeekBar upBar = new SeekBar(this);
         upBar.setMax(GESTURE_DP_MAX);
@@ -8262,7 +8263,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 gestureUpDp = p;
                 prefs().edit().putInt(KEY_GESTURE_UP, p).apply();
-                upLabel.setText("上滑手势：" + p + "dp");
+                upLabel.setText("上滑手势触发距离：" + p + "dp");
             }
 
             @Override
@@ -8277,7 +8278,7 @@ public class FreezeListActivity extends BaseActivity {
         final TextView downLabel = new TextView(this);
         downLabel.setTextSize(11);
         downLabel.setTextColor(getColor(R.color.text_secondary));
-        downLabel.setText("下滑手势：" + gestureDownDp + "dp");
+        downLabel.setText("下滑手势触发距离：" + gestureDownDp + "dp");
 
         SeekBar downBar = new SeekBar(this);
         downBar.setMax(GESTURE_DP_MAX);
@@ -8290,7 +8291,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 gestureDownDp = p;
                 prefs().edit().putInt(KEY_GESTURE_DOWN, p).apply();
-                downLabel.setText("下滑手势：" + p + "dp");
+                downLabel.setText("下滑手势触发距离：" + p + "dp");
             }
 
             @Override
@@ -8994,6 +8995,8 @@ public class FreezeListActivity extends BaseActivity {
         android.widget.ScrollView dialogScroll = new android.widget.ScrollView(this);
         dialogScroll.setClipToPadding(false);
         dialogScroll.setFillViewport(true);
+        // 去掉设置列表右侧滚动条：那条竖线在弹窗里像多出来的「尾巴」
+        dialogScroll.setVerticalScrollBarEnabled(false);
         dialogScroll.addView(box, new android.widget.ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(dialogScroll, new LinearLayout.LayoutParams(

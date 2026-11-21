@@ -225,11 +225,11 @@ public final class AppActionSheet {
         if (actions.pinHomeEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
         }
-        // 冻结白名单：在「添加到桌面」下面；已在白名单时改成「移出白名单」
+        // 冻结白名单：在「添加到桌面」下面；已在白名单时同一枚盾牌图标，勾换成叉
         if (actions.whitelistEnabled()) {
             boolean inWhite = actions.whitelisted();
             addItem(c, content, sheet,
-                    inWhite ? R.drawable.ic_minus : R.drawable.ic_action_whitelist,
+                    inWhite ? R.drawable.ic_action_whitelist_off : R.drawable.ic_action_whitelist,
                     inWhite ? "移出白名单" : "添加到白名单",
                     actions::toggleWhitelist, fg, iconFg);
         }
@@ -250,6 +250,8 @@ public final class AppActionSheet {
         }
 
         ScrollView sv = new ScrollView(c);
+        // 去掉右侧滚动条：菜单内容变长时那条竖线既突兀又多出一条「尾巴」
+        sv.setVerticalScrollBarEnabled(false);
         sv.addView(outer);
         sheet.setContentView(sv);
         sheet.getBehavior().setState(BottomSheetBehavior.STATE_EXPANDED);
@@ -393,6 +395,8 @@ public final class AppActionSheet {
         }
 
         ScrollView sv = new ScrollView(c);
+        // 纯文字菜单同样去掉滚动条，避免右侧多出一条竖线
+        sv.setVerticalScrollBarEnabled(false);
         sv.addView(outer);
         sheet.setContentView(sv);
         sheet.getBehavior().setState(BottomSheetBehavior.STATE_EXPANDED);

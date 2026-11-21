@@ -243,7 +243,8 @@
         android:src="@drawable/ic_sc_unfreeze"
         android:visibility="gone" />
 
-    <!-- 移动图标模式：覆盖在底部冻结按钮上的「完成」勾选，点一下退出移动模式 -->
+    <!-- 移动图标模式：覆盖在底部冻结按钮上的「完成」勾选，点一下退出移动模式。
+         样式沿用原来的勾选图标；尺寸由代码对齐冻结按钮（按钮多大它就多大） -->
     <ImageButton
         android:id="@+id/btn_move_done"
         android:layout_width="44dp"
