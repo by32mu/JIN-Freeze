@@ -32,6 +32,15 @@ public class QuickLaunchActivity extends Activity {
     public static final String ACTION_FREEZE_ALL = "com.jin.freeze.action.FREEZE_ALL";
     public static final String ACTION_UNFREEZE_ALL = "com.jin.freeze.action.UNFREEZE_ALL";
 
+    /** 与列表一致：勾了「去掉 toast 提示」后不再弹任何短提示。 */
+    private void toast(CharSequence text) {
+        if (getSharedPreferences("freeze_list", MODE_PRIVATE)
+                .getBoolean("hide_toasts", false)) {
+            return;
+        }
+        Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -52,13 +61,14 @@ public class QuickLaunchActivity extends Activity {
         if (ACTION_OPEN_FREEZE_LIST.equals(action)) {
             // 快捷方式打开的是半屏形态；勾了「隐藏后台」就走带 excludeFromRecents 的入口
             boolean hideRecents = getSharedPreferences("freeze_list", MODE_PRIVATE)
-                    .getBoolean("panel_hide_recents", false);
+                    .getBoolean("hide_recents", false);
             startActivity(new Intent(this,
                     hideRecents ? FreezePanelHiddenActivity.class : FreezePanelActivity.class)
                     // 从快捷方式进列表也走一次权限检查：Shizuku 未授权时自动申请，
                     // 否则用户只从快捷方式进来会一直不在 Shizuku 的授权列表里
                     .putExtra(FreezeListActivity.EXTRA_CHECK_PRIV, true)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                    // 与桌面图标入口一致：半屏是透明窗口，先清掉旧任务里残留的全屏页面
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
             finish();
             return;
         }
@@ -69,7 +79,7 @@ public class QuickLaunchActivity extends Activity {
         String key = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_KEY);
         LaunchTarget.Target t = LaunchTarget.launchKeyTarget(this, key);
         if (t == null) {
-            Toast.makeText(this, "目标已不存在", Toast.LENGTH_SHORT).show();
+            toast("目标已不存在");
             finish();
             return;
         }
@@ -104,7 +114,7 @@ public class QuickLaunchActivity extends Activity {
         final String pkg = packagePart(key);
         final int userId = userIdPart(key);
         if (pkg == null || !pkg.matches("[A-Za-z0-9._]+")) {
-            Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+            toast("该应用没有可启动的界面");
             finish();
             return;
         }
@@ -124,7 +134,7 @@ public class QuickLaunchActivity extends Activity {
             runOnUiThread(() -> {
                 Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
                 if (launch == null) {
-                    Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+                    toast("该应用没有可启动的界面");
                     finish();
                     return;
                 }
@@ -140,8 +150,7 @@ public class QuickLaunchActivity extends Activity {
             // 分身必须借 root / Shizuku 才能跨用户启动，没授权时给出明确提示而不是静默退出
             if (!PrivShell.available()) {
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "打开分身需要 Root 或 Shizuku 权限，请先打开凚完成授权",
-                            Toast.LENGTH_LONG).show();
+                    toast("打开分身需要 Root 或 Shizuku 权限，请先打开凚完成授权");
                     finish();
                 });
                 return;
@@ -153,7 +162,7 @@ public class QuickLaunchActivity extends Activity {
             String comp = resolveCloneComponent(pkg, userId);
             if (comp == null) {
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "该应用没有可启动的界面", Toast.LENGTH_SHORT).show();
+                    toast("该应用没有可启动的界面");
                     finish();
                 });
                 return;
@@ -164,8 +173,7 @@ public class QuickLaunchActivity extends Activity {
                     || (start.out != null && start.out.contains("Error"));
             runOnUiThread(() -> {
                 if (failed) {
-                    Toast.makeText(this, "分身启动失败，请确认凚的 Root / Shizuku 权限已授权",
-                            Toast.LENGTH_LONG).show();
+                    toast("分身启动失败，请确认凚的 Root / Shizuku 权限已授权");
                 }
                 finish();
             });
@@ -190,7 +198,7 @@ public class QuickLaunchActivity extends Activity {
     private void finishWith(LaunchTarget.Target t) {
         int result = LaunchTarget.launch(this, t);
         if (result != LaunchTarget.OK) {
-            Toast.makeText(this, LaunchTarget.problemText(result), Toast.LENGTH_SHORT).show();
+            toast(LaunchTarget.problemText(result));
         }
         finish();
     }
@@ -198,7 +206,7 @@ public class QuickLaunchActivity extends Activity {
     /** 与列表里的解冻一致：先撤暂停再补 enable，确认启用后再启动；全程不在主线程跑 su。 */
     private void thawAndLaunch(LaunchTarget.Target t) {
         if (t.pkg == null || !t.pkg.matches("[A-Za-z0-9._]+")) {
-            Toast.makeText(this, "目标已不存在", Toast.LENGTH_SHORT).show();
+            toast("目标已不存在");
             finish();
             return;
         }
@@ -217,7 +225,7 @@ public class QuickLaunchActivity extends Activity {
                 if (ok) {
                     finishWith(t);
                 } else {
-                    Toast.makeText(this, "解冻失败，无法打开", Toast.LENGTH_SHORT).show();
+                    toast("解冻失败，无法打开");
                     finish();
                 }
             });

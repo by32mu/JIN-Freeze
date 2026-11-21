@@ -36,10 +36,19 @@ public final class FrozenTip {
 
     /** 同一套自绘提示，只换文案（例如「无需冻结」），字号/尺寸/位置/圆角/时长保持一致。 */
     public static void show(Context c, String text) {
+        if (muted(c)) {
+            return;
+        }
         Context app = c.getApplicationContext();
         // Toast 构造要求当前线程有 Looper：快捷方式批量执行在工作线程里调到这里，
         // 直接 new Toast 会 NPE 崩溃（shortcut-batch 线程），统一投到主线程再建
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> showOnMain(app, text));
+    }
+
+    /** 设置里勾了「去掉 toast 提示」后，所有自绘提示与 toast 都静默。 */
+    private static boolean muted(Context c) {
+        return c.getSharedPreferences("freeze_list", Context.MODE_PRIVATE)
+                .getBoolean("hide_toasts", false);
     }
 
     private static void showOnMain(Context app, String text) {
@@ -94,6 +103,9 @@ public final class FrozenTip {
      */
     public static Tip showToastWindow(Context c, String text) {
         final Tip tip = new Tip();
+        if (muted(c)) {
+            return tip;
+        }
         Context app = c.getApplicationContext();
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
             try {
