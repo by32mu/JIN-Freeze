@@ -255,10 +255,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_LAYOUT_OPEN_H = "layout_dialog_open_h";
     /** 未展开时的高度上限（dp）：自适应可用空间，且不覆盖半屏列表。 */
     private static final int LAYOUT_OPEN_MAX_DP = 520;
-    /** 点 ▼ 展开后的固定高度（dp）；实际按底部底栏上沿收窄，不覆盖底栏。 */
-    private static final int LAYOUT_EXPAND_DEFAULT_DP = 727;
     /** 底部冻结按钮「距底部」可调范围上限（dp）。 */
-    private static final int FAB_DY_MAX = 88;
+    private static final int FAB_DY_MAX = 666;
     /** 半屏顶部小白条开关：关掉后隐藏把手、高度沿用记住的值。 */
     private static final String KEY_PANEL_HANDLE = "panel_handle_enabled";
     /** 冻结成功后是否自动收起列表（全屏/半屏各自记忆，回到进入前的应用）。 */
@@ -487,6 +485,10 @@ public class FreezeListActivity extends BaseActivity {
     private int layoutShadowPad;
     /** 布局设置弹窗当前是否处于 ▼ 展开态：底部按钮位置/大小变化时要同步收放高度。 */
     private boolean layoutExpanded;
+    /** 设置页展开/收起时的窗口高度与位置动画，快速切换时先取消上一段。 */
+    private android.animation.ValueAnimator dialogFrameAnim;
+    /** 打开设置页时的窗口 y（未展开位置）：收起展开时回到这里，不受展开态拖动影响。 */
+    private int layoutOpenY = Integer.MIN_VALUE;
     /** 半屏本次打开时手动调短的未展开高度（dp）：-1 表示用最大值，不落盘。 */
     private int panelOpenHeightDp = -1;
     private boolean loadedOnce;
@@ -991,8 +993,8 @@ public class FreezeListActivity extends BaseActivity {
         whiteBadgeRight = prefs().getBoolean(KEY_WHITE_BADGE_RIGHT, true);
         seedPanelFabDefaults();
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
-        fabDy = clampInt(prefs().getInt(lk(KEY_FAB_DY),
-                panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT), 0, FAB_DY_MAX);
+        fabDy = Math.max(0, prefs().getInt(lk(KEY_FAB_DY),
+                panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT));
         fabSizeDp = prefs().getInt(lk(KEY_FAB_SIZE),
                 panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT);
         if (fabSizeDp < FAB_SIZE_MIN || fabSizeDp > FAB_SIZE_MAX) {
@@ -3233,8 +3235,12 @@ public class FreezeListActivity extends BaseActivity {
             body.setVisibility(collapsed[0] ? View.GONE : View.VISIBLE);
             arrow.setImageResource(collapsed[0]
                     ? R.drawable.ic_chevron_down : R.drawable.ic_chevron_up);
-            if (!collapsed[0] && onExpand != null) {
-                onExpand.run();
+            if (!collapsed[0]) {
+                if (onExpand != null) {
+                    onExpand.run();
+                }
+                // 展开后立刻把刚露出的内容滚进可视区，不用再手动往下滑
+                revealExpandedBody(body, () -> !collapsed[0]);
             }
         };
         arrow.setOnClickListener(v -> toggle.run());
@@ -3280,6 +3286,25 @@ public class FreezeListActivity extends BaseActivity {
             return true;
         });
         return head;
+    }
+
+    /**
+     * 设置分组展开后，把刚露出来的内容滚进可视区：
+     * 交给滚动容器自己算，内容矮就滚到刚好露出，内容高就顶部对齐。
+     */
+    private void revealExpandedBody(View body, java.util.function.BooleanSupplier stillExpanded) {
+        // 展开后布局要下一帧才落地，滚太早会把展开前的高度当成最终高度
+        body.postDelayed(() -> {
+            if (!stillExpanded.getAsBoolean() || body.getHeight() <= 0
+                    || body.getWidth() <= 0) {
+                return;
+            }
+            int margin = Ui.dp(FreezeListActivity.this, 10);
+            // Rect 用的是 body 自身坐标：上下各多留一点，滚完不会紧贴边缘
+            body.requestRectangleOnScreen(new android.graphics.Rect(
+                    -margin, -margin, body.getWidth() + margin, body.getHeight() + margin),
+                    true);
+        }, 80);
     }
 
     /** 当前标签之外，该应用是否还属于别的标签（属于时只做当前标签的移除）。 */
@@ -6944,8 +6969,8 @@ public class FreezeListActivity extends BaseActivity {
             }
             int maxX = Math.max(0, (w - fabGroup.getWidth()) / 2 - Ui.dp(this, 8));
             int x = Math.max(-maxX, Math.min(maxX, Ui.dp(this, fabDx)));
-            // 只允许往上抬，范围受 0-88dp 限制
-            int maxUp = Ui.dp(this, FAB_DY_MAX);
+            // 只允许往上抬：上限取按钮到列表顶部的真实空间（大屏平板也能拖到顶，但绝不超过顶部）
+            int maxUp = fabMaxLiftPx();
             int y = Math.max(-maxUp, Math.min(0, -Ui.dp(this, fabDy)));
             fabGroup.setTranslationX(x);
             fabGroup.setTranslationY(y);
@@ -7868,7 +7893,8 @@ public class FreezeListActivity extends BaseActivity {
         final float density = getResources().getDisplayMetrics().density;
         final int xMinDp = Math.round((fabInsetPx() - fabCenterX()) / density);
         final int xMaxDp = Math.round((fabMaxX() - fabCenterX()) / density);
-        final int maxLiftDp = Math.min(FAB_DY_MAX, Math.round(fabMaxLiftPx() / density));
+        // 「距底部」滑块最大值 = 按钮到列表顶部的真实空间：大屏平板可一直拖到顶部，但不会超过顶部
+        final int maxLiftDp = Math.max(0, Math.round(fabMaxLiftPx() / density));
 
         TextView fabTitle = new TextView(this);
         fabTitle.setText("底部冻结按钮");
@@ -8934,16 +8960,8 @@ public class FreezeListActivity extends BaseActivity {
             box.removeView(child);
             otherGroup.addView(child);
         }
-        final Runnable scrollToOther = () -> otherGroup.postDelayed(() -> {
-            View parent = (View) box.getParent();
-            if (parent instanceof android.widget.ScrollView) {
-                android.widget.ScrollView sv = (android.widget.ScrollView) parent;
-                sv.smoothScrollTo(0, Math.max(0,
-                        otherGroup.getBottom() - sv.getHeight() + Ui.dp(this, 12)));
-            }
-        }, 60);
         box.addView(collapsibleHead(backupTitle, otherGroup,
-                KEY_SETTINGS_OTHER_COLLAPSED, scrollToOther));
+                KEY_SETTINGS_OTHER_COLLAPSED));
         box.addView(otherGroup);
 
         // 赞赏入口下方显示当前版本号
@@ -9149,7 +9167,7 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
 
-        // ▼ / ▲：在「未展开高度」与「展开 727dp」之间切换，展开时按底栏上沿收窄
+        // ▼ / ▲：在「未展开高度」与自适应最大高度之间切换，展开时按底栏上沿收窄
         final boolean[] rowExpanded = {false};
         final boolean[] rowHidden = {false};
         collapseHeightRow[0] = () -> {
@@ -9164,9 +9182,8 @@ public class FreezeListActivity extends BaseActivity {
             heightRow.setAlpha(1f);
             heightRow.setVisibility(View.VISIBLE);
             gestureHint.setVisibility(layoutHintHidden() ? View.GONE : View.VISIBLE);
-            applyDialogHeight(dialog, openDialogHeightPx(), shadowPad);
-            dialog.getWindow().getDecorView().post(() ->
-                    enforceDialogBottomLimit(dialog, openBottomLimitPx(), shadowPad));
+            animateDialogFrame(dialog, openDialogHeightPx(),
+                    panelMode ? panelDialogY(shadowPad) : openDialogTopY(shadowPad), shadowPad);
         };
         toggleRow.setOnClickListener(v -> {
             boolean show = !rowExpanded[0];
@@ -9181,10 +9198,28 @@ public class FreezeListActivity extends BaseActivity {
             heightRow.setVisibility(show ? View.GONE : View.VISIBLE);
             gestureHint.setVisibility(show || layoutHintHidden() ? View.GONE : View.VISIBLE);
             int desired = show ? expandDialogHeightPx() : openDialogHeightPx();
-            int limit = show ? bottomBarTopPx() : openBottomLimitPx();
-            applyDialogHeight(dialog, desired, shadowPad);
-            dialog.getWindow().getDecorView().post(() ->
-                    enforceDialogBottomLimit(dialog, limit, shadowPad));
+            int targetY;
+            if (show) {
+                // 展开：顶部放得下就往下长；放不下（未展开时被移到下面）就整体上移，
+                // 底边始终不超过底栏上沿，表现为往顶部延伸
+                int screenH = getResources().getDisplayMetrics().heightPixels;
+                int limit = bottomBarTopPx();
+                int maxBottom = limit > 0 ? limit - Ui.dp(this, 8) : screenH;
+                // 窗口坐标从状态栏下方起算，夹紧时要扣掉状态栏，否则底边会压进底栏
+                int maxY = maxBottom - desired - shadowPad - statusBarHeightPx();
+                int curY = dialog.getWindow() == null
+                        ? -shadowPad : dialog.getWindow().getAttributes().y;
+                // 全屏：展开后的顶边不能越过顶栏（横幅）下沿；半屏保持原逻辑
+                targetY = panelMode
+                        ? Math.max(-shadowPad, Math.min(curY, maxY))
+                        : Math.max(expandedTopLimitY(shadowPad), maxY);
+            } else {
+                // 收起：回到打开时的未展开位置，而不是停在展开后的地方
+                targetY = panelMode ? panelDialogY(shadowPad)
+                        : (layoutOpenY != Integer.MIN_VALUE ? layoutOpenY
+                        : openDialogTopY(shadowPad));
+            }
+            animateDialogFrame(dialog, desired, targetY, shadowPad);
         });
         // 长按底部展开键：一键把设置里全部分组标题收起（短按仍是展开/收起面板）
         toggleRow.setOnLongClickListener(v -> {
@@ -9289,7 +9324,12 @@ public class FreezeListActivity extends BaseActivity {
             applyDialogGeometry(dialog, pre, root, title, defaultDialogWidth(), shadowPad);
         }
         dialog.setOnDismissListener(d -> {
+            if (dialogFrameAnim != null) {
+                dialogFrameAnim.cancel();
+                dialogFrameAnim = null;
+            }
             layoutExpanded = false;
+            layoutOpenY = Integer.MIN_VALUE;
             layoutDialog = null;
             panelOpenHeightDp = -1;
         });
@@ -10887,6 +10927,7 @@ public class FreezeListActivity extends BaseActivity {
         lp.x = lpX;
         lp.y = lpY;
         w.setAttributes(lp);
+        layoutOpenY = lpY;
 
         // 半屏不允许拖动，位置由「贴半屏上沿 + 居中」决定
         if (!panelMode) {
@@ -10972,15 +11013,9 @@ public class FreezeListActivity extends BaseActivity {
         return clampInt(dp, 170, LAYOUT_OPEN_MAX_DP);
     }
 
-    /** 点 ▼ 展开时的高度（px）：默认 727dp，超过底部底栏上沿时自动收窄。 */
+    /** 点展开时的高度（px）：按当前屏幕自适应撑到最大，只以底栏上沿为上限。 */
     private int expandDialogHeightPx() {
-        return clampedExpandHeightPx(LAYOUT_EXPAND_DEFAULT_DP);
-    }
-
-    /** 展开高度实际可用值：目标高度与底部底栏上沿取小，底栏不可覆盖。 */
-    private int clampedExpandHeightPx(int dp) {
-        int max = expandHeightMaxPx();
-        return clampInt(Ui.dp(this, dp), Math.min(Ui.dp(this, 170), max), max);
+        return Math.max(Ui.dp(this, 170), expandHeightMaxPx());
     }
 
     /** 未展开高度上限（px）：只按屏幕可用高度算；半屏/底栏限制由显示后的真实位置夹紧。 */
@@ -10992,7 +11027,7 @@ public class FreezeListActivity extends BaseActivity {
         return Math.max(0, max);
     }
 
-    /** 展开高度上限：可用屏幕高度，再以底部底栏上沿夹紧（半屏/全屏一致），绝不覆盖底栏。 */
+    /** 展开高度上限：按屏幕尺寸取，再以底栏上沿夹紧（不再看冻结按钮位置）。 */
     private int expandHeightMaxPx() {
         int pad = Ui.dp(this, 12);
         int screenH = getResources().getDisplayMetrics().heightPixels;
@@ -11001,7 +11036,35 @@ public class FreezeListActivity extends BaseActivity {
         if (barTop > 0) {
             max = Math.min(max, barTop - statusBarHeightPx() - pad * 2 - Ui.dp(this, 12));
         }
+        // 全屏：展开态顶边不能越过顶栏（横幅）下沿，可用高度只剩它到底栏之间
+        int headerBottom = panelMode ? -1 : headerBottomPx();
+        if (headerBottom > 0 && barTop > 0) {
+            int available = (barTop - Ui.dp(this, 8))
+                    - (headerBottom + Ui.dp(this, 8));
+            max = Math.min(max, available);
+        }
         return Math.max(0, max);
+    }
+
+    /** 全屏顶栏（横幅）的下沿 y（屏幕坐标）；未加载时返回 -1。 */
+    private int headerBottomPx() {
+        View header = findViewById(R.id.page_header);
+        if (header == null || header.getHeight() <= 0) {
+            return -1;
+        }
+        int[] loc = new int[2];
+        header.getLocationOnScreen(loc);
+        return loc[1] + header.getHeight();
+    }
+
+    /** 全屏展开态窗口 y 的下限：内容顶部停在顶栏（横幅）下沿之外。 */
+    private int expandedTopLimitY(int shadowPad) {
+        int headerBottom = headerBottomPx();
+        if (panelMode || headerBottom <= 0) {
+            return -shadowPad;
+        }
+        return Math.max(-shadowPad,
+                headerBottom + Ui.dp(this, 8) - shadowPad - statusBarHeightPx());
     }
 
     /** 未展开时内容底边不得越过的 y：半屏取半屏面板上沿，其它形态不额外限制（返回 -1）。 */
@@ -11085,6 +11148,57 @@ public class FreezeListActivity extends BaseActivity {
         w.setAttributes(lp);
     }
 
+    /** 未展开态窗口应回到的 y：默认贴顶位置 + 记忆的拖动偏移。 */
+    private int openDialogTopY(int shadowPad) {
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int h = openDialogHeightPx();
+        int defaultY = Ui.dp(this, 8) - shadowPad;
+        return clampInt(defaultY + prefs().getInt(lk(KEY_LAYOUT_DY), 0),
+                -shadowPad, Math.max(-shadowPad, screenH - h - shadowPad));
+    }
+
+    /**
+     * 展开/收起时让窗口高度与 y 一起平滑过渡：
+     * 未展开位置在顶部时表现为底边往上收，在底部时表现为顶边往下收。
+     */
+    private void animateDialogFrame(final android.app.Dialog dialog, int heightPx,
+                                    final int targetY, int shadowPad) {
+        android.view.Window w = dialog == null ? null : dialog.getWindow();
+        if (w == null) {
+            return;
+        }
+        final int endH = heightPx + shadowPad * 2;
+        final android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        final int startH = lp.height;
+        final int startY = lp.y;
+        if (startH == endH && startY == targetY) {
+            return;
+        }
+        if (dialogFrameAnim != null) {
+            dialogFrameAnim.cancel();
+        }
+        android.animation.ValueAnimator va = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        va.setDuration(200);
+        va.setInterpolator(new android.view.animation.DecelerateInterpolator());
+        va.addUpdateListener(a -> {
+            float f = (float) a.getAnimatedValue();
+            android.view.WindowManager.LayoutParams cur = w.getAttributes();
+            cur.height = Math.round(startH + (endH - startH) * f);
+            cur.y = Math.round(startY + (targetY - startY) * f);
+            w.setAttributes(cur);
+        });
+        va.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator a) {
+                if (dialogFrameAnim == a) {
+                    dialogFrameAnim = null;
+                }
+            }
+        });
+        dialogFrameAnim = va;
+        va.start();
+    }
+
     /** 长按标题 300ms 后可拖动弹窗；松手把相对默认位置的偏移单独落盘，不动半屏高度。 */
     private void attachDialogDrag(final android.view.Window w, final View handle,
                                   final int baseX, final int baseY,
@@ -11132,6 +11246,10 @@ public class FreezeListActivity extends BaseActivity {
                                 -pad, Math.max(-pad, screenW - width - pad));
                         lp.y = clampInt(startY + Math.round(e.getRawY() - downRawY),
                                 -pad, Math.max(-pad, screenH - curH - pad));
+                        // 展开态拖动同样不能越过顶栏（横幅）下沿
+                        if (layoutExpanded) {
+                            lp.y = Math.max(lp.y, expandedTopLimitY(pad));
+                        }
                         w.setAttributes(lp);
                         // 拖动时同样限制：未展开不能压到半屏列表，展开不能压到底栏
                         enforceDialogBottomLimit(layoutDialog,
@@ -11143,12 +11261,16 @@ public class FreezeListActivity extends BaseActivity {
                         h.removeCallbacks(activate);
                         if (dragging) {
                             handle.setAlpha(1f);
-                            // 以夹紧后的真实位置落盘，下次打开不会再越界
+                            // 以夹紧后的真实位置落盘，下次打开不会再越界；
+                            // 展开态拖动不覆盖未展开位置，收起时仍回到打开时的位置
                             lp = w.getAttributes();
-                            prefs().edit()
-                                    .putInt(lk(KEY_LAYOUT_DX), lp.x - baseX)
-                                    .putInt(lk(KEY_LAYOUT_DY), lp.y - baseY)
-                                    .apply();
+                            if (!layoutExpanded) {
+                                layoutOpenY = lp.y;
+                                prefs().edit()
+                                        .putInt(lk(KEY_LAYOUT_DX), lp.x - baseX)
+                                        .putInt(lk(KEY_LAYOUT_DY), lp.y - baseY)
+                                        .apply();
+                            }
                         } else if (e.getActionMasked() == android.view.MotionEvent.ACTION_UP) {
                             // 未进入拖动就是一次点击：手动补 performClick，权限那段的点击仍可用
                             handle.performClick();
@@ -11349,6 +11471,7 @@ public class FreezeListActivity extends BaseActivity {
                 fos.write(text.getBytes("UTF-8"));
                 fos.close();
                 path = out.getAbsolutePath();
+                fixBackupPerms(dir, out);
             } catch (Exception e) {
                 err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             }
@@ -11364,6 +11487,7 @@ public class FreezeListActivity extends BaseActivity {
                     out = target;
                     path = target.getAbsolutePath();
                     err = null;
+                    fixBackupPerms(dir, target);
                 }
             }
             final File f = out;
@@ -11390,6 +11514,21 @@ public class FreezeListActivity extends BaseActivity {
                         }});
             });
         });
+    }
+
+    /**
+     * 备份文件落在公共 Download 目录，属主会写成当时的应用 uid（旧安装的 uid）。
+     * 清数据 / 重装后 uid 变了，新安装就读不到这些文件（FUSE 按属主/组校验）。
+     * 统一改成 media_rw(1023) 属主与组，任何安装、任何文件管理器都能读。
+     */
+    private void fixBackupPerms(File dir, File file) {
+        try {
+            PrivShell.exec("chmod 0775 '" + dir.getAbsolutePath() + "' 2>/dev/null; "
+                    + "chmod 0664 '" + file.getAbsolutePath() + "' 2>/dev/null; "
+                    + "chown 1023:1023 '" + dir.getAbsolutePath() + "' '" + file.getAbsolutePath()
+                    + "' 2>/dev/null", 15);
+        } catch (Exception ignored) {
+        }
     }
 
     /** 文件来源：后台确认能否读取备份目录，再按修改时间从新到旧列出备份文件。 */
@@ -11545,7 +11684,24 @@ public class FreezeListActivity extends BaseActivity {
                 err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             }
             if (text == null) {
-                // 分储存储下应用读不到 Download 里的文件，改用 root/Shizuku 读
+                // 旧备份的属主可能是重装前的 uid，普通读一定失败：先按 media_rw 修一次权限再读
+                fixBackupPerms(f.getParentFile(), f);
+                try {
+                    FileInputStream in2 = new FileInputStream(f);
+                    ByteArrayOutputStream bo2 = new ByteArrayOutputStream();
+                    byte[] buf2 = new byte[4096];
+                    int n2;
+                    while ((n2 = in2.read(buf2)) > 0) {
+                        bo2.write(buf2, 0, n2);
+                    }
+                    in2.close();
+                    text = new String(bo2.toByteArray(), "UTF-8");
+                    err = null;
+                } catch (Exception ignored) {
+                }
+            }
+            if (text == null) {
+                // 仍未读到：改用 root/Shizuku 直接读（分区存储下应用读不到 Download 时）
                 PrivShell.Result r = PrivShell.exec(
                         "cat '" + f.getAbsolutePath() + "' 2>/dev/null", 20);
                 if (r != null && r.code == 0 && r.out != null && !r.out.isEmpty()) {
