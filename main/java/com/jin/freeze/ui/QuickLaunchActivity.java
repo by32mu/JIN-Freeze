@@ -38,7 +38,13 @@ public class QuickLaunchActivity extends Activity {
         super.onCreate(savedInstanceState);
         String action = getIntent() == null ? null : getIntent().getAction();
         if (ACTION_FREEZE_ALL.equals(action) || ACTION_UNFREEZE_ALL.equals(action)) {
-            // 完全照 Hail ApiActivity：onCreate 里同步执行整批 → 结果 Toast → finish
+            // 全屏透明落地壳（稳定算作前台，Toast 才不会被系统压掉），
+            // 但全程不接触摸、不抢焦点：触摸直接落到桌面，滑动照常
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    | android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+            getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+            getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+            // 照 Hail ApiActivity：onCreate 里同步执行整批 → 结果 Toast → 结束
             handleBatchAction(ACTION_FREEZE_ALL.equals(action));
             return;
         }
@@ -242,8 +248,9 @@ public class QuickLaunchActivity extends Activity {
                     .show();
             return;
         }
-        Toast.makeText(getApplicationContext(),
-                freeze ? "已全部冻结" : "已全部解冻", Toast.LENGTH_SHORT).show();
+        // 结果提示用 TYPE_TOAST 窗口：不需要悬浮窗权限，activity 结束后仍显示 2 秒；
+        // activity 立即 finish，桌面马上可滑，也不会占住系统栏。
+        FrozenTip.showToastWindow(this, freeze ? "已全部冻结" : "已全部解冻");
         finish();
         overridePendingTransition(0, 0);
     }

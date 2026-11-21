@@ -602,8 +602,6 @@ public class FreezeListActivity extends BaseActivity {
     private View introScrimView;
     /** 状态栏那一条黑：挂在 DecorView 顶部，高度在首次显示前一次算好，显示后不再重排。 */
     private View introStatusView;
-    /** 半屏打开后状态栏那一条压暗：与 panel_scrim 同色，保证顶部不露出没压暗的亮边。 */
-    private View panelStatusDim;
     /** 过渡进行中：期间再次收到拉起请求不重启，跟着这一轮自然走完。 */
     private boolean introPlaying;
     /** 已在等首帧起跑：避免同一轮里挂上第二个起跑点。 */
@@ -1072,8 +1070,7 @@ public class FreezeListActivity extends BaseActivity {
         }
 
         if (panelMode) {
-            // 状态栏压暗条/黑条在这里一次挂好（高度一次算准），之后只改 alpha，不触发窗口/inset 重算
-            ensurePanelStatusDim();
+            // 状态栏黑条在这里一次挂好（高度一次算准），之后只改 alpha，不触发窗口/inset 重算
             ensureIntroStatusView();
             if (savedInstanceState == null && consumeIntroRequest()) {
                 playIntro();
@@ -1133,22 +1130,26 @@ public class FreezeListActivity extends BaseActivity {
         }
         // 默认 20：滑块显示 80% 透明度
         int pct = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 20)));
+        // 与冰箱一致：压暗交给窗口级 FLAG_DIM_BEHIND（系统随窗口首帧一起绘制，
+        // 连状态栏一起压黑，把模糊/启动过渡那一帧的乳白盖住，不会闪白）。
+        // 布局里的 panel_scrim 只保留点按关闭，不再自己叠 alpha。
         View scrim = findViewById(R.id.panel_scrim);
         if (scrim != null) {
-            // 原遮罩 #33000000：按比例缩放到 0（全透明）→ 原值
-            scrim.setBackgroundColor(panelScrimColor(pct));
+            scrim.setBackgroundColor(0x00000000);
         }
-        // 状态栏那一条压暗跟遮罩同一档，顶部和面板上方保持一致
-        if (panelStatusDim != null) {
-            panelStatusDim.setBackgroundColor(panelScrimColor(pct));
-        }
+        android.view.Window w = getWindow();
+        w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        android.view.WindowManager.LayoutParams attrs = w.getAttributes();
+        // 0 → 全透明，100 → 全黑；默认 20 与冰箱实测的约 20%~25% 压暗一致
+        attrs.dimAmount = pct / 100f;
+        w.setAttributes(attrs);
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             try {
-                android.view.Window w = getWindow();
-                android.view.WindowManager.LayoutParams attrs = w.getAttributes();
                 w.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
                 attrs = w.getAttributes();
-                int maxRadius = Ui.dp(this, 28);
+                // 冰箱半屏 blurBehindRadius=45px（450dpi 下约 16dp）；
+                // 这里用 80dp 做满档，默认 20 档约 16dp，两边默认模糊量对齐
+                int maxRadius = Ui.dp(this, 80);
                 attrs.setBlurBehindRadius(Math.round(maxRadius * pct / 100f));
                 w.setAttributes(attrs);
             } catch (Exception ignored) {
@@ -1935,33 +1936,6 @@ public class FreezeListActivity extends BaseActivity {
         introStatusView = v;
     }
 
-    /**
-     * 半屏打开后状态栏那一条也要跟着压暗：面板上方的 panel_scrim 在内容区里，
-     * 内容区被状态栏 inset 往下压了 152px，那一条不补就露出没压暗的亮边。
-     * 与入场黑条一样挂 DecorView 顶部（先挂压暗条，入场黑条后挂才能盖在它上面）。
-     */
-    private void ensurePanelStatusDim() {
-        if (panelStatusDim != null || panelHideStatusBar) {
-            return;
-        }
-        int top = introStatusInsetPx();
-        if (top <= 0) {
-            return;
-        }
-        View v = new View(this);
-        v.setBackgroundColor(panelScrimColor(
-                Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 20)))));
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, top, Gravity.TOP);
-        ((ViewGroup) getWindow().getDecorView()).addView(v, lp);
-        panelStatusDim = v;
-    }
-
-    /** 半屏上方遮罩颜色：原有的 #33 黑按「背景模糊/遮罩」档位缩放。 */
-    private int panelScrimColor(int pct) {
-        return (0x33 * pct / 100) << 24;
-    }
-
     /** 状态栏（含挖孔）顶边高度：显示前同步取窗口 metrics，取不到再退回系统资源与兜底值。 */
     private int introStatusInsetPx() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -2048,9 +2022,6 @@ public class FreezeListActivity extends BaseActivity {
             if (introStatusView != null) {
                 introStatusView.setVisibility(View.GONE);
             }
-            if (panelStatusDim != null) {
-                panelStatusDim.setVisibility(View.GONE);
-            }
             applyContentInsets();
             return;
         }
@@ -2059,11 +2030,6 @@ public class FreezeListActivity extends BaseActivity {
             statusBarReservePx = 0;
             controller.show(WindowInsetsCompat.Type.statusBars());
             applyContentInsets();
-        }
-        // 取消「隐藏状态栏」时那条压暗可能要重新挂（隐藏期间没建过）
-        ensurePanelStatusDim();
-        if (panelStatusDim != null) {
-            panelStatusDim.setVisibility(View.VISIBLE);
         }
         applyPanelStatusIcons();
     }

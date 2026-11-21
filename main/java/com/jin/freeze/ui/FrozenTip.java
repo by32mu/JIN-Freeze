@@ -2,9 +2,11 @@ package com.jin.freeze.ui;
 
 import android.content.Context;
 import android.content.res.Configuration;
+import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -46,6 +48,42 @@ public final class FrozenTip {
         t.setDuration(Toast.LENGTH_SHORT);
         t.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, dp(app, 128));
         t.show();
+    }
+
+    /**
+     * 快捷方式批量结果：直接用 TYPE_TOAST 窗口自绘提示。
+     * 系统 Toast 在 activity 一结束就被 MIUI 掐掉（实测只活约 90ms），
+     * 而 TYPE_TOAST 不需要「显示在其他应用上层」权限，也不受前台/后台 Toast 压制，
+     * 挂上后 2 秒自动移除，activity 可以先 finish，桌面立刻可滑。
+     */
+    public static void showToastWindow(Context c, String text) {
+        Context app = c.getApplicationContext();
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            try {
+                WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+                TextView tv = buildView(app, text);
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.TYPE_TOAST,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        PixelFormat.TRANSLUCENT);
+                lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+                lp.y = dp(app, 128);
+                wm.addView(tv, lp);
+                tv.postDelayed(() -> {
+                    try {
+                        wm.removeView(tv);
+                    } catch (Exception ignored) {
+                    }
+                }, 2000);
+            } catch (Exception e) {
+                // TYPE_TOAST 被 ROM 拒绝：退回系统 Toast（仅应用在前台时可见）
+                Toast.makeText(app, text, Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private static TextView buildView(Context app, String text) {
