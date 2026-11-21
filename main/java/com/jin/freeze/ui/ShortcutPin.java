@@ -18,6 +18,7 @@ import androidx.core.graphics.drawable.IconCompat;
 
 import com.jin.freeze.R;
 import com.jin.freeze.core.LaunchTarget;
+import com.jin.freeze.core.PrivShell;
 
 import java.util.ArrayDeque;
 import java.util.HashSet;
@@ -168,14 +169,18 @@ public final class ShortcutPin {
         Bitmap bmp = appIcon(ctx, pkg, icon);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (Boolean.FALSE.equals(miuiShortcutAllowed(ctx))) {
-                // MIUI/HyperOS 的「桌面快捷方式」权限没开时，系统不会弹确认框：
-                // 只提醒一句，让用户自己去「设置 → 应用设置 → 权限 → 其他权限」里打开
-                if (token != null) {
-                    QUEUE.clear();
+                // MIUI/HyperOS 的「桌面快捷方式」权限没开时，系统不会弹确认框，图标加不上。
+                // 有 root/Shizuku 就先 appops 静默授予（AppOps 10017）再复查，
+                // 授上了直接继续添加；确实授不上才提示用户去手动开启。
+                PrivShell.exec("appops set " + ctx.getPackageName() + " 10017 allow", 8);
+                if (Boolean.FALSE.equals(miuiShortcutAllowed(ctx))) {
+                    if (token != null) {
+                        QUEUE.clear();
+                    }
+                    Toast.makeText(ctx, "请先开启「桌面快捷方式」权限",
+                            Toast.LENGTH_LONG).show();
+                    return;
                 }
-                Toast.makeText(ctx, "请先开启「桌面快捷方式」权限",
-                        Toast.LENGTH_LONG).show();
-                return;
             }
             if (!ShortcutManagerCompat.isRequestPinShortcutSupported(ctx)) {
                 Toast.makeText(ctx, "添加到桌面失败：当前桌面不支持固定快捷方式",
