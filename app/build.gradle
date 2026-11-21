@@ -10,8 +10,8 @@ android {
         applicationId "com.jin.freeze"
         minSdk 24
         targetSdk 34
-        versionCode 177
-        versionName "2.10.7"
+        versionCode 178
+        versionName "2.10.8"
     }
 
     buildTypes {

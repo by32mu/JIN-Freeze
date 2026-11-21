@@ -590,6 +590,8 @@ public class FreezeListActivity extends BaseActivity {
     private float swipeDownX;
     private float swipeDownY;
     private boolean swipeTracking;
+    /** 横向滑动按下的时刻：松手时据此判断是否属于快速轻扫（距离短也切标签）。 */
+    private long swipeDownAt;
     /** 标签滑动切页动画进行中：不接管新的横向手势，避免叠加。 */
     private boolean tabAnimating;
     /** 标签切换动画开始的时间：用于动画回调丢失时（cancel 不触发 withEndAction）兜底复位。 */
@@ -2161,18 +2163,21 @@ public class FreezeListActivity extends BaseActivity {
             return true;
         }
         // 动画回调可能被系统/复用打断（cancel 不触发 withEndAction），
-        // 停留过久就复位，避免「左右滑标签有概率滑不动」
+        // 停留过久就复位，避免「左右滑标签有概率滑不动」；阈值与动画总时长（150+190）对齐
         if (tabAnimating
-                && android.os.SystemClock.uptimeMillis() - tabAnimatingAt > 700) {
+                && android.os.SystemClock.uptimeMillis() - tabAnimatingAt > 420) {
             tabAnimating = false;
         }
-        if (!tabSwipeEnabled || moveMode || editMode || working || tabAnimating) {
+        // 冻结/解冻执行中（working）只锁批量动作本身，不再挡住左右滑切标签：
+        // 批量慢时用户滑标签会被误当成「卡住」
+        if (!tabSwipeEnabled || moveMode || editMode || tabAnimating) {
             return super.dispatchTouchEvent(ev);
         }
         switch (ev.getActionMasked()) {
             case android.view.MotionEvent.ACTION_DOWN:
                 swipeDownX = ev.getX();
                 swipeDownY = ev.getY();
+                swipeDownAt = android.os.SystemClock.uptimeMillis();
                 swipeTracking = false;
                 break;
             case android.view.MotionEvent.ACTION_MOVE:
@@ -2193,7 +2198,8 @@ public class FreezeListActivity extends BaseActivity {
                 break;
             case android.view.MotionEvent.ACTION_UP:
                 if (swipeTracking) {
-                    settleTabSwipe(ev.getX() - swipeDownX);
+                    settleTabSwipe(ev.getX() - swipeDownX,
+                            android.os.SystemClock.uptimeMillis() - swipeDownAt);
                     swipeTracking = false;
                     return true;
                 }
@@ -2202,7 +2208,7 @@ public class FreezeListActivity extends BaseActivity {
             case android.view.MotionEvent.ACTION_CANCEL:
                 if (swipeTracking) {
                     // 手势被打断也回到原位，不留半截位移
-                    settleTabSwipe(0f);
+                    settleTabSwipe(0f, 0L);
                 }
                 swipeTracking = false;
                 break;
@@ -2496,14 +2502,18 @@ public class FreezeListActivity extends BaseActivity {
     /**
      * 松手收尾：过阈值且有相邻标签就滑出 → 切换 → 从另一侧滑入；
      * 否则回弹。全程位移动画，不做瞬间跳变。
+     * 阈值放低到 30dp（原来 56dp 太远，短距离滑动会被误以为「卡住」）；
+     * 快速轻扫（300ms 内完成）只要横向意图成立也直接切页。
      */
-    private void settleTabSwipe(float dx) {
+    private void settleTabSwipe(float dx, long dt) {
         final View v = tabSlideView();
         if (v == null) {
             return;
         }
         final int dir = dx < 0 ? 1 : -1;
-        boolean canSwitch = Math.abs(dx) > Ui.dp(this, 56) && hasTabNeighbor(dir);
+        float dist = Math.abs(dx);
+        boolean flick = dt > 0 && dt < 300 && dist > Ui.dp(this, 18);
+        boolean canSwitch = (dist > Ui.dp(this, 30) || flick) && hasTabNeighbor(dir);
         if (!canSwitch) {
             v.animate().translationX(0f)
                     .setDuration(180)
@@ -2514,6 +2524,9 @@ public class FreezeListActivity extends BaseActivity {
         final float w = v.getWidth();
         tabAnimating = true;
         tabAnimatingAt = android.os.SystemClock.uptimeMillis();
+        // 兜底复位：视图被重建或动画被系统取消时 withEndAction 不执行，
+        // 这里按动画总时长（150+190）留一点余量解锁，避免后续滑动一直被吞
+        v.postDelayed(() -> tabAnimating = false, 420);
         v.animate().translationX(dir > 0 ? -w : w)
                 .setDuration(150)
                 .setInterpolator(new DecelerateInterpolator())
