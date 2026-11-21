@@ -4216,6 +4216,8 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     protected void reload() {
+        // 名单是白名单/关联的唯一依据：先把已经不在名单里的条目清掉
+        pruneOrphans();
         Set<String> wanted = pkgs();
         List<String> order = savedOrder();
         boolean custom = customOrder();
@@ -6315,6 +6317,43 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
+    /**
+     * 白名单与关联应用只认冻结列表里还在的应用。
+     * 应用还留在任意一个标签页（即仍在名单里）就保留；从所有标签页移除后，
+     * 对应的白名单条目与主副关联一起摘掉。恢复备份、卸载清理后同样靠这里兜底。
+     */
+    private void pruneOrphans() {
+        Set<String> live = pkgs();
+        boolean whiteChanged = false;
+        boolean pairChanged = false;
+
+        Set<String> white = whitelistSet();
+        if (white.retainAll(live)) {
+            prefs().edit().putStringSet(KEY_WHITELIST, white).apply();
+            whiteChanged = true;
+        }
+
+        List<Pair> pairs = allPairs();
+        List<Pair> kept = new ArrayList<>();
+        for (Pair p : pairs) {
+            if (live.contains(p.main) && live.contains(p.sub)) {
+                kept.add(p);
+            } else {
+                pairChanged = true;
+            }
+        }
+        if (pairChanged) {
+            persistPairs(kept);
+        }
+        if (whiteChanged || pairChanged) {
+            // 名单同步给 LSPosed 侧，白名单应用一律不冻
+            SwipeFreeze.syncAsync(this);
+            refreshWhitelistEntry();
+            refreshPairEntry();
+            rebindCells();
+        }
+    }
+
     /** 实例键对应的显示名：优先用列表里的名称，不在列表里就问系统要应用名。 */
     private String labelFor(String key) {
         for (Item it : items) {
@@ -6708,6 +6747,8 @@ public class FreezeListActivity extends BaseActivity {
         if (it.pkg.equals(draggingPkg)) {
             draggingPkg = null;
         }
+        // 已从所有标签页移除：白名单与关联里对应的条目一并清掉
+        pruneOrphans();
         SwipeFreeze.syncAsync(this);
         render();
         toast("已从列表移除");
@@ -6739,6 +6780,8 @@ public class FreezeListActivity extends BaseActivity {
             prefs().edit().putString(KEY_ORDER, sb.toString()).apply();
         }
         items.remove(it);
+        // 已从所有标签页移除：白名单与关联里对应的条目一并清掉
+        pruneOrphans();
         if (!it.frozen) {
             toast("已移出名单");
             render();
@@ -8058,7 +8101,7 @@ public class FreezeListActivity extends BaseActivity {
         personalTitle.setText("个性设置");
         personalTitle.setTextSize(12);
         personalTitle.setTextColor(getColor(R.color.text_primary));
-        // 与上方「设置面板未展开高度」保持与标题下方相同的间距（其它分组标题仍是 12dp）
+        // 与上方「面板未展开高度」保持与标题下方相同的间距（其它分组标题仍是 12dp）
         personalTitle.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 2));
 
         // 默认形态勾选：全屏显示「默认全屏列表」，半屏显示「默认半屏列表」，勾上即下次启动进这个形态
@@ -8956,24 +8999,30 @@ public class FreezeListActivity extends BaseActivity {
         root.addView(dialogScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // 「设置面板未展开高度」滑块：放在设置列表下方（全屏/半屏都有，半屏仍受面板上沿限制）
-        // 一行三段：左边标题，中间滑块，右边 dp 值
+        // 「面板未展开高度」滑块：放在设置列表下方（全屏/半屏都有，半屏仍受面板上沿限制）
+        // 一行三段：左边标题，中间滑块，右边 dp 值；滑块贴近文字，dp 值贴近滑块
         LinearLayout heightRow = new LinearLayout(this);
         heightRow.setOrientation(LinearLayout.HORIZONTAL);
         heightRow.setGravity(Gravity.CENTER_VERTICAL);
         heightRow.setPadding(pad, Ui.dp(this, 2), pad, 0);
-        final TextView openLabel = Ui.text(this, "设置面板未展开高度", 10, Ui.TEXT_SECONDARY, false);
+        final TextView openLabel = Ui.text(this, "面板未展开高度", 10, Ui.TEXT_SECONDARY, false);
         final TextView openValue = Ui.text(this, "", 10, Ui.TEXT_SECONDARY, false);
-        openValue.setGravity(Gravity.END);
-        openValue.setMinWidth(Ui.dp(this, 36));
+        openValue.setGravity(Gravity.START);
+        openValue.setMinWidth(Ui.dp(this, 34));
         final SeekBar openBar = new SeekBar(this);
+        // 左右内边距留够滑块半径再加 2dp，保证起止位置的小球完整不被裁掉
+        int thumbPad = Ui.dp(this, 12);
+        openBar.setPadding(thumbPad, openBar.getPaddingTop(), thumbPad, openBar.getPaddingBottom());
         LinearLayout.LayoutParams openBarLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        openBarLp.leftMargin = Ui.dp(this, 10);
-        openBarLp.rightMargin = Ui.dp(this, 10);
+                Ui.dp(this, 76), ViewGroup.LayoutParams.WRAP_CONTENT);
+        openBarLp.leftMargin = 0;
+        openBarLp.rightMargin = 0;
         heightRow.addView(openLabel);
         heightRow.addView(openBar, openBarLp);
         heightRow.addView(openValue);
+        // 右侧留白吸收剩余宽度，dp 值始终紧贴滑块
+        heightRow.addView(new View(this), new LinearLayout.LayoutParams(
+                0, 1, 1f));
         // 高度行插到滚动列表上方（提示行与「个性设置」之间），列表本身不动
         root.addView(heightRow, Math.max(0, root.indexOfChild(dialogScroll)),
                 new LinearLayout.LayoutParams(
@@ -12260,14 +12309,16 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 写回列表白名单：整体覆盖，返回写入个数。 */
+    /** 写回列表白名单：整体覆盖，只保留冻结列表里还在的应用，返回写入个数。 */
     private int writeBackupWhitelist(JSONObject whitelist) {
+        // 名单是唯一依据：备份里有、但当前清单里没有的应用不再恢复
+        Set<String> live = pkgs();
         Set<String> next = new HashSet<>();
         JSONArray arr = whitelist == null ? null : whitelist.optJSONArray("keys");
         if (arr != null) {
             for (int i = 0; i < arr.length(); i++) {
                 String k = arr.optString(i, "");
-                if (!k.isEmpty()) {
+                if (!k.isEmpty() && live.contains(k)) {
                     next.add(k);
                 }
             }
@@ -12279,8 +12330,10 @@ public class FreezeListActivity extends BaseActivity {
         return next.size();
     }
 
-    /** 写回主副应用关联：整体覆盖，格式与 allPairs 的「主=副[|off]」一致。 */
+    /** 写回主副应用关联：整体覆盖，只保留主副两端都在冻结列表里的，格式同 allPairs。 */
     private int writeBackupPairs(JSONObject pairs) {
+        // 名单是唯一依据：主或副不在当前清单里的关联不再恢复
+        Set<String> live = pkgs();
         List<Pair> list = new ArrayList<>();
         JSONArray arr = pairs == null ? null : pairs.optJSONArray("items");
         if (arr != null) {
@@ -12292,6 +12345,9 @@ public class FreezeListActivity extends BaseActivity {
                 String main = one.optString("main", "");
                 String sub = one.optString("sub", "");
                 if (main.isEmpty() || sub.isEmpty() || main.equals(sub)) {
+                    continue;
+                }
+                if (!live.contains(main) || !live.contains(sub)) {
                     continue;
                 }
                 list.add(new Pair(main, sub, one.optBoolean("enabled", true)));
