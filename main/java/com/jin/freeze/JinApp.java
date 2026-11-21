@@ -36,13 +36,9 @@ public class JinApp extends Application {
     public void onCreate() {
         super.onCreate();
         ShortcutSync.publish(this);
-        // 结果提示改用悬浮胶囊（FrozenTip），需要「显示在其他应用上层」才能在后台上屏。
-        // 本应用本就走 root/Shizuku，直接 appops 自授予，不用用户去设置里点；
-        // MIUIOP(10021) 是 MIUI 的「后台弹出界面」，一并放开，否则后台悬浮窗仍被拦；
-        // MIUIOP(10017) 是 MIUI 的「桌面快捷方式」，放开后加桌面图标不再卡权限确认。
+        // MIUIOP(10017) 是 MIUI 的「桌面快捷方式」：本应用走 root/Shizuku，
+        // 直接 appops 自授予，加桌面图标时不再卡权限确认，也不用用户去设置里点。
         IO.execute(() -> PrivShell.exec("appops set " + getPackageName()
-                + " SYSTEM_ALERT_WINDOW allow"
-                + "; appops set " + getPackageName() + " 10021 allow"
-                + "; appops set " + getPackageName() + " 10017 allow", 8));
+                + " 10017 allow", 8));
     }
 }

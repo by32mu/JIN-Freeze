@@ -2,11 +2,9 @@ package com.jin.freeze.ui;
 
 import android.content.Context;
 import android.content.res.Configuration;
-import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -45,49 +43,6 @@ public final class FrozenTip {
     private static void showOnMain(Context app, String text) {
         Toast t = new Toast(app);
         t.setView(buildView(app, text));
-        t.setDuration(Toast.LENGTH_SHORT);
-        t.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, dp(app, 128));
-        t.show();
-    }
-
-    /**
-     * 快捷方式批量结果提示：批量期间应用已 finish 退到后台，系统 Toast 会被丢掉，
-     * 改用 TYPE_APPLICATION_OVERLAY 悬浮胶囊上屏；拿不到悬浮窗权限时退回 Toast。
-     * 列表页里的提示仍走 {@link #show}（前台 Toast），不要用这个。
-     */
-    public static void showCapsule(Context c, String text) {
-        Context app = c.getApplicationContext();
-        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> showCapsuleOnMain(app, text));
-    }
-
-    private static void showCapsuleOnMain(Context app, String text) {
-        TextView tv = buildView(app, text);
-        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-        lp.y = dp(app, 128);
-        try {
-            wm.addView(tv, lp);
-            tv.postDelayed(() -> {
-                try {
-                    wm.removeView(tv);
-                } catch (Exception ignored) {
-                }
-            }, 2000);
-            return;
-        } catch (Exception e) {
-            // 没有悬浮窗权限等：退回 Toast（仅应用在前台时可见）
-        }
-
-        Toast t = new Toast(app);
-        t.setView(tv);
         t.setDuration(Toast.LENGTH_SHORT);
         t.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, dp(app, 128));
         t.show();

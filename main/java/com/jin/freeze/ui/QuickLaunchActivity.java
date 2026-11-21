@@ -3,12 +3,11 @@ package com.jin.freeze.ui;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
-import android.provider.Settings;
 import android.widget.Toast;
 
 import com.jin.freeze.core.LaunchTarget;
@@ -24,7 +23,7 @@ import java.util.Set;
  * 桌面快捷方式的启动中转：快捷方式 Intent 只带 key，这里取回真实目标再启动。
  * 导出页面直接 startActivity，未导出页面按「root 强启」开关走 su。
  * 「一键冻结 / 一键解冻」立刻 finish 让出 top 后台执行：凚 占据 top 会延迟桌面的
- * 图标塌缩 relayout，把桌面滑动吞掉；结果提示走 FrozenTip 悬浮胶囊，后台也能上屏。
+ * 图标塌缩 relayout，把桌面滑动吞掉；结果提示按 Hail 的做法先在前台弹 Toast 再 finish。
  */
 public class QuickLaunchActivity extends Activity {
 
@@ -39,17 +38,8 @@ public class QuickLaunchActivity extends Activity {
         super.onCreate(savedInstanceState);
         String action = getIntent() == null ? null : getIntent().getAction();
         if (ACTION_FREEZE_ALL.equals(action) || ACTION_UNFREEZE_ALL.equals(action)) {
-            // 批量期间不再让凚 占住前台占位：凚 占据 top 会延迟桌面的图标塌缩 relayout，
-            // 把桌面滑动吞掉（真机实测）。改成起线程后立刻 finish，桌面马上恢复可滑；
-            // 结果提示走 FrozenTip 悬浮胶囊，后台也能上屏，不必为等 toast 上屏而保持窗口。
-            boolean freeze = ACTION_FREEZE_ALL.equals(action);
-            if (Settings.canDrawOverlays(this)) {
-                runBatch(freeze);
-            } else {
-                // 没有悬浮窗权限：后台的结果胶囊上不了屏。先等 JinApp 的 appops 自授予
-                // 落地（进程刚起时可能还没跑完），仍然没有就弹框引导去开启。
-                runBatchAfterPermissionCheck(freeze);
-            }
+            // 完全照 Hail ApiActivity：onCreate 里同步执行整批 → 结果 Toast → finish
+            handleBatchAction(ACTION_FREEZE_ALL.equals(action));
             return;
         }
         if (ACTION_OPEN_FREEZE_LIST.equals(action)) {
@@ -228,82 +218,52 @@ public class QuickLaunchActivity extends Activity {
     }
 
     /**
-     * 一键冻结 / 一键解冻。
-     * 批量在后台线程跑，但这里立刻 finish 让出 top——凚 占据 top 会延迟桌面的图标塌缩
-     * relayout，把桌面滑动吞掉；结果提示走 FrozenTip 悬浮胶囊，后台也能上屏，无需保持窗口。
+     * 完全照 Hail ApiActivity.handleAction：
+     * onCreate 里同步把整批做完，成功就「已冻结：N / 已解冻：N」Toast 后立刻 finish；
+     * 一个都没成功时弹错误框（等同 Hail 的 ErrorDialog），点确定再结束。
+     * Toast 由系统窗口承载，activity 关掉后仍显示完，不需要悬浮窗/后台权限。
      */
-    private void runBatch(final boolean freeze) {
-        new Thread(() -> doBatch(freeze), "shortcut-batch").start();
-        // 立即让出 top：桌面马上恢复可滑动。批量在线程里继续跑，完成后 FrozenTip 悬浮胶囊上屏。
+    private void handleBatchAction(boolean freeze) {
+        String result;
+        try {
+            result = setListFrozen(freeze);
+        } catch (Throwable t) {
+            result = null;
+        }
+        if (result == null) {
+            new AlertDialog.Builder(this)
+                    .setTitle(freeze ? "冻结失败" : "解冻失败")
+                    .setMessage("没有权限或应用被系统限制")
+                    .setCancelable(false)
+                    .setPositiveButton(android.R.string.ok, (d, w) -> {
+                        finish();
+                        overridePendingTransition(0, 0);
+                    })
+                    .show();
+            return;
+        }
+        Toast.makeText(getApplicationContext(),
+                freeze ? "已全部冻结" : "已全部解冻", Toast.LENGTH_SHORT).show();
         finish();
         overridePendingTransition(0, 0);
     }
 
-    /** 没有悬浮窗权限时的批量入口：等自授予落地，仍没有就引导用户去开，开了再执行。 */
-    private void runBatchAfterPermissionCheck(final boolean freeze) {
-        new Thread(() -> {
-            boolean ok = Settings.canDrawOverlays(this);
-            // 进程刚起时 JinApp 的 appops 自授予可能还没跑完：最多重试 1 秒
-            for (int i = 0; i < 10 && !ok; i++) {
-                SystemClock.sleep(100);
-                ok = Settings.canDrawOverlays(this);
-            }
-            if (!ok) {
-                runOnUiThread(() -> promptOverlayPermission(freeze));
-                return;
-            }
-            doBatch(freeze);
-            runOnUiThread(() -> {
-                finish();
-                overridePendingTransition(0, 0);
-            });
-        }, "shortcut-batch-perm").start();
-    }
-
-    /** 长按一键冻结/解冻没有悬浮窗权限：提示去开启，否则桌面看不到任何结果提示。 */
-    private void promptOverlayPermission(boolean freeze) {
-        new AlertDialog.Builder(this)
-                .setTitle("需要悬浮窗权限")
-                .setMessage("长按图标一键" + (freeze ? "冻结" : "解冻")
-                        + "时，凚 要用悬浮窗在桌面显示「已全部" + (freeze ? "冻结" : "解冻")
-                        + "」提示。请为 凚 开启「显示在其他应用上层」权限后重试。")
-                .setPositiveButton("去开启", (d, w) -> {
-                    try {
-                        startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:" + getPackageName())));
-                    } catch (Exception ignored) {
-                    }
-                    finish();
-                    overridePendingTransition(0, 0);
-                })
-                .setNegativeButton("取消", (d, w) -> {
-                    finish();
-                    overridePendingTransition(0, 0);
-                })
-                .setCancelable(false)
-                .show();
-    }
-
-    private void doBatch(boolean freeze) {
-        android.content.SharedPreferences sp = getSharedPreferences("freeze_list", MODE_PRIVATE);
+    /**
+     * 照搬 Hail AppManager.setListFrozen 的返回值语义：
+     * null = 一个都没成功（Hail 抛权限错误）；1 个 = 应用名；多个 = 数量字符串。
+     * 筛选照 Hail：只处理当前状态不是目标的；凚 额外跳过冻结白名单（原有功能）。
+     */
+    private String setListFrozen(boolean freeze) {
+        SharedPreferences sp = getSharedPreferences("freeze_list", MODE_PRIVATE);
         Set<String> pkgs = new HashSet<>(sp.getStringSet("pkgs", new HashSet<>()));
-        if (pkgs.isEmpty()) {
-            FrozenTip.showCapsule(this, "冻结名单为空");
-            return;
-        }
-        // 冻结白名单：快捷方式的一键冻结同样不处理白名单里的应用
         Set<String> whitelist = freeze ? sp.getStringSet("freeze_whitelist", null) : null;
         PackageManager pm = getPackageManager();
         // 暂停态对「冻结」来说等同于已到位；对「解冻」来说必须再撤一次暂停
         Set<String> suspendedBefore = SuspendSupport.suspendedAmong(SuspendSupport.cached(this));
         List<String> todo = new ArrayList<>();
-        boolean allWhitelisted = whitelist != null;
         for (String pkg : pkgs) {
             if (whitelist != null && whitelist.contains(pkg)) {
                 continue;
-            }
-            if (whitelist != null) {
-                allWhitelisted = false;
             }
             boolean suspended = suspendedBefore.contains(pkg);
             // 已经是目标状态的不再执行 pm：重复整批调用是原来耗时的主要来源之一
@@ -317,13 +277,8 @@ public class QuickLaunchActivity extends Activity {
             }
         }
         if (todo.isEmpty()) {
-            // 快路径（状态已满足）也按用户指定文案提示；全在白名单时说明真实情况
-            if (freeze && allWhitelisted) {
-                FrozenTip.showCapsule(this, "白名单应用不冻结");
-            } else {
-                FrozenTip.showCapsule(this, freeze ? "已全部冻结" : "已全部解冻");
-            }
-            return;
+            // 与 Hail 同语义：没有需要处理的应用 → i=0 → 提示「已冻结：0」
+            return "0";
         }
         // 一次 su + 限并发跑完整批：pm 每条都要拉起一个 app_process，
         // 串行几十条是秒级；并发 8 路能把整批压到一秒左右
@@ -340,7 +295,7 @@ public class QuickLaunchActivity extends Activity {
                 .append("i=$((i+1)); ")
                 .append("[ $((i%8)) -eq 0 ] && wait; done; wait");
         PrivShell.Result result = PrivShell.exec(cmd.toString(), 120);
-        // 执行完统一核对真实状态：既拿失败名单，也不依赖 pm 的文本输出
+        // 执行完统一核对真实状态：既拿失败数，也不依赖 pm 的文本输出
         Set<String> suspendedAfter = SuspendSupport.suspendedAmong(todo);
         if (freeze) {
             // 停用被 ROM 拦住（仍可启用且未进入暂停）的包，自动改走 pm suspend
@@ -369,37 +324,28 @@ public class QuickLaunchActivity extends Activity {
             next.addAll(suspendedAfter);
             SuspendSupport.replace(this, next);
         }
-        List<String> fails = new ArrayList<>();
+        String out = result.out == null ? "" : result.out.trim();
+        if (!out.isEmpty()) {
+            android.util.Log.w("JinPm", "shortcut batch " + (freeze ? "freeze" : "unfreeze")
+                    + " raw output:\n" + out);
+        }
+        // 与 Hail 一致：统计真正生效的个数，1 个时提示应用名
+        int ok = 0;
+        String name = "";
         for (String pkg : todo) {
             Boolean enabled = enabledOf(pm, pkg);
-            boolean ok = freeze
+            boolean done = freeze
                     ? ((enabled != null && !enabled) || suspendedAfter.contains(pkg))
                     : (enabled != null && enabled && !suspendedAfter.contains(pkg));
-            if (!ok) {
-                fails.add(labelOf(pm, pkg) + "：" + (freeze
-                        ? "执行后未变为冻结，可能被系统限制" : "执行后未变为启用，可能被系统限制"));
+            if (done) {
+                ok++;
+                name = labelOf(pm, pkg);
             }
         }
-        if (!fails.isEmpty()) {
-            // 批量失败清单只列应用名 + 短原因；原始 pm 输出只进日志，不进提示
-            String out = result.out == null ? "" : result.out.trim();
-            if (!out.isEmpty()) {
-                android.util.Log.w("JinPm", "shortcut batch " + (freeze ? "freeze" : "unfreeze")
-                        + " raw output:\n" + out);
-            }
-            StringBuilder sb = new StringBuilder("失败 " + fails.size() + " 个");
-            for (String f : fails) {
-                sb.append("\n\n").append(f);
-            }
-            toastLong(sb.toString());
-        } else {
-            // 全部成功：桌面长按菜单进来的一键冻结/解冻，提示整批结果
-            FrozenTip.showCapsule(this, freeze ? "已全部冻结" : "已全部解冻");
+        if (ok == 0) {
+            return null;
         }
-    }
-
-    private void toastLong(String text) {
-        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+        return ok == 1 ? name : String.valueOf(ok);
     }
 
     private String labelOf(PackageManager pm, String pkg) {
