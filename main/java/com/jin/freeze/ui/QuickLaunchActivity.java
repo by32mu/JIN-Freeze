@@ -1,7 +1,6 @@
 package com.jin.freeze.ui;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
@@ -38,13 +37,15 @@ public class QuickLaunchActivity extends Activity {
         super.onCreate(savedInstanceState);
         String action = getIntent() == null ? null : getIntent().getAction();
         if (ACTION_FREEZE_ALL.equals(action) || ACTION_UNFREEZE_ALL.equals(action)) {
-            // 全屏透明落地壳（稳定算作前台，Toast 才不会被系统压掉），
-            // 但全程不接触摸、不抢焦点：触摸直接落到桌面，滑动照常
+            // 落地壳缩成左上角 1×1：不铺屏、不挡滑、不在系统栏铺黑格；
+            // 提示由 TYPE_TOAST 窗口负责，不依赖这个 activity 是否前台
+            getWindow().setLayout(1, 1);
             getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                     | android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
-            getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
-            getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
-            // 照 Hail ApiActivity：onCreate 里同步执行整批 → 结果 Toast → 结束
+            android.view.WindowManager.LayoutParams wlp = getWindow().getAttributes();
+            wlp.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
+            getWindow().setAttributes(wlp);
+            // 先弹提示，整批在后台线程跑，完成后收起提示并结束落地壳
             handleBatchAction(ACTION_FREEZE_ALL.equals(action));
             return;
         }
@@ -224,35 +225,34 @@ public class QuickLaunchActivity extends Activity {
     }
 
     /**
-     * 完全照 Hail ApiActivity.handleAction：
-     * onCreate 里同步把整批做完，成功就「已冻结：N / 已解冻：N」Toast 后立刻 finish；
-     * 一个都没成功时弹错误框（等同 Hail 的 ErrorDialog），点确定再结束。
-     * Toast 由系统窗口承载，activity 关掉后仍显示完，不需要悬浮窗/后台权限。
+     * 长按一键冻结/解冻：先弹出提示并一直显示，整批跑完（至少显示 1.2 秒）再收起。
+     * 提示是 TYPE_TOAST 窗口，不需要悬浮窗权限；落地壳立刻结束，桌面马上可滑，
+     * 中途滑动屏幕也不会把提示压掉。
      */
-    private void handleBatchAction(boolean freeze) {
-        String result;
-        try {
-            result = setListFrozen(freeze);
-        } catch (Throwable t) {
-            result = null;
-        }
-        if (result == null) {
-            new AlertDialog.Builder(this)
-                    .setTitle(freeze ? "冻结失败" : "解冻失败")
-                    .setMessage("没有权限或应用被系统限制")
-                    .setCancelable(false)
-                    .setPositiveButton(android.R.string.ok, (d, w) -> {
-                        finish();
-                        overridePendingTransition(0, 0);
-                    })
-                    .show();
-            return;
-        }
-        // 结果提示用 TYPE_TOAST 窗口：不需要悬浮窗权限，activity 结束后仍显示 2 秒；
-        // activity 立即 finish，桌面马上可滑，也不会占住系统栏。
-        FrozenTip.showToastWindow(this, freeze ? "已全部冻结" : "已全部解冻");
+    private void handleBatchAction(final boolean freeze) {
+        final long start = SystemClock.uptimeMillis();
+        // 先弹提示：整批期间一直显示，跑完再收起
+        final FrozenTip.Tip tip = FrozenTip.showToastWindow(this,
+                freeze ? "已全部冻结" : "已全部解冻");
+        // 立刻结束落地壳：桌面马上可滑，提示窗口由进程独立承载，不受影响
         finish();
         overridePendingTransition(0, 0);
+        new Thread(() -> {
+            String result;
+            try {
+                result = setListFrozen(freeze);
+            } catch (Throwable t) {
+                result = null;
+            }
+            final String r = result;
+            final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+            if (r == null) {
+                main.post(() -> tip.setText(freeze ? "冻结失败" : "解冻失败"));
+            }
+            long shown = SystemClock.uptimeMillis() - start;
+            long wait = Math.max(0, 1200 - shown);
+            main.postDelayed(tip::dismiss, wait);
+        }, "shortcut-batch").start();
     }
 
     /**

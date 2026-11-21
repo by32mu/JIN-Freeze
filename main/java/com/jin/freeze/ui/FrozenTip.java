@@ -50,13 +50,50 @@ public final class FrozenTip {
         t.show();
     }
 
+    /** 可手动收起的提示窗口：先弹出来一直显示，操作完毕再 dismiss。 */
+    public static final class Tip {
+        private TextView view;
+        private WindowManager wm;
+        private boolean dismissed;
+
+        /** 改文案（例如整批失败时改成「冻结失败」）。 */
+        public void setText(final String text) {
+            runOnMain(() -> {
+                if (view != null) {
+                    view.setText(text);
+                }
+            });
+        }
+
+        /** 收起提示。可以在任意线程调用。 */
+        public void dismiss() {
+            runOnMain(() -> {
+                if (dismissed) {
+                    return;
+                }
+                dismissed = true;
+                if (wm != null && view != null) {
+                    try {
+                        wm.removeView(view);
+                    } catch (Exception ignored) {
+                    }
+                }
+                view = null;
+                wm = null;
+            });
+        }
+
+        private static void runOnMain(Runnable r) {
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(r);
+        }
+    }
+
     /**
-     * 快捷方式批量结果：直接用 TYPE_TOAST 窗口自绘提示。
-     * 系统 Toast 在 activity 一结束就被 MIUI 掐掉（实测只活约 90ms），
-     * 而 TYPE_TOAST 不需要「显示在其他应用上层」权限，也不受前台/后台 Toast 压制，
-     * 挂上后 2 秒自动移除，activity 可以先 finish，桌面立刻可滑。
+     * 快捷方式批量提示：TYPE_TOAST 窗口，不需要「显示在其他应用上层」权限，
+     * 也不受系统 Toast 的前台/后台压制。调用后立刻挂出，操作结束再 {@link Tip#dismiss()}。
      */
-    public static void showToastWindow(Context c, String text) {
+    public static Tip showToastWindow(Context c, String text) {
+        final Tip tip = new Tip();
         Context app = c.getApplicationContext();
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
             try {
@@ -73,17 +110,21 @@ public final class FrozenTip {
                 lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
                 lp.y = dp(app, 128);
                 wm.addView(tv, lp);
-                tv.postDelayed(() -> {
+                tip.view = tv;
+                tip.wm = wm;
+                if (tip.dismissed) {
+                    // 还没挂出来就已经被要求收起（整批一开始就失败）
                     try {
                         wm.removeView(tv);
                     } catch (Exception ignored) {
                     }
-                }, 2000);
+                }
             } catch (Exception e) {
                 // TYPE_TOAST 被 ROM 拒绝：退回系统 Toast（仅应用在前台时可见）
                 Toast.makeText(app, text, Toast.LENGTH_SHORT).show();
             }
         });
+        return tip;
     }
 
     private static TextView buildView(Context app, String text) {

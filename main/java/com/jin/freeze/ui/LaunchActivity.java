@@ -27,7 +27,8 @@ public class LaunchActivity extends Activity {
         Intent target = new Intent(this, fullscreen
                 ? (hideRecents ? FreezeListHiddenActivity.class : FreezeListActivity.class)
                 : (hideRecents ? FreezePanelHiddenActivity.class : FreezePanelActivity.class));
-        target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        // 入口壳与目标页共用默认 taskAffinity：不再 addFlags(NEW_TASK) 另起任务，
+        // 从桌面进来只发生一次任务内过渡，避免 MIUI 两次任务切换时垫出白色卡片
         // 打开 app 先检查 root / Shizuku：目标页面起来后在后台探测，未授权再弹统一提示
         target.putExtra(FreezeListActivity.EXTRA_CHECK_PRIV, true);
         if (!fullscreen) {
