@@ -106,6 +106,8 @@ public class FreezeListActivity extends BaseActivity {
 
     private static final String PREFS = "freeze_list";
     private static final String KEY_PKGS = "pkgs";
+    /** 记录 View 原始 elevation 的 tag 键（仅本类内部使用，避免阴影被反复缩放失真）。 */
+    private static final int TAG_BASE_ELEVATION = 0x0A1B2C3D;
 
     private static String instanceKey(String pkg, int userId) {
         return pkg + "@" + userId;
@@ -218,7 +220,18 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_SETTINGS_WL_COLLAPSED = "settings_wl_collapsed";
     private static final String KEY_SETTINGS_SP_COLLAPSED = "settings_sp_collapsed";
     private static final String KEY_SETTINGS_OPACITY_COLLAPSED = "settings_opacity_collapsed";
+    /** 设置页及其所有二级弹窗的底板透明度：100 = 实心，0 = 全透明；半屏/全屏用 lk() 各存一份。 */
+    private static final String KEY_SETTINGS_SURFACE = "settings_surface";
     private static final String KEY_SETTINGS_WALLPAPER_COLLAPSED = "settings_wallpaper_collapsed";
+    /** 设置面板里所有可折叠分组：长按左上角设置按钮时一键全部展开。 */
+    private static final String[] SETTINGS_COLLAPSE_KEYS = {
+            KEY_SETTINGS_OTHER_COLLAPSED, KEY_SETTINGS_GESTURE_COLLAPSED,
+            KEY_SETTINGS_ICON_COLLAPSED, KEY_SETTINGS_FAB_COLLAPSED,
+            KEY_SETTINGS_TAB_COLLAPSED, KEY_SETTINGS_PERSONAL_COLLAPSED,
+            KEY_SETTINGS_LSP_COLLAPSED, KEY_SETTINGS_PAIR_COLLAPSED,
+            KEY_SETTINGS_WL_COLLAPSED, KEY_SETTINGS_SP_COLLAPSED,
+            KEY_SETTINGS_OPACITY_COLLAPSED, KEY_SETTINGS_WALLPAPER_COLLAPSED
+    };
     /** 应用自定义显示名：JSON「实例键 → 名称」，只影响列表显示，不改包名。 */
     private static final String KEY_APP_NAMES = "app_names";
     private static final String KEY_CURRENT_TAB = "current_tab";
@@ -230,6 +243,15 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_WHITE_BADGE_RIGHT = "white_badge_right";
     /** 冻结图标样式：0=全彩，1..9=半灰半彩各方向与全灰（见 HalfGrayImageView.SPLIT_*）。 */
     private static final String KEY_ICON_STYLE = "icon_style";
+    /** 取图来源：0=系统默认（APK 自带图标），1=当前主题图标（启动器实际显示的图标）。 */
+    private static final String KEY_ICON_THEME_MODE = "icon_theme_mode";
+    /** 列表图标透明度：0 = 不透明，100 = 全透明（只影响列表里的应用图标）。 */
+    private static final String KEY_ICON_ALPHA = "icon_alpha";
+    /** 三组「同步到另一形态」开关：打开后再改当前形态的值会同时写进另一形态。 */
+    private static final String KEY_SYNC_SURFACE = "sync_surface";
+    private static final String KEY_SYNC_ICON = "sync_icon";
+    private static final String KEY_SYNC_FAB = "sync_fab";
+    private static final String[] ICON_THEME_MODE_NAMES = {"系统默认", "当前主题图标"};
     private static final String[] ICON_STYLE_NAMES = {
             "全彩", "全灰", "左灰右彩", "右灰左彩", "上灰下彩", "下灰上彩",
             "左上灰", "右上灰", "左下灰", "右下灰"
@@ -288,6 +310,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_DIAG_CMD = "diag_last_cmd";
     private static final String KEY_DIAG_OUT = "diag_last_out";
     private static final String KEY_DIAG_AT = "diag_last_at";
+    /** 操作流水：JSON 数组，最多 20 条，冻结/解冻/暂停共用。 */
+    private static final String KEY_DIAG_HIST = "diag_hist";
     /** 诊断包落地目录：下载目录下的「凚/诊断包」。 */
     private static final String DIAG_DIR = "/storage/emulated/0/Download/凚/诊断包";
     /** 桌面图标进入的形态：true=全屏冻结列表，false=半屏面板（默认）。 */
@@ -485,6 +509,8 @@ public class FreezeListActivity extends BaseActivity {
     private int layoutShadowPad;
     /** 布局设置弹窗当前是否处于 ▼ 展开态：底部按钮位置/大小变化时要同步收放高度。 */
     private boolean layoutExpanded;
+    /** 本次打开后是否自动进入「展开最大范围」态（长按设置按钮时用，一次性）。 */
+    private boolean expandLayoutOnShow;
     /** 设置页展开/收起时的窗口高度与位置动画，快速切换时先取消上一段。 */
     private android.animation.ValueAnimator dialogFrameAnim;
     /** 打开设置页时的窗口 y（未展开位置）：收起展开时回到这里，不受展开态拖动影响。 */
@@ -571,10 +597,16 @@ public class FreezeListActivity extends BaseActivity {
     private AlertDialog whitelistManagerDialog;
     /** 布局设置弹窗：长按空白上下滑切形态时先把它收起。 */
     private android.app.Dialog settingsDialog;
+    /** 设置面板当前的底板：拖动「设置页透明度」时直接刷它，不重建弹窗。 */
+    private View settingsSurfaceRoot;
+    /** 从「所有文件访问」授权页返回后自动重扫恢复列表，不用用户再点一次。 */
+    private boolean restoreAwaitAccess;
     /** 管理弹窗上面叠的添加选择页，逐层返回时统一关闭。 */
     private final List<AlertDialog> pairPickers = new ArrayList<>();
     /** 设置页「冻结图标样式」这一行：选中后即时刷新显示的当前选项。 */
     private TextView layoutIconStyleEntry;
+    /** 设置页「主题图标样式」这一行：切换后即时刷新显示的当前选项。 */
+    private TextView layoutThemeIconEntry;
     private WallpaperDrawable wallpaperDrawable;
     private boolean dismissAfterReload;
     /** 「去掉 toast 提示」开关：勾选后凚 内所有短提示都不显示。 */
@@ -585,6 +617,8 @@ public class FreezeListActivity extends BaseActivity {
     private boolean scrubVibrate = true;
     /** 冻结图标样式：0=全彩，1..8=不同方向的半灰半彩。 */
     private int iconStyle;
+    /** 列表图标透明度：0=不透明，100=全透明。 */
+    private int iconAlpha;
     /** 隐藏标签文字：只收起标签名那一排，列表与滑动手势照常工作。 */
     private boolean hideTabRow;
     /** 白名单标识位置：false=贴图标左下角（默认），true=右下角。 */
@@ -948,6 +982,11 @@ public class FreezeListActivity extends BaseActivity {
         }
         if (settingsBtn != null) {
             settingsBtn.setOnClickListener(v -> showLayoutDialog());
+            // 长按设置按钮：面板回到默认位置，并把所有分组一键展开
+            settingsBtn.setOnLongClickListener(v -> {
+                showLayoutDialogAtDefault();
+                return true;
+            });
         }
         // 半屏形态底栏没有输入框：左边搜索图标直接进添加应用页（自带搜索与用户/系统切换）
         View panelSearch = findViewById(R.id.panel_search);
@@ -961,14 +1000,16 @@ public class FreezeListActivity extends BaseActivity {
         }
         ensurePanelLayoutInit();
         migrateUpdatedDefaults();
-        gridColumns = prefs().getInt(KEY_COLUMNS, COLUMNS);
+        // 列数/图标大小：半屏与全屏各存一份；旧数据没有 panel_ 键时沿用全屏的值
+        gridColumns = prefs().getInt(lk(KEY_COLUMNS), prefs().getInt(KEY_COLUMNS, COLUMNS));
         if (gridColumns < 4 || gridColumns > 8) {
             // 旧数据（2/3 列）按 4 列处理并修正落盘
             gridColumns = 4;
-            prefs().edit().putInt(KEY_COLUMNS, 4).apply();
+            prefs().edit().putInt(lk(KEY_COLUMNS), 4).apply();
         }
-        iconDp = prefs().getInt(KEY_ICON_DP, 52);
-        iconManual = prefs().getBoolean(KEY_ICON_MANUAL, false);
+        iconDp = prefs().getInt(lk(KEY_ICON_DP), prefs().getInt(KEY_ICON_DP, 52));
+        iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL),
+                prefs().getBoolean(KEY_ICON_MANUAL, false));
         gestureEnabled = prefs().getBoolean(KEY_GESTURE_ENABLED, false);
         gestureUpDp = clampGestureDp(prefs().getInt(KEY_GESTURE_UP, GESTURE_DP_DEFAULT));
         gestureDownDp = clampGestureDp(prefs().getInt(KEY_GESTURE_DOWN, GESTURE_DP_DEFAULT));
@@ -988,6 +1029,8 @@ public class FreezeListActivity extends BaseActivity {
         scrubVibrate = true;
         // 冻结图标样式默认全彩；1..8 为不同方向的半灰半彩
         iconStyle = clampInt(prefs().getInt(KEY_ICON_STYLE, 0), 0, ICON_STYLE_NAMES.length - 1);
+        // 列表图标透明度：0 不透明，越大越透明；半屏与全屏各存一份
+        iconAlpha = clampInt(prefs().getInt(lk(KEY_ICON_ALPHA), 0), 0, 100);
         // 隐藏标签页文字：半屏与全屏各存一份，互不影响
         hideTabRow = prefs().getBoolean(lk(KEY_HIDE_TAB_ROW), false);
         whiteBadgeRight = prefs().getBoolean(KEY_WHITE_BADGE_RIGHT, true);
@@ -2632,6 +2675,13 @@ public class FreezeListActivity extends BaseActivity {
         } else if (PrivShell.peek() == null || PrivShell.peek() == PrivShell.Mode.NONE) {
             recheckPrivilegeAsync(false, false, null);
         }
+        // 从「所有文件访问」授权页返回：已授权就直接重扫恢复列表
+        if (restoreAwaitAccess) {
+            restoreAwaitAccess = false;
+            if (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()) {
+                main.postDelayed(this::showRestoreFiles, 300);
+            }
+        }
         // 半屏显示期间状态栏压在桌面上，按壁纸明暗决定图标深浅（过渡中不压，交给过渡自己控）
         if (panelMode && !introPlaying) {
             schedulePanelStatusTone();
@@ -2767,6 +2817,10 @@ public class FreezeListActivity extends BaseActivity {
                         prefs().getInt(KEY_FAB_DY, PANEL_FAB_DY_DEFAULT))
                 .putInt("panel_" + KEY_FAB_SIZE,
                         prefs().getInt(KEY_FAB_SIZE, PANEL_FAB_SIZE_DEFAULT))
+                .putInt("panel_" + KEY_COLUMNS, prefs().getInt(KEY_COLUMNS, COLUMNS))
+                .putInt("panel_" + KEY_ICON_DP, prefs().getInt(KEY_ICON_DP, 52))
+                .putBoolean("panel_" + KEY_ICON_MANUAL,
+                        prefs().getBoolean(KEY_ICON_MANUAL, false))
                 .putBoolean("panel_layout_init", true)
                 .apply();
     }
@@ -2991,7 +3045,7 @@ public class FreezeListActivity extends BaseActivity {
             if (refresh != null) {
                 refresh.run();
             }
-        }, xOffset);
+        }, xOffset, settingsSurfaceAlpha());
     }
 
     /** 长按标签页：改名、设默认、排序、隐藏标签页文字、隐藏标签列表、仅冻结/解冻当前页面。 */
@@ -5169,7 +5223,8 @@ public class FreezeListActivity extends BaseActivity {
         // 冻结图标样式：0=全彩（名称左侧补雪花），1..8=按方向灰化半边
         int splitStyle = it.frozen ? iconStyle : 0;
         cell.icon.clearColorFilter();
-        cell.icon.setAlpha(1f);
+        // 列表图标透明度：0 不透明，100 全透明
+        cell.icon.setAlpha(iconAlpha <= 0 ? 1f : (100 - iconAlpha) / 100f);
         if (cell.icon instanceof HalfGrayImageView) {
             ((HalfGrayImageView) cell.icon).setSplitStyle(splitStyle);
         }
@@ -6463,6 +6518,8 @@ public class FreezeListActivity extends BaseActivity {
             if (keep) {
                 r = SuspendSupport.suspend(this, packagePart(it.pkg), it.label);
                 ok = suspendApplied(it.pkg, r);
+                recordDiagOp("单次暂停",
+                        SuspendSupport.suspendCommand(packagePart(it.pkg), it.label), r);
                 if (ok) {
                     suspendedNow = true;
                     SuspendSupport.remember(this, Collections.singleton(packagePart(it.pkg)));
@@ -6480,6 +6537,8 @@ public class FreezeListActivity extends BaseActivity {
                 blocked = it.userId == 0 && !ok && SuspendSupport.romBlocked(r.out);
                 if (blocked) {
                     PrivShell.Result s = SuspendSupport.suspend(this, packagePart(it.pkg), it.label);
+                    recordDiagOp("降级暂停",
+                            SuspendSupport.suspendCommand(packagePart(it.pkg), it.label), s);
                     if (suspendApplied(it.pkg, s)) {
                         ok = true;
                         suspendedNow = true;
@@ -7693,6 +7752,20 @@ public class FreezeListActivity extends BaseActivity {
         applySettingsAlignment(dialog);
     }
 
+    /** 长按左上角设置按钮：把面板拖动偏移清零、所有分组置为展开，再按默认位置打开。 */
+    private void showLayoutDialogAtDefault() {
+        SharedPreferences.Editor e = prefs().edit();
+        // 半屏本来就居中不记偏移，这里一并清掉无副作用
+        e.putInt(lk(KEY_LAYOUT_DX), 0).putInt(lk(KEY_LAYOUT_DY), 0);
+        for (String key : SETTINGS_COLLAPSE_KEYS) {
+            e.putBoolean(key, false);
+        }
+        e.apply();
+        // 长按入口：打开后连设置页一起进入「展开最大范围」态
+        expandLayoutOnShow = true;
+        showLayoutDialog();
+    }
+
     private void showLayoutDialog() {
         // 每次重建设置面板都重新登记分组，清掉上一版的引用
         settingsCollapsers.clear();
@@ -7773,8 +7846,12 @@ public class FreezeListActivity extends BaseActivity {
 
             @Override
             public void onStopTrackingTouch(SeekBar sb) {
-                prefs().edit().putInt(KEY_ICON_DP, iconDp)
-                        .putBoolean(KEY_ICON_MANUAL, true).apply();
+                prefs().edit().putInt(lk(KEY_ICON_DP), iconDp)
+                        .putBoolean(lk(KEY_ICON_MANUAL), true).apply();
+                if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                    prefs().edit().putInt(otherKey(KEY_ICON_DP), iconDp)
+                            .putBoolean(otherKey(KEY_ICON_MANUAL), true).apply();
+                }
             }
         });
         sizeLabel.setText("图标大小：" + (sizeBar.getProgress() + iconSizeMinDp()) + "dp");
@@ -7922,6 +7999,9 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 fabSizeDp = FAB_SIZE_MIN + p;
                 prefs().edit().putInt(lk(KEY_FAB_SIZE), fabSizeDp).apply();
+                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                    prefs().edit().putInt(otherKey(KEY_FAB_SIZE), fabSizeDp).apply();
+                }
                 sizeValue.setText("按钮大小：" + fabSizeDp + "dp");
                 applyFabSize();
                 fabGroup.post(FreezeListActivity.this::applyFabPosition);
@@ -7958,6 +8038,9 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 fabDx = xMinDp + p;
                 prefs().edit().putInt(lk(KEY_FAB_DX), fabDx).apply();
+                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                    prefs().edit().putInt(otherKey(KEY_FAB_DX), fabDx).apply();
+                }
                 refreshFabLabels.run();
                 applyFabPosition();
             }
@@ -7982,6 +8065,9 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 fabDy = p;
                 prefs().edit().putInt(lk(KEY_FAB_DY), fabDy).apply();
+                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                    prefs().edit().putInt(otherKey(KEY_FAB_DY), fabDy).apply();
+                }
                 refreshFabLabels.run();
                 applyFabPosition();
                 // 按钮上下移动后，展开范围的上限与当前高度一起实时收放
@@ -8252,6 +8338,13 @@ public class FreezeListActivity extends BaseActivity {
                 prefs().edit()
                         .putInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE, 100 - p)
                         .apply();
+                // 底部按钮透明度：开了同步就一起写另一形态（半屏 panel_fab_surface ↔ 全屏 full_fab_surface）
+                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                    prefs().edit()
+                            .putInt(panelMode ? KEY_FULL_FAB_SURFACE : "panel_" + KEY_FAB_SURFACE,
+                                    100 - p)
+                            .apply();
+                }
                 fabAlphaLabel.setText("透明度：" + p + "%");
                 if (panelMode) {
                     applyFabSurface();
@@ -8271,6 +8364,10 @@ public class FreezeListActivity extends BaseActivity {
         // 按钮底板透明度也归「底部冻结按钮」这一组，跟着标题一起折叠
         fabBody.addView(fabAlphaLabel);
         fabBody.addView(fabAlphaBar);
+        fabBody.addView(syncEntry(KEY_SYNC_FAB,
+                        "将底部按钮透明度调节同步" + (panelMode ? "全屏" : "半屏"),
+                        this::copyFabGroupFromOther),
+                0);
 
         // 手势功能：标题可点开说明；下面是长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的
         // 触发距离滑块，实时生效；整块最后插到「标签」上面
@@ -8495,8 +8592,12 @@ public class FreezeListActivity extends BaseActivity {
                 gridColumns = p + 4;
                 // 列数变化 → 图标按新列数自适应重算
                 iconManual = false;
-                prefs().edit().putInt(KEY_COLUMNS, gridColumns)
-                        .putBoolean(KEY_ICON_MANUAL, false).apply();
+                prefs().edit().putInt(lk(KEY_COLUMNS), gridColumns)
+                        .putBoolean(lk(KEY_ICON_MANUAL), false).apply();
+                if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                    prefs().edit().putInt(otherKey(KEY_COLUMNS), gridColumns)
+                            .putBoolean(otherKey(KEY_ICON_MANUAL), false).apply();
+                }
                 colsValue.setText("列数：" + gridColumns + " 列");
                 int min = iconSizeMinDp();
                 sizeBar.setMax(Math.max(1, iconSizeMaxDp() - min));
@@ -8520,12 +8621,32 @@ public class FreezeListActivity extends BaseActivity {
         ias.addView(collapsibleHead(iconAdjustTitle, iconBody,
                 KEY_SETTINGS_ICON_COLLAPSED));
         ias.addView(iconBody);
+        // 主题图标样式：点开选系统默认 / 当前主题图标，切换后立即重读图标
+        final TextView themeIconEntry = new TextView(this);
+        themeIconEntry.setText(themeIconEntryText());
+        themeIconEntry.setTextSize(11);
+        themeIconEntry.setTextColor(getColor(R.color.text_secondary));
+        // 行距与「自定义壁纸」下面的「当前：未设置 / 将壁纸同步…」两行一致：
+        // 这一行不加上下边距，下一行（冻结图标样式）自己带 4dp 上边距
+        themeIconEntry.setPadding(0, 0, 0, 0);
+        // 点击直接刷新图标（换完主题图标后不用重新进设置）；长按才切换系统默认 / 当前主题图标
+        themeIconEntry.setOnClickListener(v -> {
+            reloadIconsAfterThemeChange();
+            toast("图标已刷新");
+        });
+        themeIconEntry.setOnLongClickListener(v -> {
+            showIconThemeDialog();
+            return true;
+        });
+        layoutThemeIconEntry = themeIconEntry;
+        iconBody.addView(themeIconEntry);
         // 冻结图标样式：与「关联应用」那一行同字号的入口，点开选全彩 / 一半灰度一半彩色
         final TextView iconStyleEntry = new TextView(this);
         iconStyleEntry.setText(iconStyleEntryText());
         iconStyleEntry.setTextSize(11);
         iconStyleEntry.setTextColor(getColor(R.color.text_secondary));
-        iconStyleEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        // 行距与上一行（更换图标后点击刷新 → 冻结图标样式）保持一致：上下各 4dp
+        iconStyleEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 4));
         iconStyleEntry.setOnClickListener(v -> showIconStyleDialog());
         layoutIconStyleEntry = iconStyleEntry;
         iconBody.addView(iconStyleEntry);
@@ -8533,6 +8654,13 @@ public class FreezeListActivity extends BaseActivity {
         iconBody.addView(colsBar);
         iconBody.addView(sizeLabel);
         iconBody.addView(sizeBar);
+        // 列数/图标大小的同步入口：紧跟在「冻结图标样式」下面，上边距为 0 以便两行紧挨
+        TextView iconSyncEntry = syncEntry(KEY_SYNC_ICON,
+                "将列数与图标大小同步" + (panelMode ? "全屏" : "半屏"),
+                this::copyIconGroupFromOther);
+        iconSyncEntry.setPadding(0, 0, 0, Ui.dp(this, 8));
+        iconBody.addView(iconSyncEntry,
+                iconBody.indexOfChild(iconStyleEntry) + 1);
         box.addView(ias, Math.max(0, box.indexOfChild(fabHead)));
         // 手势触发距离整栏放在「标签（查看说明）」上面（tabTitle 已包进 tabHead，按整块定位）
         box.addView(gestureSec, Math.max(0, box.indexOfChild(tabHead)));
@@ -8737,6 +8865,78 @@ public class FreezeListActivity extends BaseActivity {
                 KEY_SETTINGS_OPACITY_COLLAPSED));
         its.addView(itsBody);
 
+        // 设置页透明度：面板本身和它的所有二级弹窗一起变，半屏/全屏各记一份
+        final TextView settingsLabel = new TextView(this);
+        settingsLabel.setTextSize(11);
+        settingsLabel.setTextColor(getColor(R.color.text_secondary));
+        final SeekBar settingsBar = new SeekBar(this);
+        settingsBar.setMax(100);
+        int settingsStart = settingsSurfacePct();
+        settingsBar.setProgress(settingsStart);
+        settingsLabel.setText(settingsSurfaceText(settingsStart));
+        settingsBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                prefs().edit().putInt(lk(KEY_SETTINGS_SURFACE), p).apply();
+                if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                    prefs().edit().putInt(otherKey(KEY_SETTINGS_SURFACE), p).apply();
+                }
+                settingsLabel.setText(settingsSurfaceText(p));
+                applySettingsSurfaceAlpha(settingsSurfaceRoot);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+        itsBody.addView(settingsLabel);
+        itsBody.addView(settingsBar);
+
+        // 列表图标透明度：0 不透明，越大越透明；只影响列表格子里的应用图标
+        final TextView iconAlphaLabel = new TextView(this);
+        iconAlphaLabel.setTextSize(11);
+        iconAlphaLabel.setTextColor(getColor(R.color.text_secondary));
+        iconAlphaLabel.setText(iconAlphaText(iconAlpha));
+        final SeekBar iconAlphaBar = new SeekBar(this);
+        iconAlphaBar.setMax(100);
+        iconAlphaBar.setProgress(iconAlpha);
+        iconAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                iconAlpha = clampInt(p, 0, 100);
+                prefs().edit().putInt(lk(KEY_ICON_ALPHA), iconAlpha).apply();
+                if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                    prefs().edit().putInt(otherKey(KEY_ICON_ALPHA), iconAlpha).apply();
+                }
+                iconAlphaLabel.setText(iconAlphaText(iconAlpha));
+                // 可见格子与滑出屏幕的缓存格子都要重绑，否则滚回来还是旧透明度
+                rebindCells();
+                if (gridAdapter != null) {
+                    gridAdapter.rebindAllCached();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+        itsBody.addView(iconAlphaLabel);
+        itsBody.addView(iconAlphaBar);
+
         if (panelMode) {
             // 半屏外侧（上方遮罩）透明度：越大越透明，背后页面看得越清
             final TextView outerLabel = new TextView(this);
@@ -8787,6 +8987,10 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(lk(KEY_SURFACE), 100 - p).apply();
+                    // 半屏面板透明度 ↔ 全屏背景：开了同步就一起写
+                    if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                        prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
+                    }
                     innerLabel.setText("半屏面板透明度：" + p + "%");
                     applyPanelSurface();
                 }
@@ -8819,6 +9023,10 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
+                    // 全屏背景 ↔ 半屏面板透明度：开了同步就一起写
+                    if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                        prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
+                    }
                     bgLabel.setText("全屏背景：" + p + "%");
                     // 真正改窗口底板 alpha 与模糊的是 applyFullscreenSurface（整页背景唯一出口）
                     applyFullscreenSurface();
@@ -8903,6 +9111,11 @@ public class FreezeListActivity extends BaseActivity {
             itsBody.addView(searchLabel);
             itsBody.addView(searchBar);
         }
+        // 界面透明度整组的同步开关：紧跟标题，半屏外侧、横幅、搜索框是形态专属，不参与同步
+        itsBody.addView(syncEntry(KEY_SYNC_SURFACE,
+                        "将界面透明度调节同步" + (panelMode ? "全屏" : "半屏"),
+                        this::copySurfaceGroupFromOther),
+                0);
         box.addView(its, Math.max(0, box.indexOfChild(fabHead)));
 
         // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
@@ -8985,6 +9198,7 @@ public class FreezeListActivity extends BaseActivity {
                 & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
                 == android.content.res.Configuration.UI_MODE_NIGHT_YES;
         root.setElevation(Ui.dp(this, night ? 18 : 10));
+        settingsSurfaceRoot = root;
 
         // 标题行：右侧加一个高度调节入口，不挤占「完成」与关闭位置
         LinearLayout header = new LinearLayout(this);
@@ -9332,15 +9546,26 @@ public class FreezeListActivity extends BaseActivity {
             layoutOpenY = Integer.MIN_VALUE;
             layoutDialog = null;
             panelOpenHeightDp = -1;
+            settingsSurfaceRoot = null;
         });
         // 只把勾选框里的方块画小一点：字体、行距、文字位置都保持原样
         shrinkCheckBoxes(box);
         dialog.show();
-        // 记住设置面板卡片的真实左边缘，供二级弹窗对齐（面板可能被拖动过）
+        if (expandLayoutOnShow) {
+            expandLayoutOnShow = false;
+            // 等首帧几何落定后再进「展开最大范围」，否则会按未测量的高度算错位置
+            toggleRow.postDelayed(toggleRow::performClick, 120);
+        }
+        // 记住设置面板卡片的真实左边缘与宽度，供二级弹窗对齐（面板可能被拖动过）
         android.view.Window shown = dialog.getWindow();
         if (shown != null) {
             settingsPanelLeft = shown.getAttributes().x + shadowPad;
         }
+        root.post(() -> {
+            if (root.getWidth() > 0) {
+                settingsPanelCardWidth = root.getWidth();
+            }
+        });
         // 弹窗内容比可视区高，防止某个控件抢焦点把滚动区带到底部
         dialogScroll.post(() -> dialogScroll.scrollTo(0, 0));
     }
@@ -9433,6 +9658,47 @@ public class FreezeListActivity extends BaseActivity {
             text += "，" + paused + " 组已暂停";
         }
         return text + "）";
+    }
+
+    /** 「主题图标样式」这一行的文字：它本质是刷新入口，当前样式在长按弹窗里选。 */
+    private String themeIconEntryText() {
+        return "· 更换图标后点击刷新";
+    }
+
+    /** 主题图标样式：系统默认 / 当前主题图标；选完立即作废缓存并重载列表图标。 */
+    private void showIconThemeDialog() {
+        final int current = AppIconCache.getMode(this) == AppIconCache.MODE_THEME ? 1 : 0;
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle("主题图标样式")
+                .setSingleChoiceItems(ICON_THEME_MODE_NAMES, current, (dialog, which) -> {
+                    dialog.dismiss();
+                    // 即使选的是当前项也重载一次：换完主题后点一下就能手动刷新图标
+                    AppIconCache.setMode(this, which == 1
+                            ? AppIconCache.MODE_THEME : AppIconCache.MODE_SYSTEM);
+                    if (layoutThemeIconEntry != null) {
+                        layoutThemeIconEntry.setText(themeIconEntryText());
+                    }
+                    reloadIconsAfterThemeChange();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        d.show();
+        Ui.roundAlertDialog(d);
+        applySettingsAlignment(d);
+    }
+
+    /** 换图标来源后：清两级缓存、丢掉内存里已渲染的旧图标，再整表重取。 */
+    private void reloadIconsAfterThemeChange() {
+        // 点击刷新时模式可能没变，这里主动作废缓存，保证一定重新解码
+        AppIconCache.clear(this);
+        for (Item it : items) {
+            it.icon = null;
+        }
+        if (gridAdapter != null) {
+            gridAdapter.rebindAllCached();
+        }
+        items.clear();
+        reload();
     }
 
     /** 「冻结图标样式」行显示的当前选项。 */
@@ -10093,8 +10359,17 @@ public class FreezeListActivity extends BaseActivity {
 
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.drawable.ic_launcher);
-        // 长按 logo：一键导出诊断包（含设备/ROM、偏好、最近 5 分钟 logcat、
-        // 最近一次冻结命令），不再单独做「日志包」，一份就够排查不同设备的问题
+        // logo 圆角：按圆角矩形裁切，与弹窗卡片的圆角观感一致
+        final int logoRadius = Ui.dp(this, 14);
+        icon.setClipToOutline(true);
+        icon.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override
+            public void getOutline(View v, android.graphics.Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), logoRadius);
+            }
+        });
+        // 长按 logo：一键导出诊断包（设备/ROM、设置快照、logcat+hook tag、
+        // 名单冻结状态、hook 配置真值、LSPosed 作用域、操作流水），不再单独做「日志包」
         icon.setOnLongClickListener(v -> {
             exportDiagnostics();
             return true;
@@ -10143,6 +10418,7 @@ public class FreezeListActivity extends BaseActivity {
                 + "· 半屏调节：开启调节后，拖动顶部小白条改高度；\n"
                 + "· 全屏与半屏美化：自定义壁纸、透明度等；\n"
                 + "· 冻结图标样式：全彩、全灰，左灰右彩等八种半灰半彩；\n"
+                + "· 主题图标样式：可选系统默认图标或当前主题图标，切换后自动刷新列表图标；\n"
                 + "· 保留桌面图标（转暂停）：冻结转为暂停模式，桌面图标保留并置灰，点击图标可继续打开；\n"
                 + "· 划卡冻结：标签应用划掉最近任务卡片即冻结；\n"
                 + "· 锁屏冻结：锁屏后按标签页冻结，可设定时间；\n"
@@ -10170,7 +10446,8 @@ public class FreezeListActivity extends BaseActivity {
         close.setTypeface(null, android.graphics.Typeface.BOLD);
         close.setTextColor(getColor(R.color.blue));
         close.setGravity(Gravity.CENTER);
-        close.setPadding(0, Ui.dp(this, 14), 0, Ui.dp(this, 12));
+        // 底栏高度与设置面板底部（倒三角那一行：28dp 图形 + 上下各 2dp）保持一致
+        close.setPadding(0, 0, 0, 0);
 
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
@@ -10196,7 +10473,7 @@ public class FreezeListActivity extends BaseActivity {
         shell.addView(scroller, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         shell.addView(close, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 32)));
 
         // 高度按可用区算：从状态栏下沿一直铺到冻结按钮那一条底栏的上沿，
         // 内容超出时由内部 ScrollView 滚动（隐藏状态栏时窗口顶部就是屏顶）。
@@ -10227,6 +10504,7 @@ public class FreezeListActivity extends BaseActivity {
         close.setOnClickListener(v -> d.dismiss());
         close.setFocusable(false);
         d.show();
+        applySettingsSurfaceAlpha(d);
         // 内容超高时默认可能被焦点带到尾部，这里强制回到顶部
         scroller.post(() -> scroller.scrollTo(0, 0));
         if (w != null) {
@@ -10271,7 +10549,8 @@ public class FreezeListActivity extends BaseActivity {
 
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
-        int widthPx = Math.min(Math.round(screenW * 0.86f), Ui.dp(this, 340));
+        // 与「（查看说明）」弹窗同宽：复用设置面板的宽度（屏宽减 104dp、上限 304dp）
+        int widthPx = settingsDialogWidth();
 
         final int radiusPx = Ui.dp(this, 24);
         LinearLayout shell = new LinearLayout(this);
@@ -10303,13 +10582,9 @@ public class FreezeListActivity extends BaseActivity {
         close.setOnClickListener(v -> d.dismiss());
         close.setFocusable(false);
         d.show();
-        if (w != null) {
-            android.view.WindowManager.LayoutParams lp = w.getAttributes();
-            lp.width = widthPx;
-            lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
-            lp.gravity = Gravity.CENTER;
-            w.setAttributes(lp);
-        }
+        applySettingsSurfaceAlpha(d);
+        // 与设置面板、「（查看说明）」弹窗同宽，并保持居中
+        applySettingsWidthCentered(d);
         // 名单多时收在屏幕 70% 以内，超出部分交给内部滚动
         shell.post(() -> {
             int maxH = Math.round(screenH * 0.70f);
@@ -10395,6 +10670,8 @@ public class FreezeListActivity extends BaseActivity {
                 writeDiagFile(new File(cache, "prefs.txt"), buildDiagPrefs());
                 writeDiagFile(new File(cache, "logcat_5min.txt"), collectDiagLogcat());
                 writeDiagFile(new File(cache, "last_pm.txt"), buildDiagLastPm());
+                writeDiagFile(new File(cache, "freeze_state.txt"), buildDiagFreezeState());
+                writeDiagFile(new File(cache, "freeze_actions.txt"), buildDiagActions());
                 writeDiagFile(new File(cache, "说明.txt"), buildDiagReadme());
                 File zip = new File(getCacheDir(), name);
                 zipDiagDir(cache, zip);
@@ -10418,9 +10695,10 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 compactCard("诊断包已导出", f.getAbsolutePath()
-                                + "\n\n包含：设备与 ROM 信息、凚版本与偏好键值（名单只记数量）、"
-                                + "最近 5 分钟 logcat、最近一次冻结/解冻命令与返回。"
-                                + "\n不收集：账号、IMEI、手机号、完整应用名单原文、通讯录权限。",
+                                + "\n\n包含：设备与 ROM 信息、设置快照、最近 5 分钟 logcat"
+                                + "（含 hook 专用 tag）、名单应用冻结状态、hook 配置真值、"
+                                + "LSPosed 作用域、最近 50 条操作流水。"
+                                + "\n不收集：账号、IMEI、手机号、通讯录权限；不含名单外的应用。",
                         null, new String[]{"关闭", "复制路径"}, new Runnable[]{null, () -> {
                             android.content.ClipboardManager cm = (android.content.ClipboardManager)
                                     getSystemService(CLIPBOARD_SERVICE);
@@ -10576,6 +10854,9 @@ public class FreezeListActivity extends BaseActivity {
         if (v == null) {
             return "null";
         }
+        if (KEY_DIAG_HIST.equals(key)) {
+            return "（操作流水见 freeze_actions.txt）";
+        }
         if (v instanceof Set) {
             return ((Set<?>) v).size() + " 项（内容略）";
         }
@@ -10642,23 +10923,329 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 最近 5 分钟 logcat；-T 时间过滤不可用时退回最近 3000 行。 */
+    /**
+     * 最近 5 分钟 logcat，并额外摘出 hook 专用 tag。
+     * Android 16/17 的 logcat CLI 有变化（-d 可能不被接受），这里按候选命令逐个探测，
+     * 都不可用时退回流式抓 6 秒；--help 原文一并写进文件，便于下次调整参数。
+     */
     private String collectDiagLogcat() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                .format(new Date())).append('\n');
+        PrivShell.Result help = PrivShell.exec("logcat --help 2>&1 | head -60", 15);
+        sb.append("\n[logcat --help]\n").append(oneLineDiag(help, 4000)).append('\n');
+
         String since = new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
                 .format(new Date(System.currentTimeMillis() - 5 * 60 * 1000L));
-        PrivShell.Result r = PrivShell.exec(
-                "logcat -d -v threadtime -T '" + since + "' 2>&1", 40);
-        String out = r == null || r.out == null ? "" : r.out;
-        if (out.trim().isEmpty() || (r != null && r.code != 0)) {
-            PrivShell.Result tail = PrivShell.exec("logcat -d -v threadtime -t 3000 2>&1", 40);
-            out = "（时间过滤不可用，退回抓取最近 3000 行）\n"
-                    + (tail == null || tail.out == null ? "" : tail.out);
+        String[] candidates = {
+                "logcat -d -v threadtime -T '" + since + "' 2>&1",
+                "logcat -d -v threadtime -t 4000 2>&1",
+                "logcat -d -b all -t 4000 2>&1"
+        };
+        String full = null;
+        String used = null;
+        for (String cmd : candidates) {
+            PrivShell.Result r = PrivShell.exec(cmd, 45);
+            if (r != null && !r.timeout && usableLogcat(r.out)) {
+                full = r.out;
+                used = cmd;
+                break;
+            }
         }
-        int max = 2 * 1024 * 1024;
-        if (out.length() > max) {
-            out = out.substring(out.length() - max);
+        if (full == null) {
+            // 最老也最通用的写法：流式抓 6 秒后由 timeout 结束
+            PrivShell.Result s = PrivShell.exec("timeout 6 logcat -v threadtime 2>&1", 20);
+            if (s != null && usableLogcat(s.out)) {
+                full = s.out;
+                used = "timeout 6 logcat -v threadtime（流式兜底）";
+            }
         }
-        return out;
+        if (full == null) {
+            sb.append("\n[抓取失败]\n所有候选命令都不可用（见上方 --help 原文），"
+                    + "请在凚 里复现一次冻结/解冻后再导出。\n");
+            return sb.toString();
+        }
+        sb.append("\n[使用命令] ").append(used).append('\n');
+
+        // 专用 tag 摘要：锁屏/划卡 hook、暂停、配置读取，排查时先看这一块
+        StringBuilder hits = new StringBuilder();
+        int hitCount = 0;
+        for (String line : full.split("\r?\n")) {
+            if (line.contains("JinLockFreeze") || line.contains("JinSwipeFreeze")
+                    || line.contains("JinFreeze") || line.contains("JinHookConfig")
+                    || line.contains("JinPm") || line.contains("com.jin.freeze")
+                    || line.contains("suspend") || line.contains("disable-user")) {
+                hits.append(line).append('\n');
+                hitCount++;
+            }
+        }
+        sb.append("\n[专用 tag 命中 ").append(hitCount).append(" 行]\n");
+        sb.append(hitCount == 0
+                ? "（没有命中：说明这段时间 hook 没打日志，或复现操作发生在 5 分钟之前）\n"
+                : tailLines(hits.toString(), 400));
+        sb.append("\n[完整日志尾部]\n").append(tailChars(full, 1500 * 1024)).append('\n');
+        return sb.toString();
+    }
+
+    private static boolean usableLogcat(String out) {
+        if (out == null || out.trim().isEmpty()) {
+            return false;
+        }
+        String head = (out.length() > 400 ? out.substring(0, 400) : out).toLowerCase(Locale.ROOT);
+        return !(head.contains("unexpected argument") || head.contains("unknown option")
+                || head.contains("usage: logcat") || head.contains("invalid option"));
+    }
+
+    private static String tailLines(String s, int maxLines) {
+        String[] lines = s.split("\n");
+        StringBuilder sb = new StringBuilder();
+        for (int i = Math.max(0, lines.length - maxLines); i < lines.length; i++) {
+            sb.append(lines[i]).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String tailChars(String s, int max) {
+        return s.length() <= max ? s : s.substring(s.length() - max);
+    }
+
+    /**
+     * 冻结链路真值：名单应用 enabled/suspended 快照 + hook 配置文件 +
+     * LSPosed 心跳 + 模块作用域。用于区分「没触发」和「触发了但失败」。
+     */
+    private String buildDiagFreezeState() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                .format(new Date())).append('\n');
+        sb.append("凚版本: ").append(aboutVersionText()).append('\n');
+
+        sb.append("\n【1. 名单应用 enabled/suspended 快照】\n");
+        sb.append("说明: enabled=false 是停用（桌面图标消失）；suspended=true 是暂停；\n");
+        sb.append("      enabled设置=DISABLED_USER 就是 pm disable-user 的结果。\n");
+        Set<String> raw = prefs().getStringSet(KEY_PKGS, Collections.emptySet());
+        List<String> keys = new ArrayList<>(raw);
+        Collections.sort(keys);
+        sb.append("名单条目: ").append(keys.size()).append('\n');
+        PackageManager pm = getPackageManager();
+        int susp = 0, disabled = 0, normal = 0, missing = 0, otherUser = 0;
+        int shown = 0;
+        for (String key : keys) {
+            String pkg = packagePart(key);
+            int uid = userIdPart(key);
+            String label = labelFor(key);
+            boolean installed = true;
+            boolean enabled = true;
+            String setting = "?";
+            Boolean suspended = null;
+            try {
+                ApplicationInfo ai = Build.VERSION.SDK_INT >= 24
+                        ? pm.getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES)
+                        : pm.getApplicationInfo(pkg, 0);
+                enabled = ai.enabled;
+                try {
+                    setting = enabledSettingName(pm.getApplicationEnabledSetting(pkg));
+                } catch (Throwable ignore) {
+                }
+                if (uid == 0) {
+                    try {
+                        suspended = pm.isPackageSuspended(pkg);
+                    } catch (Throwable ignore) {
+                    }
+                }
+            } catch (PackageManager.NameNotFoundException e) {
+                installed = false;
+            }
+            if (!installed) {
+                missing++;
+            } else if (uid != 0) {
+                otherUser++;
+            } else if (Boolean.TRUE.equals(suspended)) {
+                susp++;
+            } else if (!enabled) {
+                disabled++;
+            } else {
+                normal++;
+            }
+            if (shown < 200) {
+                sb.append("  ").append(key).append(" | ").append(label)
+                        .append(" | 安装=").append(installed ? "是" : "否")
+                        .append(" | enabled=").append(installed ? String.valueOf(enabled) : "-")
+                        .append(" | 设置=").append(setting)
+                        .append(" | suspended=").append(suspended == null ? "-" : String.valueOf(suspended))
+                        .append('\n');
+                shown++;
+            }
+        }
+        if (keys.size() > shown) {
+            sb.append("  …（还有 ").append(keys.size() - shown).append(" 条未展开）\n");
+        }
+        sb.append("汇总: 暂停 ").append(susp).append("，停用 ").append(disabled)
+                .append("，正常 ").append(normal).append("，未安装 ").append(missing)
+                .append("，分身 ").append(otherUser).append('\n');
+
+        sb.append("\n【2. hook 配置文件（system_server 实际读取的真值）】\n");
+        String cfgPath = "/data/system/jin_freeze_list.json";
+        sb.append("状态: ").append(oneLineDiag(PrivShell.exec(
+                "stat -c '大小=%s 字节  修改=%y' " + cfgPath + " 2>&1", 10), 300)).append('\n');
+        PrivShell.Result cfg = PrivShell.exec("cat " + cfgPath + " 2>&1", 20);
+        String rawCfg = cfg == null || cfg.out == null ? "" : cfg.out.trim();
+        if (rawCfg.isEmpty()) {
+            sb.append("内容: （空）\n");
+        } else if (rawCfg.toLowerCase(Locale.ROOT).contains("no such file")) {
+            sb.append("内容: 文件不存在 —— 划卡/锁屏冻结一定不会生效（凚 没能把配置写进 /data/system）。\n");
+        } else {
+            try {
+                JSONObject o = new JSONObject(rawCfg);
+                JSONArray pk = o.optJSONArray("packages");
+                JSONObject tags = o.optJSONObject("tags");
+                JSONArray sel = o.optJSONArray("selected");
+                JSONArray lockTags = o.optJSONArray("lock_tags");
+                sb.append("enabled(划卡冻结)=").append(o.optBoolean("enabled")).append('\n');
+                sb.append("lock_enabled(锁屏冻结)=").append(o.optBoolean("lock_enabled")).append('\n');
+                sb.append("lock_delay(锁屏延时秒)=").append(o.optInt("lock_delay")).append('\n');
+                sb.append("packages=").append(pk == null ? 0 : pk.length()).append(" 个\n");
+                sb.append("tags=").append(tags == null ? 0 : tags.length()).append(" 个应用有标签\n");
+                sb.append("selected(划卡标签)=")
+                        .append(sel == null ? "未设置（全选）" : sel.length() + " 个").append('\n');
+                sb.append("lock_tags(锁屏标签)=")
+                        .append(lockTags == null ? "未设置（全选）" : lockTags.length() + " 个").append('\n');
+            } catch (Exception e) {
+                sb.append("解析失败（").append(e.getClass().getSimpleName())
+                        .append("），原文前 2000 字:\n").append(cutDiagText(rawCfg, 2000)).append('\n');
+            }
+        }
+        sb.append("App 侧偏好: lock_freeze_enabled=")
+                .append(String.valueOf(prefs().getAll().get("lock_freeze_enabled")))
+                .append("，lock_freeze_delay_seconds=")
+                .append(String.valueOf(prefs().getAll().get("lock_freeze_delay_seconds")))
+                .append("，swipe_freeze_enabled=")
+                .append(String.valueOf(prefs().getAll().get("swipe_freeze_enabled"))).append('\n');
+        sb.append("判定: 两者不一致时以文件为准——system_server 只认文件；开关没写进文件就不会生效。\n");
+
+        sb.append("\n【3. LSPosed 心跳（证明 hook 进了 system_server）】\n");
+        String hb = "/data/system/jin_freeze_hb";
+        sb.append("状态: ").append(oneLineDiag(PrivShell.exec(
+                "stat -c '大小=%s 字节  修改=%y' " + hb + " 2>&1", 10), 300)).append('\n');
+        sb.append("内容: ").append(oneLineDiag(
+                PrivShell.exec("cat " + hb + " 2>&1 | head -c 500", 10), 500)).append('\n');
+        sb.append("说明: 心跳只证明模块本体进了 system_server；\n"
+                + "      锁屏冻结是否注册成功要看 logcat 里的 JinLockFreeze（已注册 / 等待 AMS 就绪超时）。\n");
+
+        sb.append("\n【4. LSPosed 作用域（锁屏/划卡冻结的前置条件）】\n");
+        sb.append("说明: 作用域必须勾「系统框架（android）」，否则锁屏/划卡冻结不会触发。\n");
+        sb.append("目录:\n").append(indentDiag(PrivShell.exec(
+                "ls -ld /data/adb/lspd /data/adb/lspd/config /data/adb/modules/zygisk_lsposed 2>&1", 10)))
+                .append('\n');
+        String scopeCmd = "for f in /data/adb/lspd/config/modules.list /data/adb/lspd/config/modules_config.db; do "
+                + "[ -f \"$f\" ] && { echo \"== $f\"; strings \"$f\" 2>/dev/null "
+                + "| grep -n -A 40 -m1 'com.jin.freeze' | head -45; }; done 2>&1";
+        PrivShell.Result scope = PrivShell.exec(scopeCmd, 20);
+        String scopeOut = scope == null || scope.out == null ? "" : scope.out;
+        sb.append("模块条目 + 后续 40 个字符串:\n").append(indentDiag(scope)).append('\n');
+        boolean hasAndroid = false;
+        for (String line : scopeOut.split("\n")) {
+            String t = line.trim();
+            int idx = t.lastIndexOf(':');
+            if (idx > 0 && "android".equals(t.substring(idx + 1).trim())) {
+                hasAndroid = true;
+                break;
+            }
+        }
+        if (scopeOut.trim().isEmpty()) {
+            sb.append("判定: 无法读取（modules.list 不存在或为二进制），请在 LSPosed 里手动确认作用域。\n");
+        } else if (hasAndroid) {
+            sb.append("判定: 作用域包含 android（系统框架），锁屏冻结前置条件满足。\n");
+        } else {
+            sb.append("判定: 未发现 android —— 很可能没勾「系统框架」，锁屏冻结不会触发。\n");
+        }
+        return sb.toString();
+    }
+
+    /** 最近 20 条冻结/解冻/暂停操作流水，新 → 旧。 */
+    private String buildDiagActions() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("最近操作流水（最多 50 条，新 → 旧）\n");
+        sb.append("通道: 单次pm=pm disable-user/enable；单次暂停/降级暂停/批量暂停=pm suspend；\n");
+        sb.append("      批量脚本=批量冻结/解冻脚本。\n\n");
+        JSONArray arr = null;
+        try {
+            arr = new JSONArray(prefs().getString(KEY_DIAG_HIST, "[]"));
+        } catch (Exception ignored) {
+        }
+        boolean hasAppOps = arr != null && arr.length() > 0;
+        if (!hasAppOps) {
+            sb.append("（还没有手动操作记录）\n");
+        }
+        SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+        for (int i = 0; hasAppOps && i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null) {
+                continue;
+            }
+            sb.append('#').append(i + 1).append("  ")
+                    .append(fmt.format(new Date(o.optLong("t", 0))))
+                    .append("  通道: ").append(o.optString("ch", "?"))
+                    .append("  退出码: ").append(o.optInt("code", -1));
+            if (o.optBoolean("to", false)) {
+                sb.append("（超时）");
+            }
+            sb.append('\n').append("命令:\n").append(o.optString("cmd", "")).append('\n');
+            String out = o.optString("out", "");
+            if (!out.isEmpty()) {
+                sb.append("返回:\n").append(out).append('\n');
+            }
+            sb.append('\n');
+        }
+        sb.append("\n【自动冻结流水（hook 侧 /data/system/jin_freeze_ops.log 最近 40 行）】\n");
+        sb.append("说明: 锁屏冻结/划卡冻结由 system_server 内的 hook 执行，每次批量只记 1 行；\n");
+        sb.append("      格式「时间 | 原因 | 共 N，成功 M，失败: 包名…」，失败明细即被系统拒绝的应用。\n");
+        PrivShell.Result ops = PrivShell.exec(
+                "tail -40 /data/system/jin_freeze_ops.log 2>&1", 10);
+        String opsOut = ops == null || ops.out == null ? "" : ops.out.trim();
+        if (opsOut.isEmpty()) {
+            sb.append("（没有记录：到目前还没发生过锁屏/划卡自动冻结）\n");
+        } else if (opsOut.toLowerCase(Locale.ROOT).contains("no such file")) {
+            sb.append("（文件不存在：到目前还没发生过锁屏/划卡自动冻结，或 hook 未写入）\n");
+        } else {
+            sb.append(opsOut).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String oneLineDiag(PrivShell.Result r, int max) {
+        if (r == null || r.out == null) {
+            return "（无输出）";
+        }
+        String s = r.out.trim().replace('\n', ' ');
+        return s.isEmpty() ? "（空）" : cutDiagText(s, max);
+    }
+
+    private static String indentDiag(PrivShell.Result r) {
+        if (r == null || r.out == null) {
+            return "  （无输出）";
+        }
+        String s = r.out.trim();
+        if (s.isEmpty()) {
+            return "  （空）";
+        }
+        return "  " + cutDiagText(s, 3000).replace("\n", "\n  ");
+    }
+
+    private static String enabledSettingName(int v) {
+        switch (v) {
+            case PackageManager.COMPONENT_ENABLED_STATE_DEFAULT:
+                return "DEFAULT";
+            case PackageManager.COMPONENT_ENABLED_STATE_ENABLED:
+                return "ENABLED";
+            case PackageManager.COMPONENT_ENABLED_STATE_DISABLED:
+                return "DISABLED";
+            case PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER:
+                return "DISABLED_USER";
+            case PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED:
+                return "DISABLED_UNTIL_USED";
+            default:
+                return String.valueOf(v);
+        }
     }
 
     /** 最近一次冻结/解冻的命令与返回（单次操作与批量脚本都会记录）。 */
@@ -10679,12 +11266,21 @@ public class FreezeListActivity extends BaseActivity {
         return "凚 诊断包\n"
                 + "==========\n\n"
                 + "内容：\n"
-                + "1. device_info.txt  设备与 ROM 信息（Build、屏幕、root/Shizuku、LSPosed、桌面包名版本、getprop 节选）\n"
-                + "2. prefs.txt        凚 版本与偏好键值（名单/标签/白名单/关联只记数量，其它包名做短哈希）\n"
-                + "3. logcat_5min.txt  最近 5 分钟 logcat（-T 不可用时退回最近 3000 行）\n"
-                + "4. last_pm.txt      最近一次冻结/解冻的命令、返回与时间\n\n"
+                + "1. device_info.txt   设备与 ROM（Build、屏幕、root/Shizuku、LSPosed、桌面版本、getprop 节选）\n"
+                + "2. prefs.txt         凚 版本与设置键值（名单只记数量，其它包名做短哈希）\n"
+                + "3. logcat_5min.txt   最近 5 分钟 logcat；含 logcat --help 原文、\n"
+                + "                     JinLockFreeze/JinSwipeFreeze/JinPm 等专用 tag 摘要、完整尾部\n"
+                + "4. last_pm.txt       最近一次冻结/解冻的命令、返回与时间\n"
+                + "5. freeze_state.txt  名单应用 enabled/suspended 快照、hook 配置文件真值与修改时间、\n"
+                + "                     LSPosed 心跳、模块作用域是否含 android（系统框架）\n"
+                + "6. freeze_actions.txt 最近 50 条手动冻结/解冻/暂停流水（时间、通道、退出码、返回），\n"
+                + "                     附 hook 侧自动冻结流水（锁屏/划卡，每次批量 1 行汇总 + 失败明细）\n\n"
+                + "排查顺序建议：\n"
+                + "· 「没自动冻结」→ 先看 5 的配置文件/心跳/作用域，再看 3 的 JinLockFreeze 命中行；\n"
+                + "· 「冻结了但不是暂停」→ 看 5 的 enabled设置/suspended，区分停用与暂停；\n"
+                + "· 「操作失败」→ 看 6 的通道与退出码，定位是哪个入口失败。\n\n"
                 + "不收集：账号、IMEI、手机号、通讯录权限；\n"
-                + "完整应用名单不导出原文，只记数量或短哈希。\n"
+                + "只导出名单内应用的状态，不含名单外的应用清单。\n"
                 + "适配只需要系统行为和报错，与个人隐私无关。\n";
     }
 
@@ -10801,6 +11397,7 @@ public class FreezeListActivity extends BaseActivity {
             d.dismiss();
         });
         d.show();
+        applySettingsSurfaceAlpha(d);
         if (w != null) {
             android.view.WindowManager.LayoutParams lp = w.getAttributes();
             lp.width = imgW + cardPad * 2;
@@ -10869,12 +11466,241 @@ public class FreezeListActivity extends BaseActivity {
         return Math.min(screenW - Ui.dp(this, 104), Ui.dp(this, 304));
     }
 
+    /** 另一形态的 key：半屏加 panel_ 前缀。 */
+    private String otherKey(String base) {
+        return panelMode ? base : "panel_" + base;
+    }
+
+    /** 「同步到另一形态」入口行：与「将壁纸同步长按选项框」同款次级色小字。 */
+    private TextView syncEntry(String syncKey, Runnable copyFromOther) {
+        return syncEntry(syncKey, syncLabel(syncKey), copyFromOther);
+    }
+
+    /** 自定义文案版本：列表图标组用「将列数与图标大小同步全屏/半屏」。 */
+    private TextView syncEntry(String syncKey, String label, Runnable copyFromOther) {
+        TextView tv = new TextView(this);
+        tv.setTextSize(11);
+        tv.setTextColor(getColor(R.color.text_secondary));
+        tv.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        tv.setText(syncRowText(label, syncKey));
+        tv.setOnClickListener(v -> showSyncDialog(syncKey, label, tv, copyFromOther));
+        return tv;
+    }
+
+    private String syncLabel(String syncKey) {
+        return "是否同步" + (panelMode ? "全屏" : "半屏");
+    }
+
+    private String syncRowText(String label, String syncKey) {
+        return "· " + label + "："
+                + (prefs().getBoolean(syncKey, false) ? "同步" : "不同步");
+    }
+
+    /** 同步开关的二选一弹窗：选「同步」时把另一形态的数据拉过来并刷新当前界面。 */
+    private void showSyncDialog(String syncKey, String label, TextView entry,
+                                Runnable copyFromOther) {
+        final boolean on = prefs().getBoolean(syncKey, false);
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(label)
+                .setSingleChoiceItems(new String[]{"同步", "不同步"}, on ? 0 : 1,
+                        (dialog, which) -> {
+                            dialog.dismiss();
+                            boolean sync = which == 0;
+                            prefs().edit().putBoolean(syncKey, sync).apply();
+                            if (sync) {
+                                copyFromOther.run();
+                                afterSyncPulled();
+                            }
+                            entry.setText(syncRowText(label, syncKey));
+                        })
+                .setNegativeButton("取消", null)
+                .create();
+        d.show();
+        Ui.roundAlertDialog(d);
+        // 设置面板里的弹窗跟随面板位置移动（其他栏的备份/恢复/致谢等保持居中）
+        applySettingsAlignment(d);
+    }
+
+    /** 同步时把另一形态的数据拉过来：半屏点「同步全屏」就抄全屏的值，反之亦然。 */
+    private void copySurfaceGroupFromOther() {
+        SharedPreferences.Editor e = prefs().edit()
+                .putInt(lk(KEY_SETTINGS_SURFACE),
+                        prefs().getInt(otherKey(KEY_SETTINGS_SURFACE), 0))
+                .putInt(lk(KEY_ICON_ALPHA),
+                        prefs().getInt(otherKey(KEY_ICON_ALPHA), 0));
+        // 半屏「半屏面板透明度」对应全屏的「全屏背景」
+        if (panelMode) {
+            e.putInt("panel_" + KEY_SURFACE, prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID));
+        } else {
+            e.putInt(KEY_FULL_SURFACE, prefs().getInt("panel_" + KEY_SURFACE, SURFACE_SOLID));
+        }
+        e.apply();
+    }
+
+    /** 列数 / 图标大小 / 手动标记：从另一形态拉过来。 */
+    private void copyIconGroupFromOther() {
+        prefs().edit()
+                .putInt(lk(KEY_COLUMNS), prefs().getInt(otherKey(KEY_COLUMNS), COLUMNS))
+                .putInt(lk(KEY_ICON_DP), prefs().getInt(otherKey(KEY_ICON_DP), 52))
+                .putBoolean(lk(KEY_ICON_MANUAL),
+                        prefs().getBoolean(otherKey(KEY_ICON_MANUAL), false))
+                .apply();
+    }
+
+    /** 底部冻结按钮的大小 / 偏移 / 距底部 / 底板透明度：从另一形态拉过来。 */
+    private void copyFabGroupFromOther() {
+        SharedPreferences.Editor e = prefs().edit()
+                .putInt(lk(KEY_FAB_SIZE), prefs().getInt(otherKey(KEY_FAB_SIZE),
+                        panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT))
+                .putInt(lk(KEY_FAB_DX), prefs().getInt(otherKey(KEY_FAB_DX), 0))
+                .putInt(lk(KEY_FAB_DY), prefs().getInt(otherKey(KEY_FAB_DY),
+                        panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT));
+        if (panelMode) {
+            e.putInt("panel_" + KEY_FAB_SURFACE,
+                    prefs().getInt(KEY_FULL_FAB_SURFACE, SURFACE_SOLID));
+        } else {
+            e.putInt(KEY_FULL_FAB_SURFACE,
+                    prefs().getInt("panel_" + KEY_FAB_SURFACE, PANEL_FAB_SURFACE_DEFAULT));
+        }
+        e.apply();
+    }
+
+    /** 同步拉取后：重读当前形态数值、刷新界面，并重建设置面板让滑块与文字跟着变。 */
+    private void afterSyncPulled() {
+        iconAlpha = clampInt(prefs().getInt(lk(KEY_ICON_ALPHA), 0), 0, 100);
+        gridColumns = clampInt(prefs().getInt(lk(KEY_COLUMNS), COLUMNS), 4, 8);
+        iconDp = prefs().getInt(lk(KEY_ICON_DP), 52);
+        iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL), false);
+        fabSizeDp = prefs().getInt(lk(KEY_FAB_SIZE), fabSizeDp);
+        fabDx = prefs().getInt(lk(KEY_FAB_DX), fabDx);
+        fabDy = prefs().getInt(lk(KEY_FAB_DY), fabDy);
+        if (panelMode) {
+            applyPanelSurface();
+            applyFabSurface();
+        } else {
+            applyFullscreenSurface();
+            applyFullscreenFabSurface();
+        }
+        applyFabSize();
+        applyFabPosition();
+        rebindCells();
+        if (gridAdapter != null) {
+            gridAdapter.rebindAllCached();
+        }
+        render();
+        // 重建设置面板：滑块位置、百分比文字都按新值重新生成
+        if (settingsDialog != null) {
+            settingsDialog.dismiss();
+            main.postDelayed(this::showLayoutDialog, 160);
+        }
+    }
+
     /** 设置面板卡片的真实左边缘（px），二级弹窗按它对齐。 */
     private int settingsPanelLeft = -1;
+    /** 设置面板卡片的真实宽度（px）：二级弹窗直接复用它，保证肉眼宽度完全一致。 */
+    private int settingsPanelCardWidth = -1;
 
-    /** 设置页及其二级弹窗的统一宽度：直接复用设置面板的宽度。 */
+    /** 设置页及其二级弹窗的统一宽度：优先用实测的面板宽度。 */
     private int settingsDialogWidth() {
-        return defaultDialogWidth();
+        return settingsPanelCardWidth > 0 ? settingsPanelCardWidth : defaultDialogWidth();
+    }
+
+    /** 全屏里这两条只写「设置页 / 列表图标」；半屏保留「透明度」，与外侧/面板透明度区分。 */
+    private String settingsSurfaceText(int p) {
+        return (panelMode ? "设置页透明度：" : "设置页：") + p + "%";
+    }
+
+    private String iconAlphaText(int p) {
+        return (panelMode ? "列表图标透明度：" : "列表图标：") + p + "%";
+    }
+
+    /** 设置页透明度：0 = 不透明，100 = 全透明；半屏/全屏各存一份。 */
+    private int settingsSurfacePct() {
+        return clampInt(prefs().getInt(lk(KEY_SETTINGS_SURFACE), 0), 0, 100);
+    }
+
+    /** 透明度百分比换算成 drawable alpha：0% 不透明、100% 全透明。 */
+    private int settingsSurfaceAlpha() {
+        return Math.round(255f * (100 - settingsSurfacePct()) / 100f);
+    }
+
+    /**
+     * 把「设置页透明度」铺到整棵视图树：外框、分组卡片、按钮底板一起变，
+     * 避免只透明外层、里面的分组还是实心，看起来边缘和中间不一致。
+     */
+    private void applySettingsSurfaceAlpha(View v) {
+        if (v == null) {
+            return;
+        }
+        Drawable bg = v.getBackground();
+        if (bg != null) {
+            bg.mutate().setAlpha(settingsSurfaceAlpha());
+        }
+        fadeElevation(v);
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                applySettingsSurfaceAlpha(g.getChildAt(i));
+            }
+        }
+    }
+
+    /**
+     * 阴影跟着透明度一起消失：卡片一旦开始变透明就直接撤掉外圈阴影，
+     * 否则阴影会残留成一圈「边框」，看起来像只有边缘变了。
+     * 原始阴影高度记在 tag 里，拉回 0% 时原样恢复。
+     */
+    private void fadeElevation(View v) {
+        boolean transparent = settingsSurfacePct() > 0;
+        Object tag = v.getTag(TAG_BASE_ELEVATION);
+        if (tag instanceof Float) {
+            v.setElevation(transparent ? 0f : (Float) tag);
+            return;
+        }
+        float base = v.getElevation();
+        if (base > 0f) {
+            v.setTag(TAG_BASE_ELEVATION, base);
+            v.setElevation(transparent ? 0f : base);
+        }
+    }
+
+    /** 二级弹窗同步「设置页透明度」：从弹窗内容根整棵刷，边框与内层分组一起变。 */
+    private void applySettingsSurfaceAlpha(android.app.Dialog d) {
+        if (d == null) {
+            return;
+        }
+        android.view.Window w = d.getWindow();
+        if (w == null) {
+            return;
+        }
+        View decor = w.getDecorView();
+        if (decor == null) {
+            return;
+        }
+        // 系统 AlertDialog 的阴影画在窗口根上，只刷内容树会留下一圈白边
+        fadeElevation(decor);
+        View content = decor.findViewById(android.R.id.content);
+        applySettingsSurfaceAlpha(content != null ? content : decor);
+        // 首帧兜底：部分系统会在 show 后的第一帧重新铺一次底板，这里再刷一遍
+        decor.post(() -> {
+            fadeElevation(decor);
+            View c2 = decor.findViewById(android.R.id.content);
+            applySettingsSurfaceAlpha(c2 != null ? c2 : decor);
+        });
+    }
+
+    /** 二级弹窗统一宽度（与设置面板一致），水平居中显示。 */
+    private void applySettingsWidthCentered(android.app.Dialog d) {
+        android.view.Window w = d == null ? null : d.getWindow();
+        if (w == null) {
+            return;
+        }
+        w.setLayout(settingsDialogWidth(), ViewGroup.LayoutParams.WRAP_CONTENT);
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        lp.x = 0;
+        lp.gravity = Gravity.CENTER;
+        w.setAttributes(lp);
+        applySettingsSurfaceAlpha(d);
     }
 
     /** 二级弹窗统一宽度，并水平对齐设置面板（面板拖动过的偏移也一并跟随）。 */
@@ -10891,6 +11717,7 @@ public class FreezeListActivity extends BaseActivity {
         int left = settingsPanelLeft >= 0 ? settingsPanelLeft : centeredLeft;
         lp.x = left - centeredLeft;
         w.setAttributes(lp);
+        applySettingsSurfaceAlpha(d);
     }
 
     /** 把记忆坐标、自适应高度一次性写进窗口参数；show 前调用即首帧到位，show 后再调一次做兜底。 */
@@ -10902,7 +11729,8 @@ public class FreezeListActivity extends BaseActivity {
         float density = getResources().getDisplayMetrics().density;
         int insetDp = Math.round((screenW - width) / density);
         final int defaultX = (screenW - width) / 2 - shadowPad;
-        final int defaultY = Ui.dp(this, 8) - shadowPad;
+        // 全屏：未展开的默认位置也不能越过横幅下沿
+        final int defaultY = collapsedDefaultY(shadowPad);
         // 未展开时高度自适应可用空间，且绝不覆盖半屏列表
         int height = openDialogHeightPx();
 
@@ -10916,10 +11744,13 @@ public class FreezeListActivity extends BaseActivity {
             lpX = clampInt(defaultX + prefs().getInt(lk(KEY_LAYOUT_DX), 0),
                     -shadowPad, Math.max(-shadowPad, screenW - width - shadowPad));
             lpY = clampInt(defaultY + prefs().getInt(lk(KEY_LAYOUT_DY), 0),
-                    -shadowPad, Math.max(-shadowPad, screenH - height - shadowPad));
+                    defaultY, Math.max(defaultY, screenH - height - shadowPad));
         }
 
         Ui.roundDialog(dialog, root, insetDp, height);
+        applySettingsSurfaceAlpha(root);
+        // 首帧兜底：roundDialog 会重设底板，下一帧再刷一次透明度，避免闪回不透明
+        root.post(() -> applySettingsSurfaceAlpha(root));
         android.view.WindowManager.LayoutParams lp = w.getAttributes();
         lp.width = width + shadowPad * 2;
         lp.height = height + shadowPad * 2;
@@ -11057,6 +11888,20 @@ public class FreezeListActivity extends BaseActivity {
         return loc[1] + header.getHeight();
     }
 
+    /** 全屏未展开态窗口 y 的默认值：内容顶部停在顶栏（横幅）下沿之外，留 8dp 间距。 */
+    private int collapsedDefaultY(int shadowPad) {
+        int base = Ui.dp(this, 8) - shadowPad;
+        if (panelMode) {
+            return base;
+        }
+        int headerBottom = headerBottomPx();
+        if (headerBottom <= 0) {
+            return base;
+        }
+        return Math.max(base,
+                headerBottom + Ui.dp(this, 8) - shadowPad - statusBarHeightPx());
+    }
+
     /** 全屏展开态窗口 y 的下限：内容顶部停在顶栏（横幅）下沿之外。 */
     private int expandedTopLimitY(int shadowPad) {
         int headerBottom = headerBottomPx();
@@ -11148,13 +11993,13 @@ public class FreezeListActivity extends BaseActivity {
         w.setAttributes(lp);
     }
 
-    /** 未展开态窗口应回到的 y：默认贴顶位置 + 记忆的拖动偏移。 */
+    /** 未展开态窗口应回到的 y：默认位置（不越横幅下沿） + 记忆的拖动偏移。 */
     private int openDialogTopY(int shadowPad) {
         int screenH = getResources().getDisplayMetrics().heightPixels;
         int h = openDialogHeightPx();
-        int defaultY = Ui.dp(this, 8) - shadowPad;
+        int defaultY = collapsedDefaultY(shadowPad);
         return clampInt(defaultY + prefs().getInt(lk(KEY_LAYOUT_DY), 0),
-                -shadowPad, Math.max(-shadowPad, screenH - h - shadowPad));
+                defaultY, Math.max(defaultY, screenH - h - shadowPad));
     }
 
     /**
@@ -11246,9 +12091,11 @@ public class FreezeListActivity extends BaseActivity {
                                 -pad, Math.max(-pad, screenW - width - pad));
                         lp.y = clampInt(startY + Math.round(e.getRawY() - downRawY),
                                 -pad, Math.max(-pad, screenH - curH - pad));
-                        // 展开态拖动同样不能越过顶栏（横幅）下沿
+                        // 展开态拖动不能越过顶栏（横幅）下沿；未展开态同理，保持默认位置这条下限
                         if (layoutExpanded) {
                             lp.y = Math.max(lp.y, expandedTopLimitY(pad));
+                        } else {
+                            lp.y = Math.max(lp.y, collapsedDefaultY(pad));
                         }
                         w.setAttributes(lp);
                         // 拖动时同样限制：未展开不能压到半屏列表，展开不能压到底栏
@@ -11535,10 +12382,10 @@ public class FreezeListActivity extends BaseActivity {
     private void showRestoreFiles() {
         JinApp.IO.execute(() -> {
             // Android 11+ 分区存储：非本应用创建的 Download 文件要「所有文件访问」才读得到；
-            // root/Shizuku 可用时直接读，不需要该权限。
+            // root/Shizuku 可用时直接读，不需要该权限（Shizuku 能列能读，只是不能 chown）。
             boolean noAccess = android.os.Build.VERSION.SDK_INT >= 30
                     && !android.os.Environment.isExternalStorageManager()
-                    && PrivShell.mode() != PrivShell.Mode.ROOT;
+                    && PrivShell.mode() == PrivShell.Mode.NONE;
             main.post(() -> {
                 if (isFinishing() || isDestroyed()) {
                     return;
@@ -11559,6 +12406,7 @@ public class FreezeListActivity extends BaseActivity {
                         + "开启「所有文件访问」即可直接读取 /storage/emulated/0/Download/凚/备份；"
                         + "也可以点「导入文件」手动选备份。",
                 null, new String[]{"取消", "去授权", "导入文件"}, new Runnable[]{null, () -> {
+                    restoreAwaitAccess = true;
                     try {
                         startActivity(new Intent(
                                 android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
@@ -11579,7 +12427,8 @@ public class FreezeListActivity extends BaseActivity {
         if (files.isEmpty()) {
             compactCard("还没有备份文件",
                     "可以先做一次备份、用「粘贴备份文本」恢复备份串，或「导入文件」选手机里任意位置的备份",
-                    null, new String[]{"取消", "导入文件"}, new Runnable[]{null,
+                    null, "刷新", this::refreshRestoreFiles,
+                    new String[]{"取消", "导入文件"}, new Runnable[]{null,
                             () -> backupImportPicker.launch(new String[]{"*/*"})});
             return;
         }
@@ -11603,11 +12452,129 @@ public class FreezeListActivity extends BaseActivity {
         sv.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 260)));
         ref[0] = compactCard("选择备份文件", "共 " + files.size() + " 份，按时间从新到旧",
-                sv, new String[]{"取消", "导入文件"}, new Runnable[]{null,
+                sv, "刷新", this::refreshRestoreFiles,
+                new String[]{"取消", "导入文件"}, new Runnable[]{null,
                         () -> {
                             dismiss(ref);
                             backupImportPicker.launch(new String[]{"*/*"});
                         }});
+    }
+
+    /**
+     * 恢复列表左下角「刷新」：默认只重扫。
+     * 只有「目录里确实有备份文件、应用却列不出来/读不到」时才进入旧备份修复；
+     * 目录本来就空时只重扫，不弹任何授权卡。
+     */
+    private void refreshRestoreFiles() {
+        JinApp.IO.execute(() -> {
+            List<File> files = collectBackupFiles();
+            File dir = backupDir();
+            String[] names = dir.list();
+            boolean hasBackup = names == null; // 看不到目录：无法确认是空还是旧备份读不到
+            if (names != null) {
+                for (String n : names) {
+                    String low = n.toLowerCase(Locale.US);
+                    if (n.startsWith(BACKUP_FILE_PREFIX)
+                            && (low.endsWith(".json") || low.endsWith(".txt"))) {
+                        hasBackup = true;
+                        break;
+                    }
+                }
+            }
+            if (!files.isEmpty() || !hasBackup) {
+                final boolean ready = !files.isEmpty();
+                main.post(() -> {
+                    toast(ready ? "无需修复" : "已刷新");
+                    showRestoreFilesNow();
+                });
+                return;
+            }
+            // 确实有旧备份但读不到：实时探测当前可用通道（不读历史授权标记）
+            PrivShell.Mode mode = PrivShell.mode(true);
+            main.post(() -> repairOldBackups(mode));
+        });
+    }
+
+    /** 旧备份读不到时的修复：root 静默修属主；Shizuku 只读列出；都没有再给授权入口。 */
+    private void repairOldBackups(PrivShell.Mode mode) {
+        if (mode == PrivShell.Mode.ROOT) {
+            // 有 root：不弹任何提示，静默修属主 + 重扫
+            JinApp.IO.execute(() -> {
+                String dir = backupDir().getAbsolutePath();
+                PrivShell.exec("exec >/dev/null 2>&1; "
+                        + "chown -R 1023:1023 '" + dir + "'; "
+                        + "chmod 0775 '" + dir + "'; "
+                        + "find '" + dir + "' -name '*.json' -exec chmod 0664 {} \\;; "
+                        + "exit 0", 30);
+                List<File> files = collectBackupFiles();
+                main.post(() -> {
+                    if (!files.isEmpty()) {
+                        toast("已修复 " + files.size() + " 个旧备份");
+                        showRestoreFilesNow();
+                    } else {
+                        toast("修复未生效，可改用「导入文件」");
+                        showAllFilesAccessCard();
+                    }
+                });
+            });
+            return;
+        }
+        if (mode == PrivShell.Mode.SHIZUKU) {
+            // Shizuku 对 Download 可读可列，但 chown 会 Operation not permitted：跳过修属主
+            toast("已刷新");
+            showRestoreFilesNow();
+            return;
+        }
+        // Shizuku 装着且在运行：先补一次授权请求，不弹 root 卡
+        if (ShizukuGate.available(this)) {
+            ShizukuGate.requestAnyway(() -> JinApp.IO.execute(() -> {
+                PrivShell.Mode now = PrivShell.mode();
+                main.post(() -> {
+                    if (now == PrivShell.Mode.SHIZUKU) {
+                        toast("已刷新");
+                        showRestoreFilesNow();
+                    } else {
+                        showAllFilesAccessCard();
+                    }
+                });
+            }));
+            return;
+        }
+        // 装了 root 但没授权：弹凚默认的未授权提示
+        if (rootInstalled()) {
+            showPrivilegeMissingDialog();
+            return;
+        }
+        // 只激活了 LSPosed：说明它代替不了 root / Shizuku，仍给凚默认提示
+        detectLsposed(() -> {
+            if (Boolean.TRUE.equals(lsposedAlive)) {
+                showPrivilegeMissingDialog("修复旧备份需要 root 或 Shizuku，LSPosed 授权不能代替。");
+            } else {
+                showAllFilesAccessCard();
+            }
+        });
+    }
+
+    /** 设备上是否装了 root（只查常见 su 路径，不触发授权弹窗）。 */
+    private boolean rootInstalled() {
+        String[] paths = {"/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su",
+                "/debug_ramdisk/su", "/system/sbin/su"};
+        for (String p : paths) {
+            try {
+                if (new File(p).exists()) {
+                    return true;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
+    }
+
+    /** 实时探测 LSPosed 是否在线：发 ping，800ms 没回 pong 就当没激活。 */
+    private void detectLsposed(Runnable onDone) {
+        lsposedAlive = null;
+        sendBroadcast(new Intent(SwipeFreeze.ACTION_STATUS_PING).setPackage("android"));
+        main.postDelayed(onDone, 800);
     }
 
     /** 备份文件来源：当前备份目录 + 旧版本/用户手工放置的路径，按绝对路径去重。 */
@@ -11625,8 +12592,10 @@ public class FreezeListActivity extends BaseActivity {
         };
         for (File dir : dirs) {
             File[] arr = dir.listFiles((d, n) -> {
+                // 只认凚自己生成的备份（JIN-yyyyMMdd-HHmmss.json），别把同目录其他 json/txt 列出来
                 String low = n.toLowerCase(Locale.US);
-                return low.endsWith(".json") || low.endsWith(".txt");
+                return n.startsWith(BACKUP_FILE_PREFIX)
+                        && (low.endsWith(".json") || low.endsWith(".txt"));
             });
             if (arr != null) {
                 for (File f : arr) {
@@ -11656,7 +12625,8 @@ public class FreezeListActivity extends BaseActivity {
                 continue;
             }
             String low = n.toLowerCase(Locale.US);
-            if (!(low.endsWith(".json") || low.endsWith(".txt"))) {
+            if (!n.startsWith(BACKUP_FILE_PREFIX)
+                    || !(low.endsWith(".json") || low.endsWith(".txt"))) {
                 continue;
             }
             File f = new File(dir, n);
@@ -12566,6 +13536,12 @@ public class FreezeListActivity extends BaseActivity {
     /** 紧凑卡片弹窗：宽度 76%、内边距与字号整体收一档，与搞机助手备份/恢复弹框同一档。 */
     private AlertDialog compactCard(String title, CharSequence desc, View content,
             String[] labels, final Runnable[] actions) {
+        return compactCard(title, desc, content, null, null, labels, actions);
+    }
+
+    /** 带左下角附加按钮的紧凑卡片：刷新这类次要操作靠左，主操作仍收在右下角。 */
+    private AlertDialog compactCard(String title, CharSequence desc, View content,
+            String leftLabel, Runnable leftAction, String[] labels, final Runnable[] actions) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackgroundResource(R.drawable.bg_dialog);
@@ -12589,6 +13565,19 @@ public class FreezeListActivity extends BaseActivity {
         row.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         card.addView(row, topMargin(8));
         final AlertDialog dialog = new AlertDialog.Builder(this).setView(card).create();
+        if (leftLabel != null) {
+            TextView lb = cardButton(leftLabel);
+            row.addView(lb, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(this, 30)));
+            // 中间留一段弹簧，把附加按钮顶在左下角
+            row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+            lb.setOnClickListener(v -> {
+                dialog.dismiss();
+                if (leftAction != null) {
+                    leftAction.run();
+                }
+            });
+        }
         for (int i = 0; i < labels.length; i++) {
             TextView b = cardButton(labels[i]);
             LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
@@ -12606,13 +13595,12 @@ public class FreezeListActivity extends BaseActivity {
             });
         }
         dialog.show();
+        applySettingsSurfaceAlpha(dialog);
         android.view.Window w = dialog.getWindow();
         if (w != null) {
             w.setBackgroundDrawableResource(android.R.color.transparent);
-            // 卡片收窄：备份/恢复这类弹窗不必撑满屏宽，上限 320dp、两侧至少 32dp
-            int width = Math.min(getResources().getDisplayMetrics().widthPixels - Ui.dp(this, 64),
-                    Ui.dp(this, 320));
-            w.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
+            // 与设置面板 /「（查看说明）」同宽，并保持居中
+            applySettingsWidthCentered(dialog);
         }
         return dialog;
     }
@@ -12756,6 +13744,11 @@ public class FreezeListActivity extends BaseActivity {
      * 圆角（16dp 裁切）+ 收窄宽度 + 紧凑内边距，标题「您未授权于凚」，下面保留原来的说明小字。
      */
     private void showPrivilegeMissingDialog() {
+        showPrivilegeMissingDialog(null);
+    }
+
+    /** extra 非空时在正文后补一行说明（例如仅 LSPosed 时说明它代替不了 root/Shizuku）。 */
+    private void showPrivilegeMissingDialog(String extra) {
         if (isFinishing() || isDestroyed()) {
             return;
         }
@@ -12779,7 +13772,8 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView message = new TextView(this);
-        message.setText("请在Shizuku或root授权凚后，强制停止凚，再打开凚，即可激活，如未激活成功，请再次检查授权状态。");
+        message.setText("请在Shizuku或root授权凚后，强制停止凚，再打开凚，即可激活，如未激活成功，请再次检查授权状态。"
+                + (extra == null ? "" : "\n" + extra));
         message.setTextSize(11);
         message.setLineSpacing(Ui.dp(this, 2), 1f);
         message.setTextColor(getColor(R.color.text_secondary));
@@ -12846,6 +13840,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         privDialog = dialog;
         dialog.show();
+        applySettingsSurfaceAlpha(dialog);
     }
 
     /** 入口带的一次性启动检查标记：消费掉，避免重建时重复探测。 */
@@ -13181,8 +14176,11 @@ public class FreezeListActivity extends BaseActivity {
                     .append(SuspendSupport.suspendCommand(packagePart(pkg), labelOf(pkg)))
                     .append(" 2>&1; ");
         }
-        result.putAll(splitMarked(PrivShell.exec(script.toString(),
-                Math.max(30, 10 + pending.size() * 5)), pending));
+        PrivShell.Result r = PrivShell.exec(script.toString(),
+                Math.max(30, 10 + pending.size() * 5));
+        result.putAll(splitMarked(r, pending));
+        // 批量暂停只记一条汇总，避免 50 条流水被一次批量操作冲掉
+        recordDiagOp("批量暂停", "pm suspend × " + pending.size() + "\n" + script, r);
         return result;
     }
 
@@ -13360,38 +14358,71 @@ public class FreezeListActivity extends BaseActivity {
         // 主用户与分身各自独立：冻结主应用不会连带分身，双开仍可单独打开/冻结
         String cmd = pmCommand(pkg, userId, freeze);
         PrivShell.Result r = PrivShell.exec(cmd, 30);
-        recordPmDiag(cmd, r);
+        recordDiagOp("单次pm", cmd, r);
         return r;
     }
 
     /** 批量冻结/解冻脚本：同样留下最近一次命令与返回，供诊断包排查原文。 */
     private PrivShell.Result execPmScript(String script, int timeoutSeconds) {
         PrivShell.Result r = PrivShell.exec(script, timeoutSeconds);
-        recordPmDiag(script, r);
+        recordDiagOp("批量脚本", script, r);
         return r;
     }
 
-    /** 记下最近一次冻结/解冻的命令、返回与时间（只保留一份，覆盖式）。 */
-    private void recordPmDiag(String cmd, PrivShell.Result r) {
-        String c = cmd == null ? "" : cmd;
-        if (c.length() > 8000) {
-            c = c.substring(0, 8000) + "\n…（命令过长已截断）";
-        }
+    /**
+     * 记一条「冻结/解冻/暂停」操作流水：保留最近 50 条（总量不超过 48KB），
+     * 同时覆盖「最近一次」三个字段。通道用来区分入口，退出码/超时用来区分「没触发」和「触发了但失败」。
+     */
+    private void recordDiagOp(String channel, String cmd, PrivShell.Result r) {
+        String c = cutDiagText(cmd, 600);
         String out;
         if (r == null) {
             out = "（没有返回）";
         } else {
             out = "退出码 " + r.code + (r.timeout ? "，执行超时" : "") + "\n"
-                    + (r.out == null ? "" : r.out);
+                    + (r.out == null ? "" : r.out.trim());
         }
-        if (out.length() > 8000) {
-            out = out.substring(0, 8000) + "\n…（返回过长已截断）";
+        out = cutDiagText(out, 800);
+        try {
+            JSONArray old = new JSONArray(prefs().getString(KEY_DIAG_HIST, "[]"));
+            JSONArray next = new JSONArray();
+            JSONObject entry = new JSONObject();
+            entry.put("t", System.currentTimeMillis());
+            entry.put("ch", channel);
+            entry.put("code", r == null ? -1 : r.code);
+            entry.put("to", r != null && r.timeout);
+            entry.put("cmd", c);
+            entry.put("out", out);
+            next.put(entry);
+            for (int i = 0; i < old.length() && next.length() < 50; i++) {
+                JSONObject item = old.optJSONObject(i);
+                if (item != null) {
+                    next.put(item);
+                }
+            }
+            // 总量上限：条数够但单条过大时，从最旧的开始丢
+            String json = next.toString();
+            while (json.length() > 48 * 1024 && next.length() > 1) {
+                next.remove(next.length() - 1);
+                json = next.toString();
+            }
+            prefs().edit()
+                    .putString(KEY_DIAG_HIST, json)
+                    .putString(KEY_DIAG_CMD, c)
+                    .putString(KEY_DIAG_OUT, out)
+                    .putLong(KEY_DIAG_AT, System.currentTimeMillis())
+                    .apply();
+        } catch (Exception e) {
+            // JSON 损坏时清掉流水重新开始，不影响主流程
+            prefs().edit().putString(KEY_DIAG_HIST, "[]").apply();
         }
-        prefs().edit()
-                .putString(KEY_DIAG_CMD, c)
-                .putString(KEY_DIAG_OUT, out)
-                .putLong(KEY_DIAG_AT, System.currentTimeMillis())
-                .apply();
+    }
+
+    private static String cutDiagText(String s, int max) {
+        if (s == null) {
+            return "";
+        }
+        return s.length() > max ? s.substring(0, max) + "\n…（已截断）" : s;
     }
 
     /** 冻结和解冻都明确指定目标用户，避免主用户与分身互相影响。 */

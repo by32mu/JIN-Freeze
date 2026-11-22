@@ -2,14 +2,19 @@ package com.jin.freeze.core;
 
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.LauncherActivityInfo;
+import android.content.pm.LauncherApps;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
+import android.os.Process;
 import android.util.LruCache;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -28,8 +33,16 @@ public final class AppIconCache {
      */
     private static final int MAX_KB = (int) Math.min(48L * 1024L,
             Math.max(16L * 1024L, Runtime.getRuntime().maxMemory() / 1024L / 8L));
-    // v2：图标会先裁掉透明留白再统一放大，旧缓存里的图不再适用
-    private static final String DIR_NAME = "jin_icons2";
+    // v3：图标改为优先取启动器（含 MIUI/HyperOS 主题图标），旧缓存里的默认图标不再适用
+    private static final String DIR_NAME = "jin_icons3";
+    /** 主题特征：主题图标包一换就作废两级缓存，避免一直显示旧图标。 */
+    private static final String PREFS_THEME = "jin_icon_theme";
+    private static final String KEY_THEME_SIG = "signature";
+    private static final String KEY_MODE = "mode";
+    /** 取图来源：0 = 系统默认（APK 自带图标），1 = 当前主题图标（启动器实际显示的图标）。 */
+    public static final int MODE_SYSTEM = 0;
+    public static final int MODE_THEME = 1;
+    private static boolean themeChecked;
 
     private static final LruCache<String, Bitmap> CACHE =
             new LruCache<String, Bitmap>(MAX_KB) {
@@ -55,8 +68,8 @@ public final class AppIconCache {
         return Math.max(48, Math.round(dp * c.getResources().getDisplayMetrics().density));
     }
 
-    private static String key(String pkg, int px) {
-        return pkg + "@" + px;
+    private static String key(String pkg, int px, int mode) {
+        return mode + "|" + pkg + "@" + px;
     }
 
     private static File diskFile(Context c, String pkg, int px) {
@@ -64,9 +77,36 @@ public final class AppIconCache {
         if (!dir.exists() && !dir.mkdirs()) {
             return null;
         }
-        // 包名里的 / 等非法字符统一换掉，避免当成子目录
+        // 包名里的 / 等非法字符统一换掉，避免当成子目录；两种取图来源分开存，互不覆盖
         String name = pkg.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return new File(dir, name + "_" + px + ".png");
+        String prefix = getMode(c) == MODE_THEME ? "t_" : "s_";
+        return new File(dir, prefix + name + "_" + px + ".png");
+    }
+
+    /** 当前取图来源：系统默认 / 当前主题图标。 */
+    public static int getMode(Context c) {
+        if (c == null) {
+            return MODE_SYSTEM;
+        }
+        try {
+            int m = c.getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE)
+                    .getInt(KEY_MODE, MODE_SYSTEM);
+            return m == MODE_THEME ? MODE_THEME : MODE_SYSTEM;
+        } catch (Throwable ignored) {
+            return MODE_SYSTEM;
+        }
+    }
+
+    /** 切换取图来源：立即作废两级缓存，下一次取图就按新来源重新解码。 */
+    public static void setMode(Context c, int mode) {
+        if (c == null) {
+            return;
+        }
+        int m = mode == MODE_THEME ? MODE_THEME : MODE_SYSTEM;
+        c.getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE)
+                .edit().putInt(KEY_MODE, m).apply();
+        themeChecked = false;
+        clear(c);
     }
 
     /** 只查内存缓存，不读磁盘也不解码；没有就返回 null。 */
@@ -74,7 +114,8 @@ public final class AppIconCache {
         if (c == null || pkg == null) {
             return null;
         }
-        Bitmap bmp = CACHE.get(key(pkg, cachePx(c)));
+        ensureThemeSignature(c);
+        Bitmap bmp = CACHE.get(key(pkg, cachePx(c), getMode(c)));
         return bmp == null ? null : new BitmapDrawable(c.getResources(), bmp);
     }
 
@@ -87,22 +128,25 @@ public final class AppIconCache {
         if (c == null || pkg == null) {
             return null;
         }
+        ensureThemeSignature(c);
         int px = cachePx(c);
         Bitmap bmp = readDisk(c, pkg, px);
         if (bmp == null) {
             return null;
         }
-        CACHE.put(key(pkg, px), bmp);
+        CACHE.put(key(pkg, px, getMode(c)), bmp);
         return new BitmapDrawable(c.getResources(), bmp);
     }
 
-    /** 内存 → 磁盘 → APK 资源，命中后回写两级缓存；失败返回 null。 */
+    /** 内存 → 磁盘 → 启动器/APK 资源，命中后回写两级缓存；失败返回 null。 */
     public static Drawable load(Context c, String pkg, ApplicationInfo ai) {
         if (c == null || pkg == null) {
             return null;
         }
+        ensureThemeSignature(c);
         int px = cachePx(c);
-        String k = key(pkg, px);
+        final int mode = getMode(c);
+        String k = key(pkg, px, mode);
         Bitmap hit = CACHE.get(k);
         if (hit != null) {
             return new BitmapDrawable(c.getResources(), hit);
@@ -116,7 +160,12 @@ public final class AppIconCache {
             return null;
         }
         try {
-            Drawable d = ai.loadIcon(c.getPackageManager());
+            // 主题模式：只有 LauncherApps 这条通道带主题图标，取不到再退回应用自身图标；
+            // 系统默认模式：直接用 APK 里的图标，不去启动器取图
+            Drawable d = mode == MODE_THEME ? themedIcon(c, pkg) : null;
+            if (d == null) {
+                d = ai.loadIcon(c.getPackageManager());
+            }
             if (d == null) {
                 return null;
             }
@@ -131,6 +180,81 @@ public final class AppIconCache {
             return d;
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * 从 LauncherApps 取「启动器实际显示的图标」。
+     * 关键点：密度必须传 0。MIUI/HyperOS 的主题图标是按固定密度打包的，
+     * 指定了具体 dpi 时系统会走普通资源、把主题图标丢掉；传 0 才回落到主题图标。
+     */
+    private static Drawable themedIcon(Context c, String pkg) {
+        try {
+            LauncherApps la = (LauncherApps) c.getSystemService(Context.LAUNCHER_APPS_SERVICE);
+            if (la == null) {
+                return null;
+            }
+            List<LauncherActivityInfo> list = la.getActivityList(pkg, Process.myUserHandle());
+            if (list == null || list.isEmpty()) {
+                return null;
+            }
+            for (LauncherActivityInfo info : list) {
+                if (info == null) {
+                    continue;
+                }
+                Drawable d;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    d = info.getIcon(0);
+                } else {
+                    d = info.getIcon(c.getResources().getDisplayMetrics().densityDpi);
+                }
+                if (d != null) {
+                    return d;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 主题图标包变化时清空缓存：图标是按包名缓存的，不主动作废就会一直显示旧主题。
+     * 只在本进程第一次取图标时比对一次，后续零开销。
+     */
+    private static void ensureThemeSignature(Context c) {
+        if (themeChecked) {
+            return;
+        }
+        themeChecked = true;
+        try {
+            String sig = themeSignature(c);
+            android.content.SharedPreferences sp =
+                    c.getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE);
+            String old = sp.getString(KEY_THEME_SIG, null);
+            if (old != null && !old.equals(sig)) {
+                clear(c);
+            }
+            if (!sig.equals(old)) {
+                sp.edit().putString(KEY_THEME_SIG, sig).apply();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 当前主题图标包的特征值：换主题/换图标包后这些值会变。
+     * 只取小米相关的三个键，读不到就当空串，不影响其它 ROM。
+     */
+    private static String themeSignature(Context c) {
+        try {
+            android.content.ContentResolver cr = c.getContentResolver();
+            String a = android.provider.Settings.System.getString(cr, "customize_icon_init_time");
+            String b = android.provider.Settings.Secure.getString(
+                    cr, "theme_customization_overlay_packages");
+            String d = android.provider.Settings.System.getString(cr, "theme_icon_pack");
+            return String.valueOf(a) + "|" + String.valueOf(b) + "|" + String.valueOf(d);
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 

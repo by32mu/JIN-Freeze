@@ -17,6 +17,7 @@ import androidx.core.content.pm.ShortcutManagerCompat;
 import androidx.core.graphics.drawable.IconCompat;
 
 import com.jin.freeze.R;
+import com.jin.freeze.core.AppIconCache;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.PrivShell;
 
@@ -269,7 +270,8 @@ public final class ShortcutPin {
         try {
             ApplicationInfo ai = c.getPackageManager()
                     .getApplicationInfo(pkg, PackageManager.MATCH_DISABLED_COMPONENTS);
-            d = ai.loadIcon(c.getPackageManager());
+            // 与列表同一套取图逻辑：优先主题图标，取不到再退回应用自身图标
+            d = AppIconCache.load(c, pkg, ai);
         } catch (Exception ignored) {
         }
         if (d == null) {

@@ -42,7 +42,8 @@ public final class TabSortDialog {
     private TabSortDialog() {
     }
 
-    public static void show(Context c, List<Tab> tabs, OnDone onDone, int xOffsetPx) {
+    public static void show(Context c, List<Tab> tabs, OnDone onDone, int xOffsetPx,
+                            int surfaceAlpha) {
         // 与其它弹窗统一：浮动窗口 + 圆角底板（窗口底仍是透明的，圆角由内容卡片负责）
         final Dialog dialog = new Dialog(c, com.jin.freeze.R.style.Theme_Jin_Alert);
         final List<Tab> order = new ArrayList<>(tabs);
@@ -67,7 +68,7 @@ public final class TabSortDialog {
         RecyclerView rv = new RecyclerView(c);
         rv.setLayoutManager(new LinearLayoutManager(c));
         rv.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        final SortAdapter adapter = new SortAdapter(c, order);
+        final SortAdapter adapter = new SortAdapter(c, order, surfaceAlpha);
         rv.setAdapter(adapter);
         int rowPx = Ui.dp(c, 42);
         int maxPx = Ui.dp(c, 300);
@@ -126,6 +127,14 @@ public final class TabSortDialog {
         dialog.setCanceledOnTouchOutside(false);
         dialog.show();
         Ui.roundDialog(dialog, root, 18);
+        // 排序弹窗不要把背后的列表压暗：卡片透明时压暗会糊成一片灰
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().clearFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            dialog.getWindow().setDimAmount(0f);
+        }
+        // 跟随设置页透明度：面板边框与内部按钮一起变
+        applyAlpha(root, surfaceAlpha);
         if (dialog.getWindow() != null) {
             // 与「设置」面板等宽：屏宽减 104dp、上限 304dp
             int width = Math.min(c.getResources().getDisplayMetrics().widthPixels - Ui.dp(c, 104),
@@ -139,13 +148,32 @@ public final class TabSortDialog {
         }
     }
 
+    /** 把透明度铺到整棵视图树；标签行是 RecyclerView 动态创建的，另外在行里单独刷。 */
+    private static void applyAlpha(View v, int alpha) {
+        if (v == null) {
+            return;
+        }
+        android.graphics.drawable.Drawable bg = v.getBackground();
+        if (bg != null) {
+            bg.mutate().setAlpha(alpha);
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                applyAlpha(g.getChildAt(i), alpha);
+            }
+        }
+    }
+
     private static final class SortAdapter extends RecyclerView.Adapter<SortAdapter.VH> {
         private final Context c;
         private final List<Tab> data;
+        private final int surfaceAlpha;
 
-        SortAdapter(Context c, List<Tab> data) {
+        SortAdapter(Context c, List<Tab> data, int surfaceAlpha) {
             this.c = c;
             this.data = data;
+            this.surfaceAlpha = surfaceAlpha;
         }
 
         @NonNull
@@ -156,6 +184,9 @@ public final class TabSortDialog {
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(Ui.dp(c, 10), 0, Ui.dp(c, 10), 0);
             row.setBackgroundResource(R.drawable.bg_menu_item);
+            if (row.getBackground() != null) {
+                row.getBackground().mutate().setAlpha(surfaceAlpha);
+            }
 
             TextView name = Ui.text(c, "", 13, Ui.TEXT_PRIMARY, false);
             row.addView(name, new LinearLayout.LayoutParams(
