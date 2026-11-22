@@ -173,16 +173,29 @@
             android:textSize="12sp" />
 
         <!-- 底部留白与半屏一致（半屏底栏 54dp），避免全屏时白色空档遮住太多图标 -->
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/grid"
+        <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="1"
-            android:paddingStart="14dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="14dp"
-            android:paddingBottom="54dp"
-            android:scrollbars="none" />
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/grid"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:paddingStart="14dp"
+                android:paddingTop="8dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="54dp"
+                android:scrollbars="none" />
+
+            <!-- 全屏底栏分割线：与半屏底栏上沿的 1px 细线完全一致 -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1px"
+                android:layout_gravity="bottom"
+                android:layout_marginBottom="54dp"
+                android:background="@color/divider" />
+        </FrameLayout>
     </LinearLayout>
 
     <!-- 全屏空态：名单为空时居中提示，添加入口在右上角「+」，不再显示按钮 -->

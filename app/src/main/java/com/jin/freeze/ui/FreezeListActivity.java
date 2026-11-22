@@ -208,8 +208,10 @@ public class FreezeListActivity extends BaseActivity {
     /** 半屏冻结按钮出厂值从 38/5 调整为 39/4 的一次性迁移标记。 */
     private static final String KEY_PANEL_FAB_SEED_39 = "panel_fab_seed_39";
     private static final int PANEL_FAB_SURFACE_DEFAULT = 60;
-    /** 全屏形态「距底部」出厂值：首次安装或恢复默认时取 9dp。 */
-    private static final int FAB_DY_DEFAULT = 9;
+    /** 全屏形态「距底部」出厂值：与半屏一致，首次安装或恢复默认时取 4dp。 */
+    private static final int FAB_DY_DEFAULT = 4;
+    /** 全屏悬浮冻结按钮出厂值（39dp / 距底 4dp / 透明度 15%）的一次性迁移标记。 */
+    private static final String KEY_FULL_FAB_SEED = "full_fab_seed_39";
     /** 标签：内置「用户应用 / 系统应用」+ 自定义；顺序、显隐、名称与每个应用的归属都落盘。 */
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
@@ -249,6 +251,12 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_TAB_SWIPE = "tab_swipe";
     /** 白名单标识位置：默认贴图标左下角，可切到右下角。 */
     private static final String KEY_WHITE_BADGE_RIGHT = "white_badge_right";
+    /** 常用面板（快面板）条目：JSON 数组存条目 id，数组顺序=显示顺序。普通键，不分半屏/全屏。 */
+    private static final String KEY_QUICK_PANEL_ITEMS = "quick_panel_items";
+    /** 长按底栏空白打开快面板的总开关：设置里「个性设置」中，默认关闭。 */
+    private static final String KEY_QUICK_PANEL_ENABLED = "quick_panel_enabled";
+    /** 快面板底板透明度：0 = 不透明，越大越透明；独立于「设置页透明度」。 */
+    private static final String KEY_QUICK_PANEL_SURFACE = "quick_panel_surface";
     /** 冻结图标样式：0=全彩，1..9=半灰半彩各方向与全灰（见 HalfGrayImageView.SPLIT_*）。 */
     private static final String KEY_ICON_STYLE = "icon_style";
     /** 取图来源：0=系统默认（APK 自带图标），1=当前主题图标（启动器实际显示的图标）。 */
@@ -342,6 +350,8 @@ public class FreezeListActivity extends BaseActivity {
     public static final String EXTRA_CHECK_PRIV = "check_priv";
     /** 默认实心：与装机现有观感一致，升级后不突然变样。 */
     private static final int SURFACE_SOLID = 100;
+    /** 全屏悬浮冻结按钮底板默认档位：设置里「透明度」15% 对应的存储值（100 = 实心）。 */
+    private static final int FULL_FAB_SURFACE_DEFAULT = 85;
     private static final String TAB_USER = "user";
     private static final String TAB_SYSTEM = "system";
     /** 图标长按出操作单的判定时长：350–450ms 档，比系统默认 500ms 短，按住一秒内稳出。 */
@@ -665,6 +675,31 @@ public class FreezeListActivity extends BaseActivity {
             target.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
                     android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
         }
+    };
+    /** 快面板（常用面板）：长按底栏空白 / 全屏底部预留带弹出的对话框与内容列。 */
+    private android.app.Dialog quickPanelDialog;
+    private LinearLayout quickPanelContent;
+    /** － 移除模式 / 排序模式：互斥，再点一次退出。 */
+    private boolean quickPanelRemoveMode;
+    private boolean quickPanelSortMode;
+    /** 排序前的条目顺序快照：点 X 时按它还原。 */
+    private List<String> quickPanelSortSnapshot;
+    /** 面板里已展开的条目 id（滑块 / 透明度组），重绘后保持展开。 */
+    private final HashSet<String> quickPanelExpanded = new HashSet<>();
+    /** 全屏底部预留带长按弹快面板：长按是否已到位 / 本次触点归快面板 / 手势起点。 */
+    private boolean quickPanelArmed;
+    private boolean quickPanelTouch;
+    /** 长按底栏空白打开快面板：设置里默认关闭。 */
+    private boolean quickPanelEnabled;
+    private float quickPanelDownX;
+    private float quickPanelDownY;
+    private final Runnable quickPanelArmRunnable = () -> {
+        if (isFinishing()) {
+            return;
+        }
+        quickPanelArmed = true;
+        // 长按底栏空白直接弹面板，不做震动反馈
+        showQuickPanel();
     };
     /** 曾经离开前台：下次 onStart 视为「重新进入列表」，落回默认标签。 */
     private boolean wasStopped;
@@ -999,6 +1034,17 @@ public class FreezeListActivity extends BaseActivity {
         if (panelSearch != null) {
             panelSearch.setOnClickListener(v -> openPicker());
         }
+        // 底栏按钮之间的空白长按：弹出「快面板」（常用面板），不做震动反馈；开关默认关闭
+        View panelBarBlank = findViewById(R.id.panel_bar_blank);
+        if (panelBarBlank != null) {
+            panelBarBlank.setOnLongClickListener(v -> {
+                if (!quickPanelEnabled) {
+                    return false;
+                }
+                showQuickPanel();
+                return true;
+            });
+        }
         emptyState = findViewById(R.id.panel_empty);
         View emptyAdd = findViewById(R.id.empty_add);
         if (emptyAdd != null) {
@@ -1026,6 +1072,7 @@ public class FreezeListActivity extends BaseActivity {
                 prefs().getInt(KEY_GESTURE_EDGE_RIGHT, GESTURE_EDGE_DP_DEFAULT));
         showName = prefs().getBoolean(lk(KEY_SHOW_NAME), true);
         quickRemove = panelMode && prefs().getBoolean(KEY_PANEL_QUICK_REMOVE, false);
+        quickPanelEnabled = prefs().getBoolean(KEY_QUICK_PANEL_ENABLED, false);
         // 移动图标改成一次性动作（长按操作单进入），启动时不再恢复上次状态
         moveMode = false;
         hideToasts = prefs().getBoolean(KEY_HIDE_TOASTS, false);
@@ -1041,6 +1088,7 @@ public class FreezeListActivity extends BaseActivity {
         hideTabRow = prefs().getBoolean(lk(KEY_HIDE_TAB_ROW), false);
         whiteBadgeRight = prefs().getBoolean(KEY_WHITE_BADGE_RIGHT, true);
         seedPanelFabDefaults();
+        seedFullscreenFabDefaults();
         seedFoldedSettingsDefaults();
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
         fabDy = Math.max(0, prefs().getInt(lk(KEY_FAB_DY),
@@ -1160,6 +1208,22 @@ public class FreezeListActivity extends BaseActivity {
         prefs().edit().putBoolean(KEY_PANEL_FAB_SEED_39, true).apply();
     }
 
+    /** 全屏出厂值升级：距底 9 → 4、底板由实心 → 15% 透明，只替换仍是旧默认值的设备。 */
+    private void seedFullscreenFabDefaults() {
+        if (prefs().getBoolean(KEY_FULL_FAB_SEED, false)) {
+            return;
+        }
+        SharedPreferences.Editor e = prefs().edit();
+        if (prefs().getInt(KEY_FAB_DY, FAB_DY_DEFAULT) == 9) {
+            e.putInt(KEY_FAB_DY, FAB_DY_DEFAULT);
+        }
+        if (!prefs().contains(KEY_FULL_FAB_SURFACE)
+                || prefs().getInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT) == SURFACE_SOLID) {
+            e.putInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT);
+        }
+        e.putBoolean(KEY_FULL_FAB_SEED, true).apply();
+    }
+
     /** 设置栏目「默认折叠」升级：老版本默认展开的存量状态一次性收起，让「默认折叠」立刻生效。 */
     private void seedFoldedSettingsDefaults() {
         if (prefs().getBoolean(KEY_SETTINGS_FOLD_SEEDED, false)) {
@@ -1242,7 +1306,7 @@ public class FreezeListActivity extends BaseActivity {
     /** 底部雪花按钮底板：与面板同一套档位，值单独记忆；点按/长按行为不变。 */
     private void applyFabSurface() {
         int pct = prefs().getInt(lk(KEY_FAB_SURFACE),
-                panelMode ? PANEL_FAB_SURFACE_DEFAULT : SURFACE_SOLID);
+                panelMode ? PANEL_FAB_SURFACE_DEFAULT : FULL_FAB_SURFACE_DEFAULT);
         applySurface(fabGroup, pct);
         applySurface(unfreezeFab, pct);
     }
@@ -1626,7 +1690,7 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         int pct = Math.max(0, Math.min(100,
-                prefs().getInt(KEY_FULL_FAB_SURFACE, SURFACE_SOLID)));
+                prefs().getInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT)));
         applySurface(fabGroup, pct);
         applySurface(unfreezeFab, pct);
     }
@@ -2292,6 +2356,20 @@ public class FreezeListActivity extends BaseActivity {
         switch (ev.getActionMasked()) {
             case android.view.MotionEvent.ACTION_DOWN:
                 cancelBlankScrub();
+                // 全屏底部预留带（列表底部底栏上沿以下）长按：直接弹「快面板」，
+                // 这个触点专用于弹面板，不再装长按滑标签手势；其余空白照旧
+                if (!panelMode && quickPanelEnabled && !moveMode && !editMode && !selectMode && !working
+                        && inBlankListArea(ev.getRawX(), ev.getRawY()) && !edgeReserved(ev.getRawX())
+                        && bottomBarTopPx() >= 0 && ev.getRawY() >= bottomBarTopPx()) {
+                    quickPanelTouch = true;
+                    quickPanelArmed = false;
+                    quickPanelDownX = ev.getRawX();
+                    quickPanelDownY = ev.getRawY();
+                    getWindow().getDecorView().postDelayed(quickPanelArmRunnable,
+                            android.view.ViewConfiguration.getLongPressTimeout());
+                    return false;
+                }
+                quickPanelTouch = false;
                 // 边缘触发模式：左右边缘条带内（含面板上方遮罩）都交给这个手势
                 boolean edgeStart = edgeReserved(ev.getRawX());
                 // 移动/编辑/多选/执行中不启用，留给原有手势与操作
@@ -2306,6 +2384,19 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 return false;
             case android.view.MotionEvent.ACTION_MOVE:
+                if (quickPanelTouch) {
+                    // 快面板触点：位移超过 12dp 取消武装；已武装后拖动原地不动，事件照单收下
+                    if (!quickPanelArmed) {
+                        float qdx = ev.getRawX() - quickPanelDownX;
+                        float qdy = ev.getRawY() - quickPanelDownY;
+                        if (Math.abs(qdx) > Ui.dp(this, 12) || Math.abs(qdy) > Ui.dp(this, 12)) {
+                            cancelQuickPanelArm();
+                            quickPanelTouch = false;
+                        }
+                        return false;
+                    }
+                    return true;
+                }
                 if (!scrubArmed) {
                     // 还没长按到位就移动了：交回原来的滚动 / 滑动手势
                     float dx0 = ev.getRawX() - scrubDownX;
@@ -2319,12 +2410,25 @@ public class FreezeListActivity extends BaseActivity {
                 return true;
             case android.view.MotionEvent.ACTION_UP:
             case android.view.MotionEvent.ACTION_CANCEL:
+                if (quickPanelTouch) {
+                    // 武装到点后松手：消费掉事件，不再落回列表
+                    boolean wasQuickArmed = quickPanelArmed;
+                    cancelQuickPanelArm();
+                    quickPanelTouch = false;
+                    return wasQuickArmed;
+                }
                 boolean armed = scrubArmed;
                 cancelBlankScrub();
                 return armed;
             default:
                 return false;
         }
+    }
+
+    /** 取消快面板长按武装：摘掉到点回调并复位，面板已弹出后所有手势归对话框。 */
+    private void cancelQuickPanelArm() {
+        quickPanelArmed = false;
+        getWindow().getDecorView().removeCallbacks(quickPanelArmRunnable);
     }
 
     /**
@@ -8168,7 +8272,7 @@ public class FreezeListActivity extends BaseActivity {
         fabAlphaBar.setMax(100);
         int fabAlphaStored = Math.max(0, Math.min(100,
                 prefs().getInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE,
-                        panelMode ? PANEL_FAB_SURFACE_DEFAULT : SURFACE_SOLID)));
+                        panelMode ? PANEL_FAB_SURFACE_DEFAULT : FULL_FAB_SURFACE_DEFAULT)));
         int fabAlphaPct = 100 - fabAlphaStored;
         fabAlphaBar.setProgress(fabAlphaPct);
         fabAlphaLabel.setText("透明度：" + fabAlphaPct + "%");
@@ -8405,6 +8509,21 @@ public class FreezeListActivity extends BaseActivity {
         });
         // 「列表空白处长按手势」收进「个性设置」，跟着整块折叠（默认展开）
         personalBody.addView(gestureEnabledBox);
+        // 长按底栏空白打开快面板：默认关闭，关掉后长按底栏不弹面板
+        CheckBox quickPanelBox = new CheckBox(this);
+        quickPanelBox.setText("长按底栏空白处打开快面板");
+        quickPanelBox.setTextSize(11);
+        quickPanelBox.setTextColor(getColor(R.color.text_secondary));
+        quickPanelBox.setMinimumHeight(Ui.dp(this, 32));
+        quickPanelBox.setChecked(quickPanelEnabled);
+        quickPanelBox.setOnCheckedChangeListener((b, on) -> {
+            quickPanelEnabled = on;
+            prefs().edit().putBoolean(KEY_QUICK_PANEL_ENABLED, on).apply();
+            if (!on) {
+                cancelQuickPanelArm();
+            }
+        });
+        personalBody.addView(quickPanelBox);
         int gestureVis = gestureEnabled ? View.VISIBLE : View.GONE;
         gestureTail.setVisibility(gestureVis);
         gestureSec.setVisibility(gestureVis);
@@ -8955,6 +9074,38 @@ public class FreezeListActivity extends BaseActivity {
             itsBody.addView(searchLabel);
             itsBody.addView(searchBar);
         }
+        // 快面板透明度：独立档位，0 不透明、越大越透明；不再跟随「设置页」那条
+        final TextView qpAlphaLabel = new TextView(this);
+        qpAlphaLabel.setTextSize(11);
+        qpAlphaLabel.setTextColor(getColor(R.color.text_secondary));
+        final SeekBar qpAlphaBar = new SeekBar(this);
+        qpAlphaBar.setMax(100);
+        int qpAlphaStart = quickPanelSurfacePct();
+        qpAlphaBar.setProgress(qpAlphaStart);
+        qpAlphaLabel.setText("快面板：" + qpAlphaStart + "%");
+        qpAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                prefs().edit().putInt(KEY_QUICK_PANEL_SURFACE, p).apply();
+                qpAlphaLabel.setText("快面板：" + p + "%");
+                if (quickPanelDialog != null) {
+                    applyQuickPanelSurfaceAlpha(quickPanelDialog);
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+        itsBody.addView(qpAlphaLabel);
+        itsBody.addView(qpAlphaBar);
         // 界面透明度整组的同步开关：紧跟标题，半屏外侧、横幅、搜索框是形态专属，不参与同步
         itsBody.addView(syncEntry(KEY_SYNC_SURFACE,
                         "将界面透明度调节同步" + (panelMode ? "全屏" : "半屏"),
@@ -9020,18 +9171,6 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(collapsibleHead(backupTitle, otherGroup,
                 KEY_SETTINGS_OTHER_COLLAPSED));
         box.addView(otherGroup);
-
-        // 赞赏入口下方显示当前版本号
-        TextView versionText = Ui.text(this, "", 11, Ui.TEXT_SECONDARY, false);
-        try {
-            android.content.pm.PackageInfo pi = getPackageManager()
-                    .getPackageInfo(getPackageName(), 0);
-            versionText.setText("版本号：" + pi.versionName);
-        } catch (Exception e) {
-            versionText.setVisibility(View.GONE);
-        }
-        box.addView(versionText, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 自定义底板：宽度收窄、固定高度内滚动、真圆角裁切（全屏与半屏共用同一套尺寸）
         LinearLayout root = new LinearLayout(this);
@@ -9123,10 +9262,13 @@ public class FreezeListActivity extends BaseActivity {
         // 右侧留白吸收剩余宽度，dp 值始终紧贴滑块
         heightRow.addView(new View(this), new LinearLayout.LayoutParams(
                 0, 1, 1f));
-        // 高度行插到滚动列表上方（提示行与「个性设置」之间），列表本身不动
-        root.addView(heightRow, Math.max(0, root.indexOfChild(dialogScroll)),
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 高度行插到滚动列表上方（提示行与「个性设置」之间），列表本身不动；半屏不提供这一行
+        if (!panelMode) {
+            root.addView(heightRow, Math.max(0, root.indexOfChild(dialogScroll)),
+                    new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
 
         View divider = new View(this);
         divider.setBackgroundColor(getColor(R.color.divider));
@@ -10003,6 +10145,2035 @@ public class FreezeListActivity extends BaseActivity {
         pick.show();
         Ui.roundAlertDialog(pick);
         applySettingsAlignment(pick);
+    }
+
+    /** 快面板「＋」选择器的分组目录：每组首项是组名，其余是条目 id，顺序即展示顺序。 */
+    private static String[][] quickPanelCatalog() {
+        return new String[][]{
+                {"个性设置", "default_form", "show_name", "hide_toasts", "dismiss",
+                        "hide_tab_row", "batch_tab_only", "panel_handle", "hide_status_bar",
+                        "hide_recents", "gesture_enabled", "quick_panel_enabled"},
+                {"专属LSPosed", "swipe_freeze", "lock_freeze"},
+                {"特殊模式", "whitelist", "pair"},
+        };
+    }
+
+    /** 条目所在分组序号：0 开关、1 滑块、2 界面透明度、3 白名单与关联、4 直接操作、5 入口；未知 id 返回 -1。 */
+    private static int quickPanelGroupOf(String id) {
+        String[][] catalog = quickPanelCatalog();
+        for (int g = 0; g < catalog.length; g++) {
+            for (int i = 1; i < catalog[g].length; i++) {
+                if (catalog[g][i].equals(id)) {
+                    return g;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /** 条目显示名：与设置弹窗/操作单同一份文案。 */
+    private CharSequence quickPanelItemText(String id) {
+        switch (id) {
+            case "default_form":
+                return panelMode ? "默认半屏列表" : "默认全屏列表";
+            case "show_name":
+                return "显示应用名称";
+            case "hide_toasts":
+                return "去掉 toast 提示";
+            case "dismiss":
+                return "一键冻结后收起列表";
+            case "hide_tab_row":
+                return panelMode ? "隐藏半屏的标签文字" : "隐藏全屏的标签文字";
+            case "batch_tab_only":
+                return "仅冻结/解冻当前标签";
+            case "panel_handle":
+                return "半屏高度小白条调节";
+            case "hide_status_bar":
+                return "隐藏半屏的状态栏";
+            case "hide_recents":
+                return "隐藏最近任务卡片";
+            case "quick_remove":
+                return "批量移除应用";
+            case "gesture_enabled":
+                return "长按空白处手势";
+            case "quick_panel_enabled":
+                return "长按底栏空白处打开快面板";
+            case "edge_only":
+                return "仅在屏幕边缘触发上下滑";
+            case "swipe_freeze":
+                return "划卡冻结";
+            case "lock_freeze":
+                return "锁屏冻结";
+            case "icon_size":
+                return "图标大小";
+            case "columns":
+                return "列数";
+            case "fab_size":
+                return "按钮大小";
+            case "fab_dx":
+                return "左右偏移";
+            case "fab_dy":
+                return "距底部";
+            case "fab_alpha":
+                return "透明度";
+            case "gesture_up":
+                return "上滑手势触发距离";
+            case "gesture_down":
+                return "下滑手势触发距离";
+            case "edge_left":
+                return "屏幕左边缘靠内触发手势距离";
+            case "edge_right":
+                return "屏幕右边缘靠内触发手势距离";
+            case "wp_blur":
+                return "壁纸模糊度";
+            case "icon_group":
+                return "列表图标";
+            case "fab_group":
+                return "底部冻结按钮";
+            case "gesture_group":
+                return "手势调节";
+            case "wallpaper_group":
+                return "自定义壁纸";
+            case "ui_opacity":
+                return "界面透明度";
+            case "whitelist":
+                return "列表白名单";
+            case "pair":
+                return "关联应用";
+            case "select":
+                return "多选";
+            case "tab_settings":
+                return "标签设定";
+            case "theme_icon":
+                // 快面板里点它就是选「系统默认 / 当前主题图标」，文案不再带「点击刷新」的说明
+                return "主题图标";
+            case "icon_style":
+                return iconStyleEntryText();
+            case "keep_icon":
+                return keepIconEntryText();
+            case "white_pos":
+                return whiteBadgePosText();
+            case "wp_sheet":
+                return wpSheetEntryText();
+            case "backup":
+                return "备份";
+            case "restore":
+                return "恢复";
+            case "about":
+                return "关于凚";
+            case "credits":
+                return "致谢名单";
+            case "donate":
+                return "赞赏开发者";
+            default:
+                return id;
+        }
+    }
+
+    /** 开关条目当前状态。 */
+    private boolean quickPanelToggleOn(String id) {
+        switch (id) {
+            case "default_form":
+                return prefs().getBoolean(KEY_FULLSCREEN_OPEN, true) != panelMode;
+            case "show_name":
+                return showName;
+            case "hide_toasts":
+                return hideToasts;
+            case "dismiss":
+                return panelDismissAfterFreeze;
+            case "hide_tab_row":
+                return hideTabRow;
+            case "batch_tab_only":
+                return batchCurrentTabOnly;
+            case "panel_handle":
+                return panelHandleEnabled;
+            case "hide_status_bar":
+                return panelHideStatusBar;
+            case "hide_recents":
+                return panelHideRecents;
+            case "quick_remove":
+                return quickRemove;
+            case "gesture_enabled":
+                return gestureEnabled;
+            case "edge_only":
+                return gestureEdgeOnly;
+            case "swipe_freeze":
+                return SwipeFreeze.enabled(this);
+            case "lock_freeze":
+                return SwipeFreeze.lockEnabled(this);
+            case "quick_panel_enabled":
+                return quickPanelEnabled;
+            default:
+                return false;
+        }
+    }
+
+    /** 开关行为体：逐字复制 showLayoutDialog 对应勾选框的 OnCheckedChangeListener 体。 */
+    private void quickPanelToggle(String id) {
+        if ("default_form".equals(id)) {
+            final boolean curIsDefaultForm = prefs().getBoolean(KEY_FULLSCREEN_OPEN, true) != panelMode;
+            boolean on = !curIsDefaultForm;
+            if (on == curIsDefaultForm) {
+                return;
+            }
+            // 全屏里勾上=默认全屏，取消=默认半屏；半屏反过来；改完立刻切到对应形态
+            boolean toFull = panelMode ? !on : on;
+            prefs().edit().putBoolean(KEY_FULLSCREEN_OPEN, toFull).apply();
+            // 勾选状态代表的形态与当前形态不同才需要切换
+            if (toFull == panelMode) {
+                dismissQuickPanel();
+                switchForm(toFull);
+            }
+            return;
+        }
+        boolean on = !quickPanelToggleOn(id);
+        switch (id) {
+            case "swipe_freeze": {
+                SwipeFreeze.setEnabled(this, on);
+                SwipeFreeze.syncAsync(this);
+                break;
+            }
+            case "lock_freeze": {
+                SwipeFreeze.setLockEnabled(this, on);
+                SwipeFreeze.syncAsync(this);
+                break;
+            }
+            case "quick_panel_enabled": {
+                quickPanelEnabled = on;
+                prefs().edit().putBoolean(KEY_QUICK_PANEL_ENABLED, on).apply();
+                break;
+            }
+            case "show_name": {
+                showName = on;
+                prefs().edit().putBoolean(lk(KEY_SHOW_NAME), on).apply();
+                render();
+                break;
+            }
+            case "hide_toasts": {
+                hideToasts = on;
+                prefs().edit().putBoolean(KEY_HIDE_TOASTS, on).apply();
+                break;
+            }
+            case "dismiss": {
+                panelDismissAfterFreeze = on;
+                prefs().edit().putBoolean(KEY_PANEL_DISMISS, on).apply();
+                break;
+            }
+            case "hide_tab_row": {
+                if (on == hideTabRow) {
+                    break;
+                }
+                hideTabRow = on;
+                prefs().edit().putBoolean(lk(KEY_HIDE_TAB_ROW), on).apply();
+                renderTabBar();
+                if (grid != null) {
+                    grid.requestLayout();
+                }
+                break;
+            }
+            case "batch_tab_only": {
+                batchCurrentTabOnly = on;
+                prefs().edit().putBoolean(KEY_BATCH_CURRENT_TAB_ONLY, on).apply();
+                break;
+            }
+            case "panel_handle": {
+                boolean turningOn = on && !panelHandleEnabled;
+                panelHandleEnabled = on;
+                prefs().edit().putBoolean(KEY_PANEL_HANDLE, on).apply();
+                applyPanelHandleState();
+                if (turningOn) {
+                    dismissQuickPanel();
+                    main.postDelayed(FreezeListActivity.this::flashPanelHandle, 160);
+                }
+                break;
+            }
+            case "hide_status_bar": {
+                panelHideStatusBar = on;
+                prefs().edit().putBoolean(KEY_PANEL_HIDE_STATUS_BAR, on).apply();
+                applyPanelBarState();
+                break;
+            }
+            case "hide_recents": {
+                panelHideRecents = on;
+                prefs().edit().putBoolean(KEY_PANEL_HIDE_RECENTS, on).apply();
+                // 与冰箱拨开关时一样立刻同步任务属性：开着时当前任务马上退出最近任务，
+                // 关掉时恢复；下次从桌面进入会由 LaunchActivity 改走对应的隐藏/普通入口
+                syncRecentsExclusion();
+                break;
+            }
+            case "quick_remove": {
+                setQuickRemove(on);
+                break;
+            }
+            case "gesture_enabled": {
+                gestureEnabled = on;
+                prefs().edit().putBoolean(KEY_GESTURE_ENABLED, on).apply();
+                if (!on) {
+                    cancelBlankScrub();
+                }
+                applyEdgeGestureExclusion();
+                break;
+            }
+            case "edge_only": {
+                gestureEdgeOnly = on;
+                prefs().edit().putBoolean(KEY_GESTURE_EDGE_ONLY, on).apply();
+                applyEdgeGestureExclusion();
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    /** 滑块体：数值 label + SeekBar，行为体逐字复制 showLayoutDialog 对应滑块的 listener。 */
+    private View quickPanelSliderBody(String id) {
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 2));
+        switch (id) {
+            case "icon_size": {
+                final TextView sizeLabel = new TextView(this);
+                sizeLabel.setTextSize(11);
+                sizeLabel.setTextColor(getColor(R.color.text_secondary));
+
+                final SeekBar sizeBar = new SeekBar(this);
+                sizeBar.setMax(Math.max(1, iconSizeMaxDp() - iconSizeMinDp()));
+                sizeBar.setProgress(Math.max(0, Math.min(sizeBar.getMax(),
+                        currentIconDp() - iconSizeMinDp())));
+                sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        // 拖动过程只做实时预览，松手再落盘
+                        iconDp = p + iconSizeMinDp();
+                        iconManual = true;
+                        sizeLabel.setText("图标大小：" + iconDp + "dp");
+                        render();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                        prefs().edit().putInt(lk(KEY_ICON_DP), iconDp)
+                                .putBoolean(lk(KEY_ICON_MANUAL), true).apply();
+                        if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                            prefs().edit().putInt(otherKey(KEY_ICON_DP), iconDp)
+                                    .putBoolean(otherKey(KEY_ICON_MANUAL), true).apply();
+                        }
+                    }
+                });
+                sizeLabel.setText("图标大小：" + (sizeBar.getProgress() + iconSizeMinDp()) + "dp");
+                body.addView(sizeLabel);
+                body.addView(sizeBar);
+                return body;
+            }
+            case "columns": {
+                final TextView colsValue = new TextView(this);
+                colsValue.setTextSize(11);
+                colsValue.setTextColor(getColor(R.color.text_secondary));
+                colsValue.setText("列数：" + gridColumns + " 列");
+
+                SeekBar colsBar = new SeekBar(this);
+                colsBar.setMax(4);
+                colsBar.setProgress(Math.max(0, Math.min(4, gridColumns - 4)));
+                colsBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        gridColumns = p + 4;
+                        // 列数变化 → 图标按新列数自适应重算
+                        iconManual = false;
+                        prefs().edit().putInt(lk(KEY_COLUMNS), gridColumns)
+                                .putBoolean(lk(KEY_ICON_MANUAL), false).apply();
+                        if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                            prefs().edit().putInt(otherKey(KEY_COLUMNS), gridColumns)
+                                    .putBoolean(otherKey(KEY_ICON_MANUAL), false).apply();
+                        }
+                        colsValue.setText("列数：" + gridColumns + " 列");
+                        render();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(colsValue);
+                body.addView(colsBar);
+                return body;
+            }
+            case "fab_size": {
+                final TextView sizeValue = new TextView(this);
+                sizeValue.setTextSize(11);
+                sizeValue.setTextColor(getColor(R.color.text_secondary));
+                sizeValue.setText("按钮大小：" + fabSizeDp + "dp");
+
+                SeekBar fabSizeBar = new SeekBar(this);
+                fabSizeBar.setMax(FAB_SIZE_MAX - FAB_SIZE_MIN);
+                fabSizeBar.setProgress(fabSizeDp - FAB_SIZE_MIN);
+                fabSizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        fabSizeDp = FAB_SIZE_MIN + p;
+                        prefs().edit().putInt(lk(KEY_FAB_SIZE), fabSizeDp).apply();
+                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                            prefs().edit().putInt(otherKey(KEY_FAB_SIZE), fabSizeDp).apply();
+                        }
+                        sizeValue.setText("按钮大小：" + fabSizeDp + "dp");
+                        applyFabSize();
+                        fabGroup.post(FreezeListActivity.this::applyFabPosition);
+                        // 按钮变大/变小会改变上沿，展开范围随之上限实时跟着走
+                        getWindow().getDecorView().postDelayed(
+                                FreezeListActivity.this::refreshExpandRange, 40);
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(sizeValue);
+                body.addView(fabSizeBar);
+                return body;
+            }
+            case "fab_dx": {
+                final TextView xValue = new TextView(this);
+                xValue.setTextSize(11);
+                xValue.setTextColor(getColor(R.color.text_secondary));
+
+                final float density = getResources().getDisplayMetrics().density;
+                final int xMinDp = Math.round((fabInsetPx() - fabCenterX()) / density);
+                final int xMaxDp = Math.round((fabMaxX() - fabCenterX()) / density);
+
+                SeekBar xBar = new SeekBar(this);
+                xBar.setMax(Math.max(0, xMaxDp - xMinDp));
+                xBar.setProgress(Math.max(0, Math.min(xMaxDp, fabDx) - xMinDp));
+                xBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        fabDx = xMinDp + p;
+                        prefs().edit().putInt(lk(KEY_FAB_DX), fabDx).apply();
+                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                            prefs().edit().putInt(otherKey(KEY_FAB_DX), fabDx).apply();
+                        }
+                        xValue.setText("左右偏移：" + (fabDx > 0 ? "+" : "") + fabDx + "dp");
+                        applyFabPosition();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                xValue.setText("左右偏移：" + (fabDx > 0 ? "+" : "") + fabDx + "dp");
+                body.addView(xValue);
+                body.addView(xBar);
+                return body;
+            }
+            case "fab_dy": {
+                final TextView yValue = new TextView(this);
+                yValue.setTextSize(11);
+                yValue.setTextColor(getColor(R.color.text_secondary));
+
+                final float density = getResources().getDisplayMetrics().density;
+                // 「距底部」滑块最大值 = 按钮到列表顶部的真实空间：大屏平板可一直拖到顶部，但不会超过顶部
+                final int maxLiftDp = Math.max(0, Math.round(fabMaxLiftPx() / density));
+
+                SeekBar yBar = new SeekBar(this);
+                yBar.setMax(Math.max(0, maxLiftDp));
+                yBar.setProgress(Math.max(0, Math.min(maxLiftDp, fabDy)));
+                yBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        fabDy = p;
+                        prefs().edit().putInt(lk(KEY_FAB_DY), fabDy).apply();
+                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                            prefs().edit().putInt(otherKey(KEY_FAB_DY), fabDy).apply();
+                        }
+                        yValue.setText("距底部：" + fabDy + "dp");
+                        applyFabPosition();
+                        // 按钮上下移动后，展开范围的上限与当前高度一起实时收放
+                        getWindow().getDecorView().postDelayed(
+                                FreezeListActivity.this::refreshExpandRange, 40);
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                yValue.setText("距底部：" + fabDy + "dp");
+                body.addView(yValue);
+                body.addView(yBar);
+                return body;
+            }
+            case "fab_alpha": {
+                final TextView fabAlphaLabel = new TextView(this);
+                fabAlphaLabel.setTextSize(11);
+                fabAlphaLabel.setTextColor(getColor(R.color.text_secondary));
+
+                final SeekBar fabAlphaBar = new SeekBar(this);
+                fabAlphaBar.setMax(100);
+                int fabAlphaStored = Math.max(0, Math.min(100,
+                        prefs().getInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE,
+                                panelMode ? PANEL_FAB_SURFACE_DEFAULT : FULL_FAB_SURFACE_DEFAULT)));
+                int fabAlphaPct = 100 - fabAlphaStored;
+                fabAlphaBar.setProgress(fabAlphaPct);
+                fabAlphaLabel.setText("透明度：" + fabAlphaPct + "%");
+                fabAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        // 滑块值 = 透明度：0 不透明（原观感），100 全透明
+                        prefs().edit()
+                                .putInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE, 100 - p)
+                                .apply();
+                        // 底部按钮透明度：开了同步就一起写另一形态（半屏 panel_fab_surface ↔ 全屏 full_fab_surface）
+                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                            prefs().edit()
+                                    .putInt(panelMode ? KEY_FULL_FAB_SURFACE : "panel_" + KEY_FAB_SURFACE,
+                                            100 - p)
+                                    .apply();
+                        }
+                        fabAlphaLabel.setText("透明度：" + p + "%");
+                        if (panelMode) {
+                            applyFabSurface();
+                        } else {
+                            applyFullscreenFabSurface();
+                        }
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(fabAlphaLabel);
+                body.addView(fabAlphaBar);
+                return body;
+            }
+            case "gesture_up": {
+                final TextView upLabel = new TextView(this);
+                upLabel.setTextSize(11);
+                upLabel.setTextColor(getColor(R.color.text_secondary));
+                upLabel.setText("上滑手势触发距离：" + gestureUpDp + "dp");
+
+                SeekBar upBar = new SeekBar(this);
+                upBar.setMax(GESTURE_DP_MAX);
+                upBar.setProgress(gestureUpDp);
+                upBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        gestureUpDp = p;
+                        prefs().edit().putInt(KEY_GESTURE_UP, p).apply();
+                        upLabel.setText("上滑手势触发距离：" + p + "dp");
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(upLabel);
+                body.addView(upBar);
+                return body;
+            }
+            case "gesture_down": {
+                final TextView downLabel = new TextView(this);
+                downLabel.setTextSize(11);
+                downLabel.setTextColor(getColor(R.color.text_secondary));
+                downLabel.setText("下滑手势触发距离：" + gestureDownDp + "dp");
+
+                SeekBar downBar = new SeekBar(this);
+                downBar.setMax(GESTURE_DP_MAX);
+                downBar.setProgress(gestureDownDp);
+                downBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        gestureDownDp = p;
+                        prefs().edit().putInt(KEY_GESTURE_DOWN, p).apply();
+                        downLabel.setText("下滑手势触发距离：" + p + "dp");
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(downLabel);
+                body.addView(downBar);
+                return body;
+            }
+            case "edge_left": {
+                final TextView edgeLeftLabel = new TextView(this);
+                edgeLeftLabel.setTextSize(11);
+                edgeLeftLabel.setTextColor(getColor(R.color.text_secondary));
+                edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + edgeDpLabel(gestureEdgeLeftDp));
+                SeekBar edgeLeftBar = new SeekBar(this);
+                edgeLeftBar.setMax(GESTURE_EDGE_DP_MAX - GESTURE_EDGE_DP_MIN);
+                edgeLeftBar.setProgress(Math.max(0, gestureEdgeLeftDp - GESTURE_EDGE_DP_MIN));
+                edgeLeftBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        int value = p + GESTURE_EDGE_DP_MIN;
+                        gestureEdgeLeftDp = value;
+                        prefs().edit().putInt(KEY_GESTURE_EDGE_LEFT, value).apply();
+                        edgeLeftLabel.setText("屏幕左边缘靠内触发手势距离：" + edgeDpLabel(value));
+                        applyEdgeGestureExclusion();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(edgeLeftLabel);
+                body.addView(edgeLeftBar);
+                return body;
+            }
+            case "edge_right": {
+                final TextView edgeRightLabel = new TextView(this);
+                edgeRightLabel.setTextSize(11);
+                edgeRightLabel.setTextColor(getColor(R.color.text_secondary));
+                edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + edgeDpLabel(gestureEdgeRightDp));
+                SeekBar edgeRightBar = new SeekBar(this);
+                edgeRightBar.setMax(GESTURE_EDGE_DP_MAX - GESTURE_EDGE_DP_MIN);
+                edgeRightBar.setProgress(Math.max(0, gestureEdgeRightDp - GESTURE_EDGE_DP_MIN));
+                edgeRightBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        int value = p + GESTURE_EDGE_DP_MIN;
+                        gestureEdgeRightDp = value;
+                        prefs().edit().putInt(KEY_GESTURE_EDGE_RIGHT, value).apply();
+                        edgeRightLabel.setText("屏幕右边缘靠内触发手势距离：" + edgeDpLabel(value));
+                        applyEdgeGestureExclusion();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(edgeRightLabel);
+                body.addView(edgeRightBar);
+                return body;
+            }
+            case "wp_blur": {
+                final TextView wpBlurLabel = new TextView(this);
+                wpBlurLabel.setTextSize(11);
+                wpBlurLabel.setTextColor(getColor(R.color.text_secondary));
+                wpBlurLabel.setText("壁纸模糊度：" + wallpaperBlur + "%");
+                SeekBar wpBlurBar = new SeekBar(this);
+                wpBlurBar.setMax(100);
+                wpBlurBar.setProgress(wallpaperBlur);
+                wpBlurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        wpBlurLabel.setText("壁纸模糊度：" + p + "%");
+                        // 拖动过程中就用降采样快速模糊跟住：任何时候都是模糊图，不会回退到清晰帧
+                        wallpaperBlur = Math.max(0, Math.min(100, p));
+                        if (wallpaperSourceBitmap != null && wallpaperUri != null) {
+                            swapWallpaperBitmap(WallpaperSource.quickBlur(
+                                    FreezeListActivity.this, wallpaperUri, wallpaperSourceBitmap,
+                                    wallpaperBlur, srcMode()));
+                            applyWallpaperBackground();
+                        }
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                        wallpaperBlur = Math.max(0, Math.min(100, sb.getProgress()));
+                        prefs().edit().putInt(lk(KEY_WALLPAPER_BLUR), wallpaperBlur).apply();
+                        rebuildWallpaperDrawable();
+                        applyWallpaperBackground();
+                    }
+                });
+                body.addView(wpBlurLabel);
+                body.addView(wpBlurBar);
+                return body;
+            }
+            case "op_settings": {
+                final TextView settingsLabel = new TextView(this);
+                settingsLabel.setTextSize(11);
+                settingsLabel.setTextColor(getColor(R.color.text_secondary));
+                final SeekBar settingsBar = new SeekBar(this);
+                settingsBar.setMax(100);
+                int settingsStart = settingsSurfacePct();
+                settingsBar.setProgress(settingsStart);
+                settingsLabel.setText(settingsSurfaceText(settingsStart));
+                settingsBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        prefs().edit().putInt(lk(KEY_SETTINGS_SURFACE), p).apply();
+                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                            prefs().edit().putInt(otherKey(KEY_SETTINGS_SURFACE), p).apply();
+                        }
+                        settingsLabel.setText(settingsSurfaceText(p));
+                        applySettingsSurfaceAlpha(settingsSurfaceRoot);
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(settingsLabel);
+                body.addView(settingsBar);
+                return body;
+            }
+            case "op_icon_alpha": {
+                final TextView iconAlphaLabel = new TextView(this);
+                iconAlphaLabel.setTextSize(11);
+                iconAlphaLabel.setTextColor(getColor(R.color.text_secondary));
+                iconAlphaLabel.setText(iconAlphaText(iconAlpha));
+                final SeekBar iconAlphaBar = new SeekBar(this);
+                iconAlphaBar.setMax(100);
+                iconAlphaBar.setProgress(iconAlpha);
+                iconAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        iconAlpha = clampInt(p, 0, 100);
+                        prefs().edit().putInt(lk(KEY_ICON_ALPHA), iconAlpha).apply();
+                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                            prefs().edit().putInt(otherKey(KEY_ICON_ALPHA), iconAlpha).apply();
+                        }
+                        iconAlphaLabel.setText(iconAlphaText(iconAlpha));
+                        // 可见格子与滑出屏幕的缓存格子都要重绑，否则滚回来还是旧透明度
+                        rebindCells();
+                        if (gridAdapter != null) {
+                            gridAdapter.rebindAllCached();
+                        }
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(iconAlphaLabel);
+                body.addView(iconAlphaBar);
+                return body;
+            }
+            case "op_outer": {
+                final TextView outerLabel = new TextView(this);
+                outerLabel.setTextSize(11);
+                outerLabel.setTextColor(getColor(R.color.text_secondary));
+                final SeekBar outerBar = new SeekBar(this);
+                outerBar.setMax(100);
+                int outerStart = 100 - Math.max(0, Math.min(100,
+                        prefs().getInt(lk(KEY_BLUR), 20)));
+                outerBar.setProgress(outerStart);
+                outerLabel.setText("半屏外侧透明度：" + outerStart + "%");
+                outerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
+                        outerLabel.setText("半屏外侧透明度：" + p + "%");
+                        applyBackdropStrength();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(outerLabel);
+                body.addView(outerBar);
+                return body;
+            }
+            case "op_inner": {
+                final TextView innerLabel = new TextView(this);
+                innerLabel.setTextSize(11);
+                innerLabel.setTextColor(getColor(R.color.text_secondary));
+                final SeekBar innerBar = new SeekBar(this);
+                innerBar.setMax(100);
+                int innerStart = 100 - Math.max(0, Math.min(100,
+                        prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
+                innerBar.setProgress(innerStart);
+                innerLabel.setText("半屏面板透明度：" + innerStart + "%");
+                innerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        prefs().edit().putInt(lk(KEY_SURFACE), 100 - p).apply();
+                        // 半屏面板透明度 ↔ 全屏背景：开了同步就一起写
+                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                            prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
+                        }
+                        innerLabel.setText("半屏面板透明度：" + p + "%");
+                        applyPanelSurface();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(innerLabel);
+                body.addView(innerBar);
+                return body;
+            }
+            case "op_bg": {
+                final TextView bgLabel = new TextView(this);
+                bgLabel.setTextSize(11);
+                bgLabel.setTextColor(getColor(R.color.text_secondary));
+                final SeekBar bgBar = new SeekBar(this);
+                bgBar.setMax(100);
+                int bgStart = 100 - Math.max(0, Math.min(100,
+                        prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
+                bgBar.setProgress(bgStart);
+                bgLabel.setText("全屏背景：" + bgStart + "%");
+                bgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
+                        // 全屏背景 ↔ 半屏面板透明度：开了同步就一起写
+                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                            prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
+                        }
+                        bgLabel.setText("全屏背景：" + p + "%");
+                        // 真正改窗口底板 alpha 与模糊的是 applyFullscreenSurface（整页背景唯一出口）
+                        applyFullscreenSurface();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(bgLabel);
+                body.addView(bgBar);
+                return body;
+            }
+            case "op_header": {
+                final TextView headerLabel = new TextView(this);
+                headerLabel.setTextSize(11);
+                headerLabel.setTextColor(getColor(R.color.text_secondary));
+                final SeekBar headerBar = new SeekBar(this);
+                headerBar.setMax(100);
+                int headerStart = 100 - headerSurfacePct();
+                headerBar.setProgress(headerStart);
+                headerLabel.setText("横幅：" + headerStart + "%");
+                headerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        prefs().edit().putInt(KEY_HEADER_SURFACE, 100 - p).apply();
+                        headerLabel.setText("横幅：" + p + "%");
+                        // 顶栏档位在 applyFullscreenSurface 里统一铺（page_header 那一层）
+                        applyFullscreenSurface();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(headerLabel);
+                body.addView(headerBar);
+                return body;
+            }
+            case "op_search": {
+                final TextView searchLabel = new TextView(this);
+                searchLabel.setTextSize(11);
+                searchLabel.setTextColor(getColor(R.color.text_secondary));
+
+                final SeekBar searchBar = new SeekBar(this);
+                searchBar.setMax(100);
+                int searchStart = 100 - searchPct();
+                searchBar.setProgress(searchStart);
+                searchLabel.setText("搜索框：" + searchStart + "%");
+                searchBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        // 滑块值 = 透明度：0 不透明，100 全透明
+                        prefs().edit().putInt(lk(KEY_SEARCH_SURFACE), 100 - p).apply();
+                        searchLabel.setText("搜索框：" + p + "%");
+                        applySearchSurface();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(searchLabel);
+                body.addView(searchBar);
+                return body;
+            }
+            default:
+                return body;
+        }
+    }
+
+    /** 「界面透明度」组体：itsBody 实际包含的全部滑块，按当前形态取对应那几条。 */
+    private View quickPanelOpacityBody() {
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.addView(syncEntry(KEY_SYNC_SURFACE,
+                "将界面透明度调节同步" + (panelMode ? "全屏" : "半屏"),
+                this::copySurfaceGroupFromOther));
+        body.addView(quickPanelSliderBody("op_settings"));
+        body.addView(quickPanelSliderBody("op_icon_alpha"));
+        if (panelMode) {
+            body.addView(quickPanelSliderBody("op_outer"));
+            body.addView(quickPanelSliderBody("op_inner"));
+        } else {
+            body.addView(quickPanelSliderBody("op_bg"));
+            body.addView(quickPanelSliderBody("op_header"));
+            body.addView(quickPanelSliderBody("op_search"));
+        }
+        return body;
+    }
+
+    /** 大标题组的组体：点开标题后才展开这一组里的全部调节项，选择器里只按大标题出现。 */
+    private View quickPanelGroupBody(String id) {
+        switch (id) {
+            case "icon_group": {
+                LinearLayout body = new LinearLayout(this);
+                body.setOrientation(LinearLayout.VERTICAL);
+                body.addView(quickPanelEntryRow("theme_icon"));
+                body.addView(quickPanelEntryRow("icon_style"));
+                body.addView(syncEntry(KEY_SYNC_ICON,
+                        "将列数与图标大小同步" + (panelMode ? "全屏" : "半屏"),
+                        this::copyIconGroupFromOther));
+                body.addView(quickPanelSliderBody("icon_size"));
+                body.addView(quickPanelSliderBody("columns"));
+                return body;
+            }
+            case "fab_group": {
+                LinearLayout body = new LinearLayout(this);
+                body.setOrientation(LinearLayout.VERTICAL);
+                body.addView(quickPanelSliderBody("fab_size"));
+                body.addView(quickPanelSliderBody("fab_dx"));
+                body.addView(quickPanelSliderBody("fab_dy"));
+                body.addView(quickPanelSliderBody("fab_alpha"));
+                body.addView(syncEntry(KEY_SYNC_FAB,
+                        "将底部按钮透明度调节同步" + (panelMode ? "全屏" : "半屏"),
+                        this::copyFabGroupFromOther));
+                return body;
+            }
+            case "gesture_group": {
+                LinearLayout body = new LinearLayout(this);
+                body.setOrientation(LinearLayout.VERTICAL);
+                body.addView(quickPanelToggleRow("edge_only"));
+                body.addView(quickPanelSliderBody("edge_left"));
+                body.addView(quickPanelSliderBody("edge_right"));
+                body.addView(quickPanelSliderBody("gesture_up"));
+                body.addView(quickPanelSliderBody("gesture_down"));
+                return body;
+            }
+            case "wallpaper_group": {
+                LinearLayout body = new LinearLayout(this);
+                body.setOrientation(LinearLayout.VERTICAL);
+                body.addView(quickPanelWallpaperActions());
+                body.addView(quickPanelSliderBody("wp_blur"));
+                body.addView(quickPanelEntryRow("wp_sheet"));
+                return body;
+            }
+            case "ui_opacity":
+                return quickPanelOpacityBody();
+            default:
+                return quickPanelSliderBody(id);
+        }
+    }
+
+    /** 组内一行入口：标题 + ›，点击执行对应动作。 */
+    private View quickPanelEntryRow(final String id) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 6));
+        row.addView(Ui.text(this, quickPanelItemText(id), 12, Ui.TEXT_PRIMARY, false),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(Ui.text(this, "›", 15, Ui.TEXT_SECONDARY, false));
+        row.setOnClickListener(v -> {
+            dismissQuickPanel();
+            quickPanelRunEntry(id);
+        });
+        return row;
+    }
+
+    /** 组内一行开关：右侧显示已开启 / 未开启，点行切换。 */
+    private View quickPanelToggleRow(final String id) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 6));
+        row.addView(Ui.text(this, quickPanelItemText(id), 12, Ui.TEXT_PRIMARY, false),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        boolean on = quickPanelToggleOn(id);
+        row.addView(Ui.text(this, on ? "已开启" : "未开启", 12,
+                on ? getColor(R.color.blue) : Ui.TEXT_SECONDARY, false));
+        row.setOnClickListener(v -> {
+            quickPanelToggle(id);
+            rebuildQuickPanelContent();
+        });
+        return row;
+    }
+
+    /** 组内的壁纸操作：选择图片 / 清除。 */
+    private View quickPanelWallpaperActions() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView pick = Ui.text(this, "选择图片", 12, getColor(R.color.blue), false);
+        pick.setPadding(0, Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 8));
+        pick.setOnClickListener(v -> {
+            dismissQuickPanel();
+            wallpaperPicker.launch(new String[]{"image/*"});
+        });
+        TextView clear = Ui.text(this, "清除", 12, 0xFFE5484D, false);
+        clear.setPadding(0, Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 8));
+        clear.setOnClickListener(v -> {
+            clearCustomWallpaper();
+            toast("已清除壁纸");
+            dismissQuickPanel();
+        });
+        row.addView(pick);
+        row.addView(clear);
+        return row;
+    }
+
+    /** 快面板条目清单：JSON 数组存 id，顺序即显示顺序；未知 id 跳过，坏数据按空数组。 */
+    private List<String> quickPanelItems() {
+        List<String> out = new ArrayList<>();
+        try {
+            JSONArray arr = new JSONArray(prefs().getString(KEY_QUICK_PANEL_ITEMS, "[]"));
+            for (int i = 0; i < arr.length(); i++) {
+                String id = arr.optString(i, "");
+                if (!out.contains(id) && quickPanelGroupOf(id) >= 0 && quickPanelAllowed(id)) {
+                    out.add(id);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** 当前形态下可用的条目：半屏专属设置只在半屏出现，全屏专属只在全屏出现。 */
+    private boolean quickPanelAllowed(String id) {
+        if ("panel_handle".equals(id) || "hide_status_bar".equals(id)) {
+            return panelMode;
+        }
+        return true;
+    }
+
+    private void saveQuickPanelItems(List<String> items) {
+        JSONArray arr = new JSONArray();
+        for (String id : items) {
+            if (quickPanelGroupOf(id) >= 0) {
+                arr.put(id);
+            }
+        }
+        prefs().edit().putString(KEY_QUICK_PANEL_ITEMS, arr.toString()).apply();
+    }
+
+    private void dismissQuickPanel() {
+        if (quickPanelDialog != null) {
+            quickPanelDialog.dismiss();
+        }
+    }
+
+    private android.widget.ImageButton quickPanelIconBtn(int drawable, String desc) {
+        android.widget.ImageButton btn = new android.widget.ImageButton(this);
+        btn.setImageResource(drawable);
+        btn.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+        btn.setBackground(null);
+        btn.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        btn.setPadding(Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6));
+        btn.setContentDescription(desc);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(this, 32), Ui.dp(this, 32)));
+        return btn;
+    }
+
+    /** 条目左侧的小图标：按功能挑一个语义相近的现有图标；形态项按半屏 / 全屏分用不同图标。 */
+    private int quickPanelItemIcon(String id) {
+        switch (id) {
+            case "default_form":
+                return panelMode ? R.drawable.ic_qp_half : R.drawable.ic_qp_full;
+            case "show_name":
+                return R.drawable.ic_qp_name;
+            case "hide_toasts":
+                return R.drawable.ic_close;
+            case "dismiss":
+                return R.drawable.ic_qp_collapse;
+            case "hide_tab_row":
+                return R.drawable.ic_qp_eye_off;
+            case "batch_tab_only":
+            case "tab_settings":
+                return R.drawable.ic_action_tag;
+            case "panel_handle":
+                return R.drawable.ic_drag_handle;
+            case "hide_status_bar":
+                return R.drawable.ic_chevron_up;
+            case "hide_recents":
+                return R.drawable.ic_qp_recents_off;
+            case "wp_sheet":
+                return R.drawable.ic_sc_open_list;
+            case "gesture_enabled":
+                return R.drawable.ic_qp_hold;
+            case "quick_panel_enabled":
+                return R.drawable.ic_qp_hold_bar;
+            case "swipe_freeze":
+                return R.drawable.ic_qp_recents;
+            case "lock_freeze":
+                return R.drawable.ic_qp_lock;
+            case "restore":
+                return R.drawable.ic_action_circle_unlock;
+            case "whitelist":
+                return R.drawable.ic_action_whitelist;
+            case "pair":
+                return R.drawable.ic_qp_link;
+            case "select":
+                return R.drawable.ic_check_badge;
+            case "theme_icon":
+                return R.drawable.ic_launcher;
+            case "icon_style":
+                return R.drawable.ic_action_edit;
+            case "keep_icon":
+                return R.drawable.ic_action_home;
+            case "white_pos":
+                return R.drawable.ic_action_tag;
+            case "backup":
+                return R.drawable.ic_download;
+            case "about":
+                return R.drawable.ic_action_app_info;
+            case "credits":
+                return R.drawable.ic_action_tag;
+            case "donate":
+                return R.drawable.ic_action_run;
+            default:
+                return R.drawable.ic_settings;
+        }
+    }
+
+    /** 行首图标视图：统一 18dp、次级色。 */
+    private View quickPanelRowIcon(String id) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(quickPanelItemIcon(id));
+        iv.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        return iv;
+    }
+
+    /** 快面板：常用设置与入口的集中弹窗，条目由用户在「＋」里挑选并排序。 */
+    private void showQuickPanel() {
+        if (isFinishing() || quickPanelDialog != null) {
+            return;
+        }
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int side = Ui.dp(this, 16);
+        root.setPadding(side, Ui.dp(this, 4), side, Ui.dp(this, 4));
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        final TextView qpTitle = Ui.text(this, "快面板", 15, Ui.TEXT_PRIMARY, true);
+        top.addView(qpTitle, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final android.widget.ImageButton addBtn = quickPanelIconBtn(R.drawable.ic_add, "添加");
+        final android.widget.ImageButton removeBtn = quickPanelIconBtn(R.drawable.ic_minus, "移除");
+        final android.widget.ImageButton sortBtn = quickPanelIconBtn(R.drawable.ic_drag_handle, "排序");
+        final android.widget.ImageButton doneBtn = quickPanelIconBtn(R.drawable.ic_check_badge, "完成排序");
+        final android.widget.ImageButton cancelBtn = quickPanelIconBtn(R.drawable.ic_cross_badge, "取消排序");
+        doneBtn.setVisibility(View.GONE);
+        cancelBtn.setVisibility(View.GONE);
+        // 右上角顺序：排序、减号、加号
+        top.addView(sortBtn);
+        top.addView(removeBtn);
+        top.addView(addBtn);
+        top.addView(doneBtn);
+        top.addView(cancelBtn);
+        root.addView(top);
+
+        quickPanelContent = new LinearLayout(this);
+        quickPanelContent.setOrientation(LinearLayout.VERTICAL);
+
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(quickPanelContent, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 与设置页一样固定高度、内容超高时在弹窗内滚动
+        root.addView(sv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // 面板未展开高度：与设置页同一套三合一显示（标题 + 滑块 + dp 值）
+        final android.app.Dialog[] qpHolder = new android.app.Dialog[1];
+        final int[] qpOpenMaxDp = {openSliderMaxDp()};
+        LinearLayout qpHeightRow = new LinearLayout(this);
+        qpHeightRow.setOrientation(LinearLayout.HORIZONTAL);
+        qpHeightRow.setGravity(Gravity.CENTER_VERTICAL);
+        qpHeightRow.setPadding(0, Ui.dp(this, 2), 0, 0);
+        final TextView qpOpenLabel = Ui.text(this, "面板未展开高度", 10, Ui.TEXT_SECONDARY, false);
+        final TextView qpOpenValue = Ui.text(this, "", 10, Ui.TEXT_SECONDARY, false);
+        qpOpenValue.setGravity(Gravity.START);
+        qpOpenValue.setMinWidth(Ui.dp(this, 34));
+        final SeekBar qpOpenBar = new SeekBar(this);
+        int qpThumbPad = Ui.dp(this, 12);
+        qpOpenBar.setPadding(qpThumbPad, qpOpenBar.getPaddingTop(),
+                qpThumbPad, qpOpenBar.getPaddingBottom());
+        qpOpenBar.setMax(qpOpenMaxDp[0]);
+        qpOpenBar.setProgress(Math.min(openSliderDp(), qpOpenMaxDp[0]));
+        qpOpenValue.setText(qpOpenBar.getProgress() + "dp");
+        LinearLayout.LayoutParams qpOpenBarLp = new LinearLayout.LayoutParams(
+                Ui.dp(this, 76), ViewGroup.LayoutParams.WRAP_CONTENT);
+        qpHeightRow.addView(qpOpenLabel);
+        qpHeightRow.addView(qpOpenBar, qpOpenBarLp);
+        qpHeightRow.addView(qpOpenValue);
+        qpHeightRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        qpOpenBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                int dp = clampInt(p, 0, qpOpenMaxDp[0]);
+                if (!panelMode) {
+                    prefs().edit().putInt(lk(KEY_LAYOUT_OPEN_H), dp).apply();
+                }
+                qpOpenValue.setText(dp + "dp");
+                android.app.Dialog d = qpHolder[0];
+                if (d == null) {
+                    return;
+                }
+                int shadow = Ui.dp(FreezeListActivity.this, 12);
+                if (panelMode) {
+                    panelOpenHeightDp = dp;
+                    applyQuickPanelFrame(d, openDialogHeightPx(), panelDialogY(shadow), shadow);
+                } else {
+                    applyQuickPanelFrame(d, openDialogHeightPx(),
+                            d.getWindow() == null ? shadow
+                                    : d.getWindow().getAttributes().y, shadow);
+                }
+                applyQuickPanelSurfaceAlpha(root);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+
+        // 底部展开底栏：与设置页一致，居中箭头在「未展开高度 / 展开最大范围」之间切换
+        // 「面板未展开高度」三合一与设置页同位置：放在标题下面、内容滚动区上方，仅全屏提供
+        if (!panelMode) {
+            root.addView(qpHeightRow, Math.max(0, root.indexOfChild(sv)),
+                    new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        View qpDivider = new View(this);
+        qpDivider.setBackgroundColor(getColor(R.color.divider));
+        root.addView(qpDivider, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, Ui.dp(this, 0.5f))));
+        LinearLayout qpToggleRow = new LinearLayout(this);
+        qpToggleRow.setOrientation(LinearLayout.HORIZONTAL);
+        qpToggleRow.setGravity(Gravity.CENTER);
+        qpToggleRow.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 2));
+        final android.widget.ImageButton qpSizeToggle = new android.widget.ImageButton(this);
+        qpSizeToggle.setImageResource(R.drawable.ic_chevron_down);
+        qpSizeToggle.setBackground(null);
+        qpSizeToggle.setStateListAnimator(null);
+        qpSizeToggle.setElevation(0f);
+        qpSizeToggle.setClickable(false);
+        qpSizeToggle.setFocusable(false);
+        qpSizeToggle.setContentDescription("调节面板高度");
+        qpSizeToggle.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        qpSizeToggle.setPadding(Ui.dp(this, 4), Ui.dp(this, 4), Ui.dp(this, 4), Ui.dp(this, 4));
+        qpToggleRow.addView(qpSizeToggle, new LinearLayout.LayoutParams(
+                Ui.dp(this, 28), Ui.dp(this, 28)));
+        root.addView(qpToggleRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final Runnable exitSort = () -> {
+            quickPanelSortMode = false;
+            addBtn.setVisibility(View.VISIBLE);
+            removeBtn.setVisibility(View.VISIBLE);
+            sortBtn.setVisibility(View.VISIBLE);
+            doneBtn.setVisibility(View.GONE);
+            cancelBtn.setVisibility(View.GONE);
+        };
+        addBtn.setOnClickListener(v -> showQuickPanelAddPicker());
+        removeBtn.setOnClickListener(v -> {
+            quickPanelRemoveMode = !quickPanelRemoveMode;
+            if (quickPanelRemoveMode) {
+                exitSort.run();
+            }
+            rebuildQuickPanelContent();
+        });
+        // 点排序直接在面板里调节：右上角换成打勾 / X；打勾保留顺序，X 还原进入前的顺序
+        sortBtn.setOnClickListener(v -> {
+            if (quickPanelSortMode) {
+                return;
+            }
+            quickPanelSortMode = true;
+            quickPanelRemoveMode = false;
+            quickPanelSortSnapshot = rawQuickPanelItems();
+            addBtn.setVisibility(View.GONE);
+            removeBtn.setVisibility(View.GONE);
+            sortBtn.setVisibility(View.GONE);
+            doneBtn.setVisibility(View.VISIBLE);
+            cancelBtn.setVisibility(View.VISIBLE);
+            rebuildQuickPanelContent();
+        });
+        doneBtn.setOnClickListener(v -> {
+            quickPanelSortSnapshot = null;
+            exitSort.run();
+            rebuildQuickPanelContent();
+        });
+        cancelBtn.setOnClickListener(v -> {
+            if (quickPanelSortSnapshot != null) {
+                saveQuickPanelItems(quickPanelSortSnapshot);
+                quickPanelSortSnapshot = null;
+            }
+            exitSort.run();
+            rebuildQuickPanelContent();
+        });
+
+        // 与设置页相同的容器结构：外层留阴影空间，内容按圆角裁切
+        final int qpShadowPad = Ui.dp(this, 12);
+        FrameLayout shell = new FrameLayout(this);
+        shell.setClipChildren(false);
+        shell.setClipToPadding(false);
+        shell.setPadding(qpShadowPad, qpShadowPad, qpShadowPad, qpShadowPad);
+        shell.addView(root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setContentView(shell);
+        quickPanelDialog = dialog;
+        qpHolder[0] = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (quickPanelDialog == dialog) {
+                quickPanelDialog = null;
+                quickPanelContent = null;
+                quickPanelRemoveMode = false;
+                quickPanelSortMode = false;
+                quickPanelSortSnapshot = null;
+            }
+        });
+        // 展开底栏：与设置页同一套高度与位置规则
+        final boolean[] qpExpanded = {false};
+        // 三合一在展开时消失；未展开时下滑自动隐藏，回到顶部再出现（与全屏设置页一致）
+        final boolean[] qpRowHidden = {false};
+        final boolean[] qpFingerDown = {false};
+        final long[] qpSuppressUntil = {0};
+        final Runnable qpShowHeightRow = () -> {
+            if (panelMode || qpExpanded[0] || !qpRowHidden[0]) {
+                return;
+            }
+            qpRowHidden[0] = false;
+            qpHeightRow.animate().cancel();
+            qpHeightRow.setVisibility(View.VISIBLE);
+            qpHeightRow.setAlpha(0f);
+            qpHeightRow.animate().alpha(1f).setDuration(120).start();
+            qpSuppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
+        };
+        final Runnable qpHideHeightRow = () -> {
+            if (panelMode || qpExpanded[0] || qpRowHidden[0]) {
+                return;
+            }
+            qpRowHidden[0] = true;
+            qpHeightRow.animate().cancel();
+            qpHeightRow.animate().alpha(0f).setDuration(100)
+                    .withEndAction(() -> qpHeightRow.setVisibility(View.GONE))
+                    .start();
+            qpSuppressUntil[0] = android.os.SystemClock.uptimeMillis() + 400;
+        };
+        sv.setOnTouchListener((v, e) -> {
+            switch (e.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                case android.view.MotionEvent.ACTION_MOVE:
+                    qpFingerDown[0] = true;
+                    break;
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    qpFingerDown[0] = false;
+                    break;
+                default:
+                    break;
+            }
+            return false;
+        });
+        sv.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+            int dy = scrollY - oldScrollY;
+            if (dy == 0) {
+                return;
+            }
+            if (android.os.SystemClock.uptimeMillis() < qpSuppressUntil[0]) {
+                return;
+            }
+            if (!qpRowHidden[0]) {
+                if (dy > 0) {
+                    qpHideHeightRow.run();
+                }
+                return;
+            }
+            if (qpFingerDown[0] && !sv.canScrollVertically(-1)) {
+                qpShowHeightRow.run();
+            }
+        });
+        qpToggleRow.setOnClickListener(v -> {
+            qpExpanded[0] = !qpExpanded[0];
+            qpSizeToggle.setImageResource(qpExpanded[0]
+                    ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down);
+            qpRowHidden[0] = false;
+            qpHeightRow.animate().cancel();
+            qpHeightRow.setAlpha(1f);
+            qpHeightRow.setVisibility(panelMode || qpExpanded[0]
+                    ? View.GONE : View.VISIBLE);
+            int desired = qpExpanded[0] ? expandDialogHeightPx() : openDialogHeightPx();
+            int targetY;
+            if (qpExpanded[0]) {
+                int screenH = getResources().getDisplayMetrics().heightPixels;
+                int limit = bottomBarTopPx();
+                int maxBottom = limit > 0 ? limit - Ui.dp(this, 8) : screenH;
+                int maxY = maxBottom - desired - qpShadowPad - statusBarHeightPx();
+                int curY = dialog.getWindow() == null
+                        ? -qpShadowPad : dialog.getWindow().getAttributes().y;
+                targetY = panelMode ? Math.max(-qpShadowPad, Math.min(curY, maxY))
+                        : Math.max(expandedTopLimitY(qpShadowPad), maxY);
+            } else {
+                targetY = panelMode ? panelDialogY(qpShadowPad)
+                        : (collapsedDefaultY(qpShadowPad)
+                        + prefs().getInt(lk(KEY_LAYOUT_DY), 0));
+            }
+            applyQuickPanelFrame(dialog, desired, targetY, qpShadowPad);
+            applyQuickPanelSurfaceAlpha(root);
+        });
+        dialog.show();
+        // 显示位置完全按设置页那套规则：半屏贴半屏上沿、全屏用设置页的记忆偏移
+        applyQuickPanelGeometry(dialog, root);
+        // 布局落地后重新算「不侵入半屏」的最大值：半屏直接按最大值显示
+        qpOpenBar.post(() -> {
+            int maxDp = openSliderMaxDp();
+            qpOpenMaxDp[0] = maxDp;
+            qpOpenBar.setMax(Math.max(1, maxDp));
+            int cur = panelMode ? maxDp : Math.min(qpOpenBar.getProgress(), maxDp);
+            qpOpenBar.setProgress(cur);
+            qpOpenValue.setText(cur + "dp");
+            if (panelMode) {
+                panelOpenHeightDp = -1;
+                applyQuickPanelGeometry(dialog, root);
+            }
+        });
+        final android.view.Window qw = dialog.getWindow();
+        // 全屏才允许拖标题移动，位置与设置页共用同一份偏移（半屏设置页本来就不能拖）
+        if (!panelMode && qw != null) {
+            final boolean[] dragging = {false};
+            final float[] dragDownX = {0f};
+            final float[] dragDownY = {0f};
+            final int[] dragStartX = {0};
+            final int[] dragStartY = {0};
+            qpTitle.setOnLongClickListener(v -> {
+                dragging[0] = true;
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
+                        android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                return true;
+            });
+            qpTitle.setOnTouchListener((v, e) -> {
+                switch (e.getActionMasked()) {
+                    case android.view.MotionEvent.ACTION_DOWN:
+                        dragDownX[0] = e.getRawX();
+                        dragDownY[0] = e.getRawY();
+                        dragStartX[0] = qw.getAttributes().x;
+                        dragStartY[0] = qw.getAttributes().y;
+                        return false;
+                    case android.view.MotionEvent.ACTION_MOVE: {
+                        if (!dragging[0]) {
+                            return false;
+                        }
+                        android.view.WindowManager.LayoutParams lp = qw.getAttributes();
+                        lp.x = dragStartX[0] + Math.round(e.getRawX() - dragDownX[0]);
+                        lp.y = dragStartY[0] + Math.round(e.getRawY() - dragDownY[0]);
+                        qw.setAttributes(lp);
+                        return true;
+                    }
+                    case android.view.MotionEvent.ACTION_UP:
+                    case android.view.MotionEvent.ACTION_CANCEL:
+                        if (dragging[0]) {
+                            dragging[0] = false;
+                            // 与设置页共用偏移，下次打开设置页 / 快面板都在同一位置
+                            prefs().edit()
+                                    .putInt(lk(KEY_LAYOUT_DX), qw.getAttributes().x
+                                            - ((getResources().getDisplayMetrics().widthPixels
+                                            - settingsDialogWidth()) / 2 - Ui.dp(this, 12)))
+                                    .putInt(lk(KEY_LAYOUT_DY), qw.getAttributes().y)
+                                    .apply();
+                            return true;
+                        }
+                        return false;
+                    default:
+                        return false;
+                }
+            });
+        }
+        // 部分 ROM 会在首帧后把系统对话框的窗口底板重铺回不透明：这里再压一次窗口背景并重刷，
+        // 快面板用独立的「快面板透明度」档位，不跟随设置页
+        root.post(() -> {
+            if (qw != null) {
+                qw.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
+            }
+            applyQuickPanelSurfaceAlpha(root);
+            applyQuickPanelSurfaceAlpha(dialog);
+        });
+        rebuildQuickPanelContent();
+    }
+
+    private void rebuildQuickPanelContent() {
+        if (quickPanelContent == null) {
+            return;
+        }
+        quickPanelContent.removeAllViews();
+        List<String> items = quickPanelItems();
+        if (items.isEmpty()) {
+            TextView empty = Ui.text(this, "点右上角 ＋ 添加", 13, Ui.TEXT_SECONDARY, false);
+            empty.setGravity(Gravity.CENTER);
+            quickPanelContent.addView(empty, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 120)));
+            return;
+        }
+        for (String id : items) {
+            quickPanelContent.addView(quickPanelRow(id));
+        }
+    }
+
+    private View quickPanelRow(final String id) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 6));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
+                Ui.dp(this, 18), Ui.dp(this, 18));
+        iconLp.rightMargin = Ui.dp(this, 8);
+        row.addView(quickPanelRowIcon(id), iconLp);
+        TextView name = Ui.text(this, quickPanelRowText(id), 13, Ui.TEXT_PRIMARY, false);
+        name.setSingleLine(true);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        row.addView(name, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        if (quickPanelRemoveMode) {
+            ImageView del = new ImageView(this);
+            del.setImageResource(R.drawable.ic_cross_badge);
+            del.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            del.setPadding(Ui.dp(this, 10), Ui.dp(this, 10), Ui.dp(this, 10), Ui.dp(this, 10));
+            del.setOnClickListener(v -> {
+                List<String> items = quickPanelItems();
+                if (items.remove(id)) {
+                    saveQuickPanelItems(items);
+                }
+                rebuildQuickPanelContent();
+            });
+            row.addView(del, new LinearLayout.LayoutParams(Ui.dp(this, 40), Ui.dp(this, 40)));
+            wrap.addView(row);
+            return wrap;
+        }
+        if (quickPanelSortMode) {
+            // 排序模式：长按该行后上下拖动，松手按跨越的行数换位并保存
+            final boolean[] dragging = {false};
+            final float[] downRawY = {0f};
+            row.setOnLongClickListener(v -> {
+                dragging[0] = true;
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
+                        android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                return true;
+            });
+            row.setOnTouchListener((v, e) -> {
+                switch (e.getActionMasked()) {
+                    case android.view.MotionEvent.ACTION_DOWN:
+                        downRawY[0] = e.getRawY();
+                        dragging[0] = false;
+                        return false;
+                    case android.view.MotionEvent.ACTION_MOVE: {
+                        if (!dragging[0]) {
+                            return false;
+                        }
+                        wrap.setTranslationY(e.getRawY() - downRawY[0]);
+                        return true;
+                    }
+                    case android.view.MotionEvent.ACTION_UP:
+                    case android.view.MotionEvent.ACTION_CANCEL: {
+                        if (!dragging[0]) {
+                            return false;
+                        }
+                        dragging[0] = false;
+                        float dy = e.getRawY() - downRawY[0];
+                        wrap.setTranslationY(0f);
+                        int rowH = Math.max(1, wrap.getHeight());
+                        int steps = Math.round(dy / rowH);
+                        if (steps != 0) {
+                            List<String> list = quickPanelItems();
+                            int from = list.indexOf(id);
+                            int to = from + steps;
+                            if (from >= 0 && to >= 0 && to < list.size() && to != from) {
+                                list.remove(from);
+                                list.add(to, id);
+                                saveQuickPanelItems(list);
+                            }
+                        }
+                        rebuildQuickPanelContent();
+                        return true;
+                    }
+                    default:
+                        return false;
+                }
+            });
+            wrap.addView(row);
+            return wrap;
+        }
+
+        // 分类按条目 id 判断，不依赖分组序号，选择器分组顺序调整不会影响行的行为
+        if (quickPanelIsToggle(id)) {
+            boolean on = quickPanelToggleOn(id);
+            row.addView(Ui.text(this, on ? "已开启" : "未开启", 12,
+                    on ? getColor(R.color.blue) : Ui.TEXT_SECONDARY, false));
+            row.setOnClickListener(v -> {
+                quickPanelToggle(id);
+                rebuildQuickPanelContent();
+            });
+            wrap.addView(row);
+            return wrap;
+        }
+        if (quickPanelIsGroup(id)) {
+            row.setOnClickListener(v -> {
+                if (!quickPanelExpanded.remove(id)) {
+                    quickPanelExpanded.add(id);
+                }
+                rebuildQuickPanelContent();
+            });
+            wrap.addView(row);
+            if (quickPanelExpanded.contains(id)) {
+                wrap.addView(quickPanelGroupBody(id));
+            }
+            return wrap;
+        }
+        if ("whitelist".equals(id) || "pair".equals(id)) {
+            // 参考搞机助手：标题在左，白名单图标 / 关联列表同排显示在右侧；
+            // 两行标题列宽固定，保证白名单第一个图标与关联应用主图标左对齐
+            LinearLayout.LayoutParams nlp = (LinearLayout.LayoutParams) name.getLayoutParams();
+            nlp.width = Ui.dp(this, 84);
+            nlp.weight = 0f;
+            name.setLayoutParams(nlp);
+            View summary = "whitelist".equals(id)
+                    ? quickPanelWhitelistSummary() : quickPanelPairSummary();
+            row.addView(summary, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            if ("whitelist".equals(id)) {
+                row.setOnClickListener(v -> {
+                    dismissQuickPanel();
+                    showWhitelistManager();
+                });
+            } else {
+                row.setOnClickListener(v -> {
+                    dismissQuickPanel();
+                    showPairManager();
+                });
+            }
+            wrap.addView(row);
+            return wrap;
+        }
+        if ("select".equals(id)) {
+            row.setOnClickListener(v -> {
+                dismissQuickPanel();
+                enterSelectMode();
+            });
+            wrap.addView(row);
+            return wrap;
+        }
+        row.addView(Ui.text(this, "›", 15, Ui.TEXT_SECONDARY, false));
+        row.setOnClickListener(v -> {
+            dismissQuickPanel();
+            quickPanelRunEntry(id);
+        });
+        wrap.addView(row);
+        return wrap;
+    }
+
+    /** 快面板行内文案：白名单在选择器里叫「列表白名单」，面板里只显示「白名单」。 */
+    private String quickPanelRowText(String id) {
+        if ("whitelist".equals(id)) {
+            return "白名单";
+        }
+        return quickPanelItemText(id).toString();
+    }
+
+    /** 条目是否是开关类：个性设置组 + 专属LSPosed 的两个开关。 */
+    private static boolean quickPanelIsToggle(String id) {
+        if ("swipe_freeze".equals(id) || "lock_freeze".equals(id)) {
+            return true;
+        }
+        String[][] catalog = quickPanelCatalog();
+        for (int i = 1; i < catalog[0].length; i++) {
+            if (catalog[0][i].equals(id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 条目是否是「点开标题才展开」的大分组。 */
+    private static boolean quickPanelIsGroup(String id) {
+        return "icon_group".equals(id) || "fab_group".equals(id) || "gesture_group".equals(id)
+                || "wallpaper_group".equals(id) || "ui_opacity".equals(id);
+    }
+
+    private void quickPanelMoveItem(String id, int delta) {
+        List<String> items = quickPanelItems();
+        int index = items.indexOf(id);
+        int target = index + delta;
+        if (index < 0 || target < 0 || target >= items.size()) {
+            return;
+        }
+        Collections.swap(items, index, target);
+        saveQuickPanelItems(items);
+        rebuildQuickPanelContent();
+    }
+
+    private Drawable quickPanelIconFor(String key) {
+        try {
+            ApplicationInfo ai = getPackageManager().getApplicationInfo(packagePart(key), 0);
+            return AppIconCache.load(this, packagePart(key), ai);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** 「列表白名单」行内摘要：已加入的图标按行铺开，有多少显示多少，不限行数。 */
+    private View quickPanelWhitelistSummary() {
+        Set<String> set = whitelistSet();
+        if (set.isEmpty()) {
+            return Ui.text(this, "未添加", 12, Ui.TEXT_SECONDARY, false);
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int size = Ui.dp(this, 20);
+        int gap = Ui.dp(this, 4);
+        final int perLine = 6;
+        LinearLayout line = null;
+        int i = 0;
+        for (String key : set) {
+            if (i % perLine == 0) {
+                line = new LinearLayout(this);
+                line.setOrientation(LinearLayout.HORIZONTAL);
+                line.setGravity(Gravity.CENTER_VERTICAL);
+                col.addView(line);
+            }
+            ImageView icon = new ImageView(this);
+            Drawable d = quickPanelIconFor(key);
+            icon.setImageDrawable(d != null ? d
+                    : androidx.core.content.ContextCompat.getDrawable(this,
+                    android.R.drawable.sym_def_app_icon));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
+            lp.rightMargin = gap;
+            line.addView(icon, lp);
+            i++;
+        }
+        return col;
+    }
+
+    /** 「关联应用」行内摘要：每条关联一行「主图标→副图标 名称」，空则「未添加」。 */
+    private View quickPanelPairSummary() {
+        List<Pair> list = allPairs();
+        if (list.isEmpty()) {
+            return Ui.text(this, "未添加", 12, Ui.TEXT_SECONDARY, false);
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int size = Ui.dp(this, 16);
+        for (Pair p : list) {
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(Gravity.CENTER_VERTICAL);
+
+            ImageView mainIcon = new ImageView(this);
+            Drawable mainD = quickPanelIconFor(p.main);
+            mainIcon.setImageDrawable(mainD != null ? mainD
+                    : androidx.core.content.ContextCompat.getDrawable(this,
+                    android.R.drawable.sym_def_app_icon));
+            line.addView(mainIcon, new LinearLayout.LayoutParams(size, size));
+
+            // 主 → 副 之间用链环标识
+            ImageView linkIcon = new ImageView(this);
+            linkIcon.setImageResource(R.drawable.ic_qp_link);
+            linkIcon.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+            LinearLayout.LayoutParams linkLp = new LinearLayout.LayoutParams(
+                    Ui.dp(this, 12), Ui.dp(this, 12));
+            linkLp.leftMargin = Ui.dp(this, 2);
+            linkLp.rightMargin = Ui.dp(this, 2);
+            line.addView(linkIcon, linkLp);
+
+            ImageView subIcon = new ImageView(this);
+            Drawable subD = quickPanelIconFor(p.sub);
+            subIcon.setImageDrawable(subD != null ? subD
+                    : androidx.core.content.ContextCompat.getDrawable(this,
+                    android.R.drawable.sym_def_app_icon));
+            LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(size, size);
+            subLp.leftMargin = Ui.dp(this, 2);
+            line.addView(subIcon, subLp);
+
+            TextView nm = Ui.text(this,
+                    labelFor(p.main) + " → " + labelFor(p.sub), 11, Ui.TEXT_SECONDARY, false);
+            nm.setSingleLine(true);
+            nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            nlp.leftMargin = Ui.dp(this, 6);
+            line.addView(nm, nlp);
+            col.addView(line);
+        }
+        return col;
+    }
+
+    /** 入口条目行为：先 dismiss 快面板，再打开对应弹窗/页面（与设置弹窗「其他」组一致）。 */
+    private void quickPanelRunEntry(String id) {
+        switch (id) {
+            case "tab_settings":
+                prefs().edit().putBoolean(KEY_SETTINGS_TAB_COLLAPSED, false).apply();
+                showLayoutDialog();
+                break;
+            case "theme_icon":
+                showIconThemeDialog();
+                break;
+            case "icon_style":
+                showIconStyleDialog();
+                break;
+            case "keep_icon":
+                showKeepIconChoiceDialog();
+                break;
+            case "white_pos":
+                showWhiteBadgePosDialog();
+                break;
+            case "wp_sheet":
+                showWpSheetDialog();
+                break;
+            case "backup":
+                showBackup();
+                break;
+            case "restore":
+                showRestore();
+                break;
+            case "about":
+                showAboutDialog();
+                break;
+            case "credits":
+                showThanksDialog();
+                break;
+            case "donate":
+                showDonateDialog();
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** 「＋」选择器：勾选只是暂存，点「确定」才写入；「取消」不做任何操作。 */
+    private void showQuickPanelAddPicker() {
+        // 以落盘顺序为基准（含当前形态不显示的条目，避免确定时被裁掉）
+        final List<String> current = rawQuickPanelItems();
+        final Set<String> checked = new LinkedHashSet<>(current);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int side = Ui.dp(this, 16);
+        col.setPadding(side, Ui.dp(this, 2), side, Ui.dp(this, 2));
+
+        for (String[] group : quickPanelCatalog()) {
+            // 只有一个条目的组（大分组 / 单入口）：不再单列组标题，勾选这一行就是添加整个栏目
+            boolean single = group.length == 2;
+            if (!single) {
+                TextView head = Ui.text(this, group[0], 12, Ui.TEXT_PRIMARY, true);
+                head.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 2));
+                col.addView(head);
+            }
+            for (int i = 1; i < group.length; i++) {
+                final String id = group[i];
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(0, Ui.dp(this, 3), 0, Ui.dp(this, 3));
+                LinearLayout.LayoutParams pickIconLp = new LinearLayout.LayoutParams(
+                        Ui.dp(this, 18), Ui.dp(this, 18));
+                pickIconLp.rightMargin = Ui.dp(this, 8);
+                row.addView(quickPanelRowIcon(id), pickIconLp);
+                TextView name = Ui.text(this, quickPanelItemText(id), 12, Ui.TEXT_SECONDARY, false);
+                name.setSingleLine(true);
+                name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                row.addView(name, new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                final CheckBox cb = new CheckBox(this);
+                cb.setClickable(false);
+                cb.setFocusable(false);
+                cb.setChecked(checked.contains(id));
+                row.addView(cb, new LinearLayout.LayoutParams(Ui.dp(this, 36), Ui.dp(this, 36)));
+
+                row.setOnClickListener(v -> {
+                    if (!checked.remove(id)) {
+                        checked.add(id);
+                    }
+                    cb.setChecked(checked.contains(id));
+                });
+                col.addView(row);
+            }
+        }
+
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.addView(col);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(sv)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确定", (d, w) -> {
+                    // 原有顺序保留，新勾选的按选择器顺序追加
+                    List<String> result = new ArrayList<>();
+                    for (String id : current) {
+                        if (checked.contains(id)) {
+                            result.add(id);
+                        }
+                    }
+                    for (String[] group : quickPanelCatalog()) {
+                        for (int i = 1; i < group.length; i++) {
+                            String id = group[i];
+                            if (checked.contains(id) && !result.contains(id)) {
+                                result.add(id);
+                            }
+                        }
+                    }
+                    saveQuickPanelItems(result);
+                    rebuildQuickPanelContent();
+                })
+                .create();
+        dialog.show();
+        Ui.roundAlertDialog(dialog);
+        applySettingsAlignment(dialog);
+    }
+
+    /** 落盘里的全部条目（只过滤未知 id，不按当前形态过滤）。 */
+    private List<String> rawQuickPanelItems() {
+        List<String> out = new ArrayList<>();
+        try {
+            JSONArray arr = new JSONArray(prefs().getString(KEY_QUICK_PANEL_ITEMS, "[]"));
+            for (int i = 0; i < arr.length(); i++) {
+                String id = arr.optString(i, "");
+                if (!out.contains(id) && quickPanelGroupOf(id) >= 0) {
+                    out.add(id);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
     }
 
     /** 冻结白名单 → 白名单列表：已加入的应用 + 勾选批量移除 + 添加应用。 */
@@ -11381,7 +13552,7 @@ public class FreezeListActivity extends BaseActivity {
                         panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT));
         if (panelMode) {
             e.putInt("panel_" + KEY_FAB_SURFACE,
-                    prefs().getInt(KEY_FULL_FAB_SURFACE, SURFACE_SOLID));
+                    prefs().getInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT));
         } else {
             e.putInt(KEY_FULL_FAB_SURFACE,
                     prefs().getInt("panel_" + KEY_FAB_SURFACE, PANEL_FAB_SURFACE_DEFAULT));
@@ -11501,15 +13672,14 @@ public class FreezeListActivity extends BaseActivity {
         if (decor == null) {
             return;
         }
-        // 系统 AlertDialog 的阴影画在窗口根上，只刷内容树会留下一圈白边
+        // 系统 AlertDialog 的阴影画在窗口根上，只刷内容树会留下一圈白边；
+        // 从 decor 整棵树刷，连内容之外的底板一起变，快面板不会再是一块实心白
         fadeElevation(decor);
-        View content = decor.findViewById(android.R.id.content);
-        applySettingsSurfaceAlpha(content != null ? content : decor);
+        applySettingsSurfaceAlpha(decor);
         // 首帧兜底：部分系统会在 show 后的第一帧重新铺一次底板，这里再刷一遍
         decor.post(() -> {
             fadeElevation(decor);
-            View c2 = decor.findViewById(android.R.id.content);
-            applySettingsSurfaceAlpha(c2 != null ? c2 : decor);
+            applySettingsSurfaceAlpha(decor);
         });
     }
 
@@ -11542,6 +13712,114 @@ public class FreezeListActivity extends BaseActivity {
         lp.x = left - centeredLeft;
         w.setAttributes(lp);
         applySettingsSurfaceAlpha(d);
+    }
+
+    /** 快面板透明度：0 = 不透明，100 = 全透明；与「设置页透明度」完全独立。 */
+    private int quickPanelSurfacePct() {
+        return clampInt(prefs().getInt(KEY_QUICK_PANEL_SURFACE, 0), 0, 100);
+    }
+
+    /** 快面板透明度百分比换算成 drawable alpha。 */
+    private int quickPanelSurfaceAlphaValue() {
+        return Math.round(255f * (100 - quickPanelSurfacePct()) / 100f);
+    }
+
+    /** 把「快面板透明度」铺到整棵视图树：底板、卡片、按钮一起变。 */
+    private void applyQuickPanelSurfaceAlpha(View v) {
+        if (v == null) {
+            return;
+        }
+        Drawable bg = v.getBackground();
+        if (bg != null) {
+            bg.mutate().setAlpha(quickPanelSurfaceAlphaValue());
+        }
+        boolean transparent = quickPanelSurfacePct() > 0;
+        Object tag = v.getTag(TAG_BASE_ELEVATION);
+        if (tag instanceof Float) {
+            v.setElevation(transparent ? 0f : (Float) tag);
+        } else {
+            float base = v.getElevation();
+            if (base > 0f) {
+                v.setTag(TAG_BASE_ELEVATION, base);
+                v.setElevation(transparent ? 0f : base);
+            }
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                applyQuickPanelSurfaceAlpha(g.getChildAt(i));
+            }
+        }
+    }
+
+    /** 快面板弹窗专用：整窗刷「快面板透明度」，首帧后再兜底一次。 */
+    private void applyQuickPanelSurfaceAlpha(android.app.Dialog d) {
+        if (d == null) {
+            return;
+        }
+        android.view.Window w = d.getWindow();
+        if (w == null) {
+            return;
+        }
+        View decor = w.getDecorView();
+        if (decor == null) {
+            return;
+        }
+        applyQuickPanelSurfaceAlpha(decor);
+        decor.post(() -> applyQuickPanelSurfaceAlpha(decor));
+    }
+
+    /** 快面板窗口位置与设置面板完全同一套规则（半屏贴上沿、全屏用记忆偏移），透明度走快面板档位。 */
+    private void applyQuickPanelGeometry(android.app.Dialog dialog, View root) {
+        android.view.Window w = dialog == null ? null : dialog.getWindow();
+        if (w == null) {
+            return;
+        }
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        float density = getResources().getDisplayMetrics().density;
+        // 宽度与设置面板完全一致
+        int width = defaultDialogWidth();
+        int shadowPad = Ui.dp(this, 12);
+        int insetDp = Math.round((screenW - width) / density);
+        int defaultX = (screenW - width) / 2 - shadowPad;
+        int defaultY = collapsedDefaultY(shadowPad);
+        int height = openDialogHeightPx();
+
+        int lpX;
+        int lpY;
+        if (panelMode) {
+            lpX = defaultX;
+            lpY = panelDialogY(shadowPad);
+        } else {
+            lpX = clampInt(defaultX + prefs().getInt(lk(KEY_LAYOUT_DX), 0),
+                    -shadowPad, Math.max(-shadowPad, screenW - width - shadowPad));
+            lpY = clampInt(defaultY + prefs().getInt(lk(KEY_LAYOUT_DY), 0),
+                    defaultY, Math.max(defaultY, screenH - height - shadowPad));
+        }
+
+        Ui.roundDialog(dialog, root, insetDp, height);
+        applyQuickPanelSurfaceAlpha(root);
+        root.post(() -> applyQuickPanelSurfaceAlpha(root));
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        lp.width = width + shadowPad * 2;
+        lp.height = height + shadowPad * 2;
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = lpX;
+        lp.y = lpY;
+        w.setAttributes(lp);
+    }
+
+    /** 展开 / 收起快面板：只改窗口高度与纵向位置，与设置页的展开底栏同一套算法。 */
+    private void applyQuickPanelFrame(android.app.Dialog dialog, int heightPx, int y, int shadowPad) {
+        android.view.Window w = dialog == null ? null : dialog.getWindow();
+        if (w == null) {
+            return;
+        }
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        lp.height = heightPx + shadowPad * 2;
+        lp.y = y;
+        w.setAttributes(lp);
     }
 
     /** 把记忆坐标、自适应高度一次性写进窗口参数；show 前调用即首帧到位，show 后再调一次做兜底。 */
