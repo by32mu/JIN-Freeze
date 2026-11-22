@@ -191,7 +191,7 @@
                 android:paddingTop="2dp"
                 android:paddingEnd="2dp"
                 android:paddingBottom="2dp"
-                android:text="不再提醒"
+                android:text="不再提示"
                 android:textColor="@color/blue"
                 android:textSize="12sp" />
         </LinearLayout>
@@ -221,7 +221,7 @@
                 android:paddingTop="2dp"
                 android:paddingEnd="2dp"
                 android:paddingBottom="2dp"
-                android:text="不再提醒"
+                android:text="不再提示"
                 android:textColor="@color/blue"
                 android:textSize="12sp"
                 android:visibility="gone" />
