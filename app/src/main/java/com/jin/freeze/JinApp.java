@@ -36,9 +36,31 @@ public class JinApp extends Application {
     public void onCreate() {
         super.onCreate();
         ShortcutSync.publish(this);
-        // MIUIOP(10017) 是 MIUI 的「桌面快捷方式」：本应用走 root/Shizuku，
-        // 直接 appops 自授予，加桌面图标时不再卡权限确认，也不用用户去设置里点。
-        IO.execute(() -> PrivShell.exec("appops set " + getPackageName()
-                + " 10017 allow", 8));
+        // MIUIOP(10017) 是 MIUI 的「桌面快捷方式」：只在小米设备且尚未允许时补授。
+        // 不再让非小米设备、已授权设备以及每次快捷方式冷启动都白跑一次 su。
+        if ("xiaomi".equalsIgnoreCase(android.os.Build.MANUFACTURER)
+                && !miuiShortcutAllowed()) {
+            IO.execute(() -> PrivShell.exec("appops set " + getPackageName()
+                    + " 10017 allow", 8));
+        }
+    }
+
+    /** 直接读 AppOps 当前状态，避免为了确认权限再启动一次特权进程。 */
+    private boolean miuiShortcutAllowed() {
+        try {
+            android.app.AppOpsManager am = (android.app.AppOpsManager)
+                    getSystemService(APP_OPS_SERVICE);
+            if (am == null) {
+                return false;
+            }
+            java.lang.reflect.Method m = android.app.AppOpsManager.class.getMethod(
+                    "checkOpNoThrow", int.class, int.class, String.class);
+            int mode = (int) m.invoke(am, 10017,
+                    android.os.Process.myUid(), getPackageName());
+            return mode == android.app.AppOpsManager.MODE_ALLOWED;
+        } catch (Throwable ignored) {
+            // 读不到时保留原来的补授逻辑；实际添加快捷方式前还会再次检查。
+            return false;
+        }
     }
 }

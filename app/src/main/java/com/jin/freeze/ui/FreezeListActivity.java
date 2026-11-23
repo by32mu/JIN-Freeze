@@ -462,6 +462,11 @@ public class FreezeListActivity extends BaseActivity {
     private final Handler main = new Handler(Looper.getMainLooper());
     /** LSPosed 模块在线状态：null=探测中，true=在线，false=离线 */
     private Boolean lsposedAlive;
+    /** 连续刷新只保留最后一次，避免重复排队 shell、图标解码和整表重绘。 */
+    private final java.util.concurrent.atomic.AtomicBoolean reloadRunning =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicBoolean reloadQueued =
+            new java.util.concurrent.atomic.AtomicBoolean();
     /** 暂停真值后台复核是否在跑，避免连续 reload 重复排队 dumpsys。 */
     private final java.util.concurrent.atomic.AtomicBoolean suspendVerifying =
             new java.util.concurrent.atomic.AtomicBoolean();
@@ -611,6 +616,9 @@ public class FreezeListActivity extends BaseActivity {
     /** 主副关联 / 列表白名单的管理弹窗：添加应用的手势返回要能回到这一页。 */
     private AlertDialog pairManagerDialog;
     private AlertDialog whitelistManagerDialog;
+    /** 管理页是否从快面板进入：手势取消时返回快面板，点「关闭」则直接关闭。 */
+    private boolean pairManagerFromQuickPanel;
+    private boolean whitelistManagerFromQuickPanel;
     /** 布局设置弹窗：长按空白上下滑切形态时先把它收起。 */
     private android.app.Dialog settingsDialog;
     /** 设置面板当前的底板：拖动「设置页透明度」时直接刷它，不重建弹窗。 */
@@ -1271,26 +1279,21 @@ public class FreezeListActivity extends BaseActivity {
         }
         // 默认 20：滑块显示 80% 透明度
         int pct = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 20)));
-        // 与冰箱一致：压暗交给窗口级 FLAG_DIM_BEHIND（系统随窗口首帧一起绘制，
-        // 连状态栏一起压黑，把模糊/启动过渡那一帧的乳白盖住，不会闪白）。
-        // 布局里的 panel_scrim 只保留点按关闭，不再自己叠 alpha。
+        // 按 2.9.9 的做法：压暗用布局里的 panel_scrim 自己叠一层很淡的黑
+        // （0x33 × 档位）。窗口级 FLAG_DIM_BEHIND 会由系统做一段淡入，
+        // 切形态时新窗口头一两帧既没模糊也没压暗，看起来就是「先透明一下再回模糊」
         View scrim = findViewById(R.id.panel_scrim);
         if (scrim != null) {
-            scrim.setBackgroundColor(0x00000000);
+            scrim.setBackgroundColor((0x33 * pct / 100) << 24);
         }
-        android.view.Window w = getWindow();
-        w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        android.view.WindowManager.LayoutParams attrs = w.getAttributes();
-        // 0 → 全透明，100 → 全黑；默认 20 与冰箱实测的约 20%~25% 压暗一致
-        attrs.dimAmount = pct / 100f;
-        w.setAttributes(attrs);
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             try {
+                android.view.Window w = getWindow();
                 w.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
-                attrs = w.getAttributes();
-                // 冰箱半屏 blurBehindRadius=45px（450dpi 下约 16dp）；
-                // 这里用 80dp 做满档，默认 20 档约 16dp，两边默认模糊量对齐
-                int maxRadius = Ui.dp(this, 80);
+                android.view.WindowManager.LayoutParams attrs = w.getAttributes();
+                // 满档 28dp，与 2.9.9 一致：默认 20 档约 5.6dp。
+                // 新窗口的头一两帧系统还没把模糊叠上，模糊半径越小这段过渡越看不出
+                int maxRadius = Ui.dp(this, 28);
                 attrs.setBlurBehindRadius(Math.round(maxRadius * pct / 100f));
                 w.setAttributes(attrs);
             } catch (Exception ignored) {
@@ -1501,6 +1504,7 @@ public class FreezeListActivity extends BaseActivity {
                 next.setAlpha(alpha);
                 root.setBackground(next);
             } else {
+                // 底色沿用 2.10.13 的 page_bg；列表区与底栏同色，透明度只由这一层承担
                 int base = getColor(R.color.page_bg);
                 root.setBackground(new ColorDrawable(android.graphics.Color.argb(alpha,
                         android.graphics.Color.red(base),
@@ -2838,6 +2842,11 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        // 退后台前再压一次快照开关：系统是在这之后才给任务截图，
+        // 默认半屏时不能把当前全屏页留成下一次启动的预览图
+        if (!panelMode) {
+            syncRecentsExclusion();
+        }
         // 长按翻标签的计时器在离开页面时清掉
         cancelBlankScrub();
         // 离开页面就把状态栏图标恢复成跟随深浅色，不残留过渡时的强制白色
@@ -2857,7 +2866,12 @@ public class FreezeListActivity extends BaseActivity {
     private void syncRecentsExclusion() {
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                setRecentsScreenshotEnabled(!panelHideRecents);
+                // 默认打开形态是半屏时，全屏页不再让系统留快照：否则下次从图标拉起半屏，
+                // A14+ 的启动快照会先闪一张上一次的全屏列表再切半屏。
+                // 默认全屏的用户保持原样，最近任务里仍然有预览。
+                boolean allowShot = !panelHideRecents
+                        && (panelMode || prefs().getBoolean(KEY_FULLSCREEN_OPEN, true));
+                setRecentsScreenshotEnabled(allowShot);
             }
             android.app.ActivityManager am =
                     (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
@@ -4157,17 +4171,28 @@ public class FreezeListActivity extends BaseActivity {
         d.show();
         Ui.roundAlertDialog(d);
         applySettingsAlignment(d);
+        // 点弹窗外面/返回键关掉且没点「确认」，按取消处理：勾选要回退成未勾选
+        final boolean[] handled = {false};
+        d.setOnDismissListener(x -> {
+            if (!handled[0]) {
+                handled[0] = true;
+                onCancel.run();
+            }
+        });
         never.setOnClickListener(v -> {
             // 不再提醒：以后勾选直接生效，这次按「确认」处理
+            handled[0] = true;
             prefs().edit().putBoolean(KEY_HINT_SUFFIX_HIDDEN + "global_beauty", true).apply();
             onConfirm.run();
             d.dismiss();
         });
         confirm.setOnClickListener(v -> {
+            handled[0] = true;
             onConfirm.run();
             d.dismiss();
         });
         cancel.setOnClickListener(v -> {
+            handled[0] = true;
             onCancel.run();
             d.dismiss();
         });
@@ -4512,6 +4537,11 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     protected void reload() {
+        if (!reloadRunning.compareAndSet(false, true)) {
+            // 当前刷新尚未落地时只记一次待刷新；期间新增的重复调用不再排队执行。
+            reloadQueued.set(true);
+            return;
+        }
         // 名单是白名单/关联的唯一依据：先把已经不在名单里的条目清掉
         pruneOrphans();
         Set<String> wanted = pkgs();
@@ -4671,7 +4701,17 @@ public class FreezeListActivity extends BaseActivity {
                 }
             }
             main.post(() -> {
+                boolean rerun = reloadQueued.getAndSet(false);
+                reloadRunning.set(false);
                 if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (rerun) {
+                    // 后台期间又收到刷新：直接按最新名单再跑一次，跳过本次过期渲染。
+                    // 已退到后台时不主动补跑，onResume 会统一刷新。
+                    if (!wasStopped) {
+                        reload();
+                    }
                     return;
                 }
                 items.clear();
@@ -9110,7 +9150,7 @@ public class FreezeListActivity extends BaseActivity {
             int outerStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(lk(KEY_BLUR), 20)));
             outerBar.setProgress(outerStart);
-            outerLabel.setText("半屏外侧透明度：" + outerStart + "%");
+            outerLabel.setText("半屏外侧：" + outerStart + "%");
             outerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -9118,7 +9158,7 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
-                    outerLabel.setText("半屏外侧透明度：" + p + "%");
+                    outerLabel.setText("半屏外侧：" + p + "%");
                     applyBackdropStrength();
                 }
 
@@ -9142,7 +9182,7 @@ public class FreezeListActivity extends BaseActivity {
             int innerStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
             innerBar.setProgress(innerStart);
-            innerLabel.setText("半屏面板透明度：" + innerStart + "%");
+            innerLabel.setText("半屏面板：" + innerStart + "%");
             innerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -9154,7 +9194,7 @@ public class FreezeListActivity extends BaseActivity {
                     if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                         prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                     }
-                    innerLabel.setText("半屏面板透明度：" + p + "%");
+                    innerLabel.setText("半屏面板：" + p + "%");
                     applyPanelSurface();
                 }
 
@@ -10089,95 +10129,316 @@ public class FreezeListActivity extends BaseActivity {
                 "pair", titleView, "关联应用");
     }
 
-    /** 关联应用 → 主副应用关联：已添加的列表 + 暂停/删除 + 添加主应用。 */
+    /** 关联应用 → 生效筛选 + 单项暂停/删除 + 多选批量恢复/删除/暂停。 */
     private void showPairManager() {
-        final List<Pair> list = allPairs();
+        final int actionNone = 0;
+        final int actionResume = 1;
+        final int actionDelete = 2;
+        final int actionPause = 3;
+        final String[] actionNames = {"", "恢复", "删除", "暂停"};
+        final int[] batchAction = {actionNone};
+        final int[] filter = {0}; // 0=全部，1=生效，2=未生效
+        final Set<String> checked = new HashSet<>();
+        final AlertDialog[] holder = new AlertDialog[1];
+        final Runnable[] renderList = new Runnable[1];
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int side = Ui.dp(this, 16);
+        root.setPadding(side, Ui.dp(this, 6), side, Ui.dp(this, 2));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = Ui.text(this, "主副应用关联", 16, Ui.TEXT_PRIMARY, true);
+        header.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final android.widget.ImageButton addBtn = whitelistHeaderBtn(R.drawable.ic_add, "添加");
+        addBtn.setOnClickListener(v -> showPairMainPicker());
+        header.addView(addBtn);
+        final android.widget.ImageButton backBtn = whitelistHeaderBtn(R.drawable.ic_back, "返回");
+        header.addView(backBtn);
+        root.addView(header);
+
+        LinearLayout filterRow = new LinearLayout(this);
+        filterRow.setOrientation(LinearLayout.HORIZONTAL);
+        filterRow.setGravity(Gravity.CENTER_VERTICAL);
+        filterRow.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 2));
+        String[] filterNames = {"全部", "生效", "未生效"};
+        TextView[] filterViews = new TextView[filterNames.length];
+        for (int i = 0; i < filterNames.length; i++) {
+            final int index = i;
+            TextView item = Ui.text(this, filterNames[i], 12, Ui.TEXT_SECONDARY, false);
+            // 第一个筛选项去掉左内边距，文字左边与顶部标题「主副应用关联」对齐
+            item.setPadding(i == 0 ? 0 : Ui.dp(this, 8), Ui.dp(this, 5),
+                    Ui.dp(this, 8), Ui.dp(this, 5));
+            item.setOnClickListener(v -> {
+                filter[0] = index;
+                checked.clear();
+                renderList[0].run();
+            });
+            filterViews[i] = item;
+            filterRow.addView(item);
+        }
+        root.addView(filterRow);
+
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        int side = Ui.dp(this, 16);
-        col.setPadding(side, Ui.dp(this, 2), side, Ui.dp(this, 2));
-
-        if (list.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("还没有关联，点下面添加");
-            empty.setTextSize(12);
-            empty.setTextColor(getColor(R.color.text_secondary));
-            empty.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
-            col.addView(empty);
-        }
-
-        final AlertDialog[] holder = new AlertDialog[1];
-        for (Pair p : list) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-
-            TextView name = new TextView(this);
-            name.setText(labelFor(p.main) + " → " + labelFor(p.sub)
-                    + (p.enabled ? "" : "（已暂停）"));
-            name.setTextSize(12);
-            name.setTextColor(getColor(p.enabled ? R.color.text_primary : R.color.text_secondary));
-            row.addView(name, new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-            TextView toggle = new TextView(this);
-            toggle.setText(p.enabled ? "暂停" : "恢复");
-            toggle.setTextSize(12);
-            // 暂停=中性蓝，恢复=绿色
-            toggle.setTextColor(getColor(p.enabled ? R.color.blue : R.color.success));
-            toggle.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
-            toggle.setOnClickListener(v -> {
-                setPairEnabled(p.main, !p.enabled);
-                if (holder[0] != null) {
-                    holder[0].dismiss();
-                }
-                showPairManager();
-            });
-            row.addView(toggle);
-
-            TextView del = new TextView(this);
-            del.setText("删除");
-            del.setTextSize(12);
-            del.setTextColor(getColor(R.color.danger));
-            del.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 4), Ui.dp(this, 6));
-            del.setOnClickListener(v -> {
-                removePair(p.main);
-                if (holder[0] != null) {
-                    holder[0].dismiss();
-                }
-                showPairManager();
-            });
-            row.addView(del);
-            col.addView(row);
-        }
-
-        TextView add = new TextView(this);
-        add.setText("＋ 添加主应用");
-        add.setTextSize(13);
-        add.setTextColor(getColor(R.color.text_primary));
-        add.setGravity(Gravity.CENTER);
-        add.setPadding(0, Ui.dp(this, 14), 0, Ui.dp(this, 14));
-        add.setOnClickListener(v -> showPairMainPicker());
-        col.addView(add);
-
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
         sv.addView(col);
+        root.addView(sv);
+
+        // 当前列表：普通态看筛选；批量恢复/暂停只看可执行该项的关联，删除看全部。
+        final java.util.function.Supplier<List<Pair>> shownPairs = () -> {
+            List<Pair> out = new ArrayList<>();
+            for (Pair p : allPairs()) {
+                if (batchAction[0] == actionResume && p.enabled) {
+                    continue;
+                }
+                if (batchAction[0] == actionPause && !p.enabled) {
+                    continue;
+                }
+                if (batchAction[0] == actionNone) {
+                    if (filter[0] == 1 && !p.enabled) {
+                        continue;
+                    }
+                    if (filter[0] == 2 && p.enabled) {
+                        continue;
+                    }
+                }
+                out.add(p);
+            }
+            return out;
+        };
+
+        renderList[0] = () -> {
+            boolean multi = batchAction[0] != actionNone;
+            title.setText(multi ? "批量" + actionNames[batchAction[0]] : "主副应用关联");
+            backBtn.setVisibility(multi ? View.VISIBLE : View.GONE);
+            filterRow.setVisibility(multi ? View.GONE : View.VISIBLE);
+            addBtn.setVisibility(multi ? View.GONE : View.VISIBLE);
+            for (int i = 0; i < filterViews.length; i++) {
+                boolean selected = filter[0] == i;
+                filterViews[i].setTextColor(getColor(selected ? R.color.blue : R.color.text_secondary));
+                filterViews[i].setTypeface(null, selected
+                        ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+            }
+            if (holder[0] != null) {
+                android.widget.Button negative = holder[0].getButton(AlertDialog.BUTTON_NEGATIVE);
+                if (negative != null) {
+                    negative.setText(multi ? actionNames[batchAction[0]] : "关闭");
+                }
+                android.widget.Button neutral = holder[0].getButton(AlertDialog.BUTTON_NEUTRAL);
+                if (neutral != null) {
+                    int total = shownPairs.get().size();
+                    neutral.setText(!multi ? "多选" : checked.isEmpty() ? "全选"
+                            : checked.size() >= total ? "全不选" : "反选");
+                }
+            }
+
+            col.removeAllViews();
+            List<Pair> list = shownPairs.get();
+            if (list.isEmpty()) {
+                TextView empty = new TextView(this);
+                if (multi) {
+                    empty.setText("没有可" + actionNames[batchAction[0]] + "的关联");
+                } else if (filter[0] != 0) {
+                    empty.setText("没有" + filterNames[filter[0]] + "的关联");
+                } else {
+                    empty.setText("还没有关联，点右上角添加");
+                }
+                empty.setTextSize(12);
+                empty.setTextColor(getColor(R.color.text_secondary));
+                empty.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
+                col.addView(empty);
+                return;
+            }
+
+            for (Pair p : list) {
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+
+                if (multi) {
+                    TextView cb = new TextView(this);
+                    cb.setTextSize(9);
+                    cb.setTextColor(0xFFFFFFFF);
+                    cb.setGravity(Gravity.CENTER);
+                    cb.setText(checked.contains(p.main) ? "✓" : "");
+                    cb.setBackgroundResource(checked.contains(p.main)
+                            ? R.drawable.bg_check_on : R.drawable.bg_check_off);
+                    LinearLayout.LayoutParams cbLp = new LinearLayout.LayoutParams(
+                            Ui.dp(this, 15), Ui.dp(this, 15));
+                    cbLp.rightMargin = Ui.dp(this, 8);
+                    row.addView(cb, cbLp);
+                }
+
+                TextView name = new TextView(this);
+                name.setText(labelFor(p.main) + " → " + labelFor(p.sub)
+                        + (p.enabled ? "" : "（已暂停）"));
+                name.setTextSize(12);
+                name.setTextColor(getColor(p.enabled ? R.color.text_primary : R.color.text_secondary));
+                row.addView(name, new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                if (multi) {
+                    row.setOnClickListener(v -> {
+                        if (!checked.add(p.main)) {
+                            checked.remove(p.main);
+                        }
+                        renderList[0].run();
+                    });
+                } else {
+                    TextView toggle = new TextView(this);
+                    toggle.setText(p.enabled ? "暂停" : "恢复");
+                    toggle.setTextSize(12);
+                    toggle.setTextColor(getColor(p.enabled ? R.color.blue : R.color.success));
+                    toggle.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
+                    toggle.setOnClickListener(v -> {
+                        setPairEnabled(p.main, !p.enabled);
+                        if (holder[0] != null) {
+                            holder[0].dismiss();
+                        }
+                        showPairManager();
+                    });
+                    row.addView(toggle);
+
+                    TextView del = new TextView(this);
+                    del.setText("删除");
+                    del.setTextSize(12);
+                    del.setTextColor(getColor(R.color.danger));
+                    del.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 4), Ui.dp(this, 6));
+                    del.setOnClickListener(v -> {
+                        removePair(p.main);
+                        if (holder[0] != null) {
+                            holder[0].dismiss();
+                        }
+                        showPairManager();
+                    });
+                    row.addView(del);
+                }
+                col.addView(row);
+            }
+        };
+
+        backBtn.setOnClickListener(v -> {
+            batchAction[0] = actionNone;
+            checked.clear();
+            renderList[0].run();
+        });
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("主副应用关联")
-                .setView(sv)
+                .setView(root)
+                .setNeutralButton("多选", null)
                 .setNegativeButton("关闭", null)
                 .create();
         holder[0] = dialog;
         pairManagerDialog = dialog;
+        dialog.setOnCancelListener(d -> {
+            if (!pairManagerFromQuickPanel) {
+                return;
+            }
+            pairManagerFromQuickPanel = false;
+            // 等本页完成关闭后，再回到作为上一页的快面板
+            main.post(this::showQuickPanel);
+        });
         dialog.setOnDismissListener(d -> {
             if (pairManagerDialog == dialog) {
                 pairManagerDialog = null;
             }
         });
+        renderList[0].run();
         dialog.show();
         Ui.roundAlertDialog(dialog);
         applySettingsAlignment(dialog);
+
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+            if (batchAction[0] == actionNone) {
+                final String[] actionLabels = {"恢复", "删除", "暂停"};
+                // 标题与下面三项统一 16dp 左缩进，标题用小字号，选项用蓝色稍大字号
+                LinearLayout box = new LinearLayout(this);
+                box.setOrientation(LinearLayout.VERTICAL);
+                box.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 4));
+
+                TextView pickTitle = Ui.text(this, "选择批量操作", 16, Ui.TEXT_PRIMARY, true);
+                pickTitle.setPadding(Ui.dp(this, 16), Ui.dp(this, 10),
+                        Ui.dp(this, 16), Ui.dp(this, 6));
+                box.addView(pickTitle);
+
+                final AlertDialog[] pickHolder = new AlertDialog[1];
+                for (int i = 0; i < actionLabels.length; i++) {
+                    final int which = i;
+                    TextView row = Ui.text(this, actionLabels[i], 14, Ui.BLUE, false);
+                    row.setPadding(Ui.dp(this, 16), Ui.dp(this, 10),
+                            Ui.dp(this, 16), Ui.dp(this, 10));
+                    android.util.TypedValue tv = new android.util.TypedValue();
+                    getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+                    row.setBackgroundResource(tv.resourceId);
+                    row.setOnClickListener(rv -> {
+                        if (pickHolder[0] != null) {
+                            pickHolder[0].dismiss();
+                        }
+                        batchAction[0] = which + 1;
+                        checked.clear();
+                        renderList[0].run();
+                    });
+                    box.addView(row);
+                }
+                AlertDialog pick = new AlertDialog.Builder(this)
+                        .setView(box)
+                        .setNegativeButton("取消", null)
+                        .create();
+                pickHolder[0] = pick;
+                // 选批量操作期间先藏起主副应用关联列表；取消或选完再恢复
+                sv.setVisibility(View.GONE);
+                pick.setOnDismissListener(pd -> sv.setVisibility(View.VISIBLE));
+                pick.show();
+                Ui.roundAlertDialog(pick);
+                applySettingsAlignment(pick);
+                return;
+            }
+            List<String> keys = new ArrayList<>();
+            for (Pair p : shownPairs.get()) {
+                keys.add(p.main);
+            }
+            if (checked.isEmpty()) {
+                checked.addAll(keys);
+            } else if (checked.size() >= keys.size()) {
+                checked.clear();
+            } else {
+                Set<String> inverted = new HashSet<>(keys);
+                inverted.removeAll(checked);
+                checked.clear();
+                checked.addAll(inverted);
+            }
+            renderList[0].run();
+        });
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
+            int action = batchAction[0];
+            if (action == actionNone) {
+                pairManagerFromQuickPanel = false;
+                dialog.dismiss();
+                return;
+            }
+            if (checked.isEmpty()) {
+                toast("先勾选要" + actionNames[action] + "的关联");
+                return;
+            }
+            int count = checked.size();
+            for (Pair p : allPairs()) {
+                if (!checked.contains(p.main)) {
+                    continue;
+                }
+                if (action == actionDelete) {
+                    removePair(p.main);
+                } else {
+                    setPairEnabled(p.main, action == actionResume);
+                }
+            }
+            checked.clear();
+            toast("已" + actionNames[action] + " " + count + " 组关联");
+            renderList[0].run();
+        });
     }
 
     /**
@@ -11135,7 +11396,7 @@ public class FreezeListActivity extends BaseActivity {
                 int outerStart = 100 - Math.max(0, Math.min(100,
                         prefs().getInt(lk(KEY_BLUR), 20)));
                 outerBar.setProgress(outerStart);
-                outerLabel.setText("半屏外侧透明度：" + outerStart + "%");
+                outerLabel.setText("半屏外侧：" + outerStart + "%");
                 outerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -11143,7 +11404,7 @@ public class FreezeListActivity extends BaseActivity {
                             return;
                         }
                         prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
-                        outerLabel.setText("半屏外侧透明度：" + p + "%");
+                        outerLabel.setText("半屏外侧：" + p + "%");
                         applyBackdropStrength();
                     }
 
@@ -11168,7 +11429,7 @@ public class FreezeListActivity extends BaseActivity {
                 int innerStart = 100 - Math.max(0, Math.min(100,
                         prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
                 innerBar.setProgress(innerStart);
-                innerLabel.setText("半屏面板透明度：" + innerStart + "%");
+                innerLabel.setText("半屏面板：" + innerStart + "%");
                 innerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -11180,7 +11441,7 @@ public class FreezeListActivity extends BaseActivity {
                         if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                         }
-                        innerLabel.setText("半屏面板透明度：" + p + "%");
+                        innerLabel.setText("半屏面板：" + p + "%");
                         applyPanelSurface();
                     }
 
@@ -12061,11 +12322,13 @@ public class FreezeListActivity extends BaseActivity {
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             if ("whitelist".equals(id)) {
                 row.setOnClickListener(v -> {
+                    whitelistManagerFromQuickPanel = true;
                     dismissQuickPanel();
                     showWhitelistManager();
                 });
             } else {
                 row.setOnClickListener(v -> {
+                    pairManagerFromQuickPanel = true;
                     dismissQuickPanel();
                     showPairManager();
                 });
@@ -12193,9 +12456,9 @@ public class FreezeListActivity extends BaseActivity {
                     android.R.drawable.sym_def_app_icon));
             line.addView(mainIcon, new LinearLayout.LayoutParams(size, size));
 
-            // 主 → 副 之间用链环标识
+            // 主 → 副 之间用链环标识；这组关联暂停后改为双竖杠暂停图标
             ImageView linkIcon = new ImageView(this);
-            linkIcon.setImageResource(R.drawable.ic_qp_link);
+            linkIcon.setImageResource(p.enabled ? R.drawable.ic_qp_link : R.drawable.ic_qp_pause);
             linkIcon.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
             LinearLayout.LayoutParams linkLp = new LinearLayout.LayoutParams(
                     Ui.dp(this, 12), Ui.dp(this, 12));
@@ -12591,10 +12854,18 @@ public class FreezeListActivity extends BaseActivity {
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(root)
                 .setNeutralButton("多选", null)
-                .setNegativeButton("关闭", null)
+                .setNegativeButton("关闭", (d, w) -> whitelistManagerFromQuickPanel = false)
                 .create();
         dlgHolder[0] = dialog;
         whitelistManagerDialog = dialog;
+        dialog.setOnCancelListener(d -> {
+            if (!whitelistManagerFromQuickPanel) {
+                return;
+            }
+            whitelistManagerFromQuickPanel = false;
+            // 等本页完成关闭后，再回到作为上一页的快面板
+            main.post(this::showQuickPanel);
+        });
         dialog.setOnDismissListener(d -> {
             if (whitelistManagerDialog == dialog) {
                 whitelistManagerDialog = null;
@@ -13897,13 +14168,13 @@ public class FreezeListActivity extends BaseActivity {
         return settingsPanelCardWidth > 0 ? settingsPanelCardWidth : defaultDialogWidth();
     }
 
-    /** 全屏里这两条只写「设置页 / 列表图标」；半屏保留「透明度」，与外侧/面板透明度区分。 */
+    /** 「界面透明度」组内的条目文案：一律不带「透明度」三个字，只显示百分比。 */
     private String settingsSurfaceText(int p) {
-        return (panelMode ? "设置页透明度：" : "设置页：") + p + "%";
+        return "设置页：" + p + "%";
     }
 
     private String iconAlphaText(int p) {
-        return (panelMode ? "列表图标透明度：" : "列表图标：") + p + "%";
+        return "列表图标：" + p + "%";
     }
 
     /** 设置页透明度：0 = 不透明，100 = 全透明；半屏/全屏各存一份。 */

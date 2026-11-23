@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="@color/card_bg" />
+    <!-- 半屏面板底色与全屏列表同一底色，两形态观感一致；
+         透明度由 applyPanelSurface 统一调这一层的 alpha，面板与底栏一起变 -->
+    <solid android:color="@color/page_bg" />
     <corners
         android:topLeftRadius="20dp"
         android:topRightRadius="20dp" />

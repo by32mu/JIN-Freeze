@@ -172,7 +172,7 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
-        <!-- 底部留白与半屏一致（半屏底栏 54dp），避免全屏时白色空档遮住太多图标 -->
+        <!-- 底部留白与半屏一致（半屏列表到分割线只有 4dp），避免最后一行与分割线之间空一大截 -->
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -185,10 +185,11 @@
                 android:paddingStart="14dp"
                 android:paddingTop="8dp"
                 android:paddingEnd="14dp"
-                android:paddingBottom="54dp"
+                android:paddingBottom="4dp"
                 android:scrollbars="none" />
 
-            <!-- 全屏底栏分割线：与半屏底栏上沿的 1px 细线完全一致 -->
+            <!-- 全屏底栏分割线：与半屏底栏上沿的 1px 细线完全一致；
+                 分割线下方不再单独铺底衬，直接透出页面背景，调到任何透明度都与列表区一致 -->
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1px"
@@ -260,7 +261,7 @@
         android:layout_height="wrap_content"
         android:background="@drawable/bg_fab_group"
         android:clickable="true"
-        android:elevation="8dp"
+        android:elevation="24dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:padding="4dp">
@@ -284,7 +285,7 @@
         android:layout_gravity="top|start"
         android:background="@drawable/bg_fab_group"
         android:contentDescription="一键解冻"
-        android:elevation="8dp"
+        android:elevation="24dp"
         android:padding="8dp"
         android:scaleType="fitCenter"
         android:src="@drawable/ic_sc_unfreeze"
@@ -299,7 +300,7 @@
         android:layout_gravity="top|start"
         android:background="@drawable/bg_fab_group"
         android:contentDescription="完成移动图标"
-        android:elevation="9dp"
+        android:elevation="25dp"
         android:padding="10dp"
         android:scaleType="fitCenter"
         android:src="@drawable/ic_check_badge"

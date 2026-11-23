@@ -125,6 +125,8 @@ public class AppFreezeActivity extends BaseActivity {
     private boolean loading;
     /** 上次加载时系统实际可见的包数：授权后这个数会变大，用来触发刷新提示。 */
     private int visibleCount;
+    /** 只有可见包数不足、确实可能在等授权时才允许轮询。 */
+    private boolean permissionWatchNeeded;
     /** 授权观察轮询是否已在跑。 */
     private boolean watchScheduled;
     private int watchTicks;
@@ -295,7 +297,16 @@ public class AppFreezeActivity extends BaseActivity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus && loaded) {
             startPermissionWatch();
+        } else if (!hasFocus) {
+            stopPermissionWatch();
         }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // 页面被覆盖或进入多窗口非活动状态后，不再周期性读取完整应用列表。
+        stopPermissionWatch();
     }
 
     @Override
@@ -307,12 +318,13 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     /**
-     * 授权观察：后台每秒数一次系统可见包数，比加载时多就说明「获取应用列表」刚放行，
+     * 授权观察：前台聚焦时定期数一次系统可见包数，比加载时多就说明「获取应用列表」刚放行，
      * 这时弹一次刷新提示，由用户点「刷新」再重读，不自动刷新。
-     * 不依赖授权弹窗是否触发 pause/焦点变化，各 ROM 都能兜住。
+     * 授权弹窗不改变焦点时原地观察；改变焦点时回到页面后继续观察。
      */
     private void startPermissionWatch() {
-        if (watchScheduled) {
+        if (!permissionWatchNeeded || refreshPromptShown || watchScheduled
+                || !hasWindowFocus()) {
             return;
         }
         watchScheduled = true;
@@ -328,7 +340,8 @@ public class AppFreezeActivity extends BaseActivity {
     private final Runnable permissionWatchTask = new Runnable() {
         @Override
         public void run() {
-            if (isFinishing() || isDestroyed()) {
+            if (isFinishing() || isDestroyed()
+                    || !permissionWatchNeeded || refreshPromptShown) {
                 watchScheduled = false;
                 return;
             }
@@ -349,7 +362,8 @@ public class AppFreezeActivity extends BaseActivity {
         IO.execute(() -> {
             int now = getPackageManager().getInstalledPackages(0).size();
             main.post(() -> {
-                if (isFinishing() || isDestroyed() || refreshPromptShown) {
+                if (isFinishing() || isDestroyed() || refreshPromptShown
+                        || !hasWindowFocus()) {
                     return;
                 }
                 if (now > visibleCount) {
@@ -374,6 +388,27 @@ public class AppFreezeActivity extends BaseActivity {
         dialog.show();
         // 缩小并裁成圆角
         Ui.roundAlertDialog(dialog);
+        // 标题 / 正文 / 按钮统一缩小一档，默认字号在这张窄卡里太挤
+        int titleId = getResources().getIdentifier("alertTitle", "id", "android");
+        TextView title = titleId != 0 ? dialog.findViewById(titleId) : null;
+        if (title == null) {
+            title = dialog.findViewById(android.R.id.title);
+        }
+        if (title != null) {
+            title.setTextSize(15);
+        }
+        TextView message = dialog.findViewById(android.R.id.message);
+        if (message != null) {
+            message.setTextSize(12.5f);
+        }
+        android.widget.Button okBtn = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE);
+        android.widget.Button laterBtn = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE);
+        if (okBtn != null) {
+            okBtn.setTextSize(13);
+        }
+        if (laterBtn != null) {
+            laterBtn.setTextSize(13);
+        }
         if (dialog.getWindow() != null) {
             int width = Math.min(getResources().getDisplayMetrics().widthPixels - Ui.dp(this, 96),
                     Ui.dp(this, 270));
@@ -714,6 +749,7 @@ public class AppFreezeActivity extends BaseActivity {
                 boolean permissionMissing = hasPriv
                         ? (!shellPkgs0.isEmpty() && visibleNow < shellPkgs0.size() - 3)
                         : visibleNow <= 1;
+                permissionWatchNeeded = permissionMissing;
                 if (permissionMissing) {
                     startPermissionWatch();
                 } else {
