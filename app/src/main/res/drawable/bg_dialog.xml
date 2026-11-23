@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 重命名弹窗底板：圆角 + 跟随深浅色的卡片色 -->
+<!-- 弹窗 / 设置面板底板：圆角 + 与半屏面板同一底色（page_bg），避免一块白底跳出 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="@color/card_bg" />
+    <solid android:color="@color/page_bg" />
     <corners android:radius="@dimen/prompt_radius" />
 </shape>

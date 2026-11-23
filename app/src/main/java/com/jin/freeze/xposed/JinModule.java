@@ -17,6 +17,7 @@ public final class JinModule extends XposedModule {
             Kit kit = new Kit(this);
             SwipeFreezeHook.install(param.getClassLoader(), kit);
             LockFreezeHook.install(param.getClassLoader(), kit);
+            PreStartupHook.install(param.getClassLoader(), kit);
         } catch (Throwable t) {
             android.util.Log.e("JinSwipeFreeze", "install 失败", t);
         }

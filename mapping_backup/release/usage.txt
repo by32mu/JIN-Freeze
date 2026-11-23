@@ -17719,8 +17719,6 @@ com.jin.freeze.R$dimen:
     private void <init>()
 com.jin.freeze.R$drawable:
     public static int bg_btn_soft
-    public static int bg_check_off
-    public static int bg_check_on
     public static int bg_fab_group
     public static int bg_field
     public static int bg_field_list
@@ -17731,17 +17729,15 @@ com.jin.freeze.R$drawable:
     public static int bg_status_clip
     public static int bg_tab_selected
     public static int ic_chevron
-    public static int ic_cross_badge
-    public static int ic_download
     public static int ic_freeze_small
     public static int ic_launcher_background
     public static int ic_launcher_foreground
     public static int ic_process_system
+    public static int ic_qp_eye
+    public static int ic_qp_rename
     public static int ic_reboot
-    public static int ic_sc_open_list
     public static int ic_search
     public static int ic_search_plus
-    public static int ic_settings
     public static int ic_shell
     public static int ic_unfreeze_small
     public static int transparent
@@ -17805,6 +17801,8 @@ com.jin.freeze.R$layout:
     public static int item_module
     public static int item_process
     public static int item_process_child
+    private void <init>()
+com.jin.freeze.R$raw:
     private void <init>()
 com.jin.freeze.R$string:
     public static int app_name
@@ -17931,12 +17929,14 @@ com.jin.freeze.core.SwipeFreeze:
     public static final java.lang.String ACTION_STATUS_PING
     public static final java.lang.String ACTION_STATUS_PONG
     public static final java.lang.String CONFIG_PATH
+    public static final java.lang.String EXTRA_PRESTARTUP_FIXED
     private static final java.lang.String HEARTBEAT_PATH
     public static final java.lang.String KEY_APP_TABS
     public static final java.lang.String KEY_ENABLED
     public static final java.lang.String KEY_LOCK_DELAY
     public static final java.lang.String KEY_LOCK_ENABLED
     public static final java.lang.String KEY_LOCK_TAGS
+    public static final java.lang.String KEY_NO_LAUNCH_BG
     public static final java.lang.String KEY_PKGS
     public static final java.lang.String KEY_TABS
     public static final java.lang.String KEY_TAGS
@@ -33892,6 +33892,7 @@ com.jin.freeze.R$dimen
 com.jin.freeze.R$drawable
 com.jin.freeze.R$id
 com.jin.freeze.R$layout
+com.jin.freeze.R$raw
 com.jin.freeze.R$string
 com.jin.freeze.R$style
 com.jin.freeze.core.AppIconCache$1:
@@ -33929,9 +33930,10 @@ com.jin.freeze.core.ShortcutSync:
 com.jin.freeze.core.SuspendDialog:
     public static java.lang.String message(java.lang.String)
 com.jin.freeze.core.SwipeFreeze:
-    public static boolean hasRoot()
     public static int lockDelaySeconds(android.content.Context)
     public static java.lang.String packagePart(java.lang.String)
+    public static void setEnabled(com.jin.freeze.ui.FreezeListActivity,boolean)
+    public static void setLockEnabled(com.jin.freeze.ui.FreezeListActivity,boolean)
 com.jin.freeze.ui.AppActionSheet:
     public static android.widget.LinearLayout$LayoutParams rowLp(com.jin.freeze.ui.BaseActivity)
 com.jin.freeze.ui.AppFreezeActivity$Cell:
@@ -33945,19 +33947,19 @@ com.jin.freeze.ui.FreezeListActivity$$InternalSyntheticLambda$1$a5e13fe50a4711e2
     public final synthetic int f$2
 com.jin.freeze.ui.FreezeListActivity$$InternalSyntheticLambda$1$f37e69093b8b28b084874a34e65bf64f5d35062ea2d9c01af58d8787370e9f01$0:
     public static void onDone()
-com.jin.freeze.ui.FreezeListActivity$28:
-    public static synthetic void lambda$onProgressChanged$0()
 com.jin.freeze.ui.FreezeListActivity$2:
     public final synthetic com.jin.freeze.ui.FreezeListActivity this$0
-com.jin.freeze.ui.FreezeListActivity$31:
+com.jin.freeze.ui.FreezeListActivity$30:
+    public static synthetic void lambda$onProgressChanged$0()
+com.jin.freeze.ui.FreezeListActivity$53:
     public final synthetic com.jin.freeze.ui.FreezeListActivity this$0
-com.jin.freeze.ui.FreezeListActivity$32:
+com.jin.freeze.ui.FreezeListActivity$54:
     public final synthetic com.jin.freeze.ui.FreezeListActivity this$0
-com.jin.freeze.ui.FreezeListActivity$33:
+com.jin.freeze.ui.FreezeListActivity$55:
     public final synthetic com.jin.freeze.ui.FreezeListActivity this$0
-com.jin.freeze.ui.FreezeListActivity$35:
+com.jin.freeze.ui.FreezeListActivity$57:
     public static synthetic void lambda$$0()
-com.jin.freeze.ui.FreezeListActivity$7:
+com.jin.freeze.ui.FreezeListActivity$8:
     public final synthetic com.jin.freeze.ui.FreezeListActivity this$0
 com.jin.freeze.ui.FreezeListActivity$DragCallback:
     public final void onSwiped()
@@ -34000,6 +34002,7 @@ com.jin.freeze.ui.Ui:
 com.jin.freeze.xposed.JinFreeze$$InternalSyntheticBackport$1$c023c6f558a2bc8edcca341e3ff5ec51fb7ec5137e105376828a9ac6c8457cf0$0
 com.jin.freeze.xposed.JinFreeze$$InternalSyntheticBackport$1$c023c6f558a2bc8edcca341e3ff5ec51fb7ec5137e105376828a9ac6c8457cf0$1
 com.jin.freeze.xposed.JinRecents$$InternalSyntheticBackport$1$411703dac63a1ab36b4fd1efe4ba4c757e909966aec100f8dba5d1dedc29af2d$0
+com.jin.freeze.xposed.PreStartupHook$$InternalSyntheticBackport$1$3e5852e5878fceeaca56e8e0da112b4ae8a07b67c7978dd7ead3d939a10f6298$0
 kotlin.Function
 kotlin.InitializedLazyImpl:
     public final java.lang.Object getValue()

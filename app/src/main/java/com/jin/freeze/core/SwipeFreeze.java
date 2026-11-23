@@ -41,12 +41,16 @@ public final class SwipeFreeze {
     public static final String KEY_LOCK_DELAY = "lock_freeze_delay_seconds";
     /** 锁屏冻结自己的标签过滤（与划卡冻结互不影响）。 */
     public static final String KEY_LOCK_TAGS = "lock_freeze_tags";
+    /** 消除启动白底（HyperOS 4 专属，默认关）：模块把系统预启动动画的白/黑底板透明化。 */
+    public static final String KEY_NO_LAUNCH_BG = "no_launch_bg";
     public static final int LOCK_DELAY_MAX = 300;
     /** 默认「立即冻结」 */
     public static final int LOCK_DELAY_DEFAULT = 0;
     /** 设置页探测 LSPosed 模块是否在线：发 ping，模块在 system_server 回 pong */
     public static final String ACTION_STATUS_PING = "com.jin.freeze.action.STATUS_PING";
     public static final String ACTION_STATUS_PONG = "com.jin.freeze.action.STATUS_PONG";
+    /** pong 里的附加项：模块已把系统预启动动画的白/黑底板透明化，页面不用再套冷启动遮罩。 */
+    public static final String EXTRA_PRESTARTUP_FIXED = "prestartup_fixed";
     public static final String KEY_PKGS = "pkgs";
     public static final String KEY_TABS = "tabs";
     public static final String KEY_APP_TABS = "app_tabs";
@@ -116,6 +120,15 @@ public final class SwipeFreeze {
 
     public static void setLockSelectedTags(Context context, Set<String> ids) {
         prefs(context).edit().putStringSet(KEY_LOCK_TAGS, new HashSet<>(ids)).apply();
+    }
+
+    /** 消除启动白底：默认关，关闭时完全按系统默认的启动动画走。 */
+    public static boolean noLaunchBg(Context context) {
+        return prefs(context).getBoolean(KEY_NO_LAUNCH_BG, false);
+    }
+
+    public static void setNoLaunchBg(Context context, boolean on) {
+        prefs(context).edit().putBoolean(KEY_NO_LAUNCH_BG, on).apply();
     }
 
     /** null = 用户从未改过勾选，按「全选」处理（与默认全勾选一致）。 */
@@ -292,6 +305,8 @@ public final class SwipeFreeze {
             // 锁屏冻结独立开关与延时（秒），hook 侧锁屏时读取
             root.put("lock_enabled", lockEnabled(context));
             root.put("lock_delay", lockDelaySeconds(context));
+            // 消除启动白底：hook 侧在图标启动时读，关掉就完全走系统默认
+            root.put("no_launch_bg", noLaunchBg(context));
             root.put("packages", new JSONArray(pkgs));
 
             JSONObject tagsObj = new JSONObject();

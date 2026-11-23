@@ -212,6 +212,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final int FAB_DY_DEFAULT = 4;
     /** 全屏悬浮冻结按钮出厂值（39dp / 距底 4dp / 透明度 15%）的一次性迁移标记。 */
     private static final String KEY_FULL_FAB_SEED = "full_fab_seed_39";
+    /** 全屏底部按钮透明度默认 15% → 40% 的一次性迁移标记。 */
+    private static final String KEY_FULL_FAB_SEED_40 = "full_fab_seed_40";
     /** 标签：内置「用户应用 / 系统应用」+ 自定义；顺序、显隐、名称与每个应用的归属都落盘。 */
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
@@ -307,6 +309,9 @@ public class FreezeListActivity extends BaseActivity {
     /** 「半屏打开时隐藏状态栏」：只作用于半屏面板，不影响全屏页。 */
     private static final String KEY_PANEL_HIDE_STATUS_BAR = "panel_hide_status_bar";
 
+    /** 模块已把系统预启动动画的实色底板透明化（pong 带回）：冷启动不用再套实色遮罩。 */
+    private static final String KEY_PRESTARTUP_FIXED = "prestartup_fixed";
+
     /** 自定义壁纸：原图 URI + 显示范围（缩放/横向/纵向），半屏与全屏各存一份。 */
     private static final String KEY_WALLPAPER_URI = "wallpaper_uri";
     private static final String KEY_WALLPAPER_ZOOM = "wallpaper_zoom";
@@ -336,6 +341,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_FAB_SURFACE = "fab_surface";
     /** 全屏背景档位：0=完全透明、50=模糊、100=实心；与半屏的 panel_surface 各自记忆。 */
     private static final String KEY_FULL_SURFACE = "full_surface";
+    /** 全屏「外部模糊」档位：0=不模糊（外面看得清）、100=最模糊；没设过时跟随全屏背景。 */
+    private static final String KEY_FULL_BLUR = "full_blur";
     /** 全屏里的雪花按钮底板档位：单独记忆，不和半屏共用。 */
     private static final String KEY_FULL_FAB_SURFACE = "full_fab_surface";
     /** 全屏顶栏（横幅）背景档位：单独记忆；没设过时跟随「全屏背景」，升级后观感不变。 */
@@ -348,8 +355,8 @@ public class FreezeListActivity extends BaseActivity {
     public static final String EXTRA_CHECK_PRIV = "check_priv";
     /** 默认实心：与装机现有观感一致，升级后不突然变样。 */
     private static final int SURFACE_SOLID = 100;
-    /** 全屏悬浮冻结按钮底板默认档位：设置里「透明度」15% 对应的存储值（100 = 实心）。 */
-    private static final int FULL_FAB_SURFACE_DEFAULT = 85;
+    /** 全屏悬浮冻结按钮底板默认档位：与半屏一致，「透明度」40%（100 = 实心）。 */
+    private static final int FULL_FAB_SURFACE_DEFAULT = 60;
     private static final String TAB_USER = "user";
     private static final String TAB_SYSTEM = "system";
     /** 图标长按出操作单的判定时长：350–450ms 档，比系统默认 500ms 短，按住一秒内稳出。 */
@@ -479,6 +486,16 @@ public class FreezeListActivity extends BaseActivity {
                 return;
             }
             lsposedAlive = true;
+            // 模块会把「预启动底板是否已透明化」一起带回来：缓存下来给下次冷启动判断，
+            // 本次若正盖着遮罩，说明没必要了，立刻回到设置的透明度
+            boolean fixed = intent.getBooleanExtra(SwipeFreeze.EXTRA_PRESTARTUP_FIXED, false);
+            if (fixed != prefs().getBoolean(KEY_PRESTARTUP_FIXED, false)) {
+                prefs().edit().putBoolean(KEY_PRESTARTUP_FIXED, fixed).apply();
+            }
+            if (fixed && coldStartMask) {
+                coldStartMask = false;
+                applyWindowBackdrop();
+            }
             Runnable refresh = privTitleRefresh;
             if (refresh != null) {
                 refresh.run();
@@ -548,6 +565,12 @@ public class FreezeListActivity extends BaseActivity {
     private boolean editUnfreeze;
     /** 半屏浮层承载形态（从快捷方式进入）；全屏页为 false。 */
     private boolean panelMode;
+    /**
+     * 冷启动遮罩：HyperOS 的「预启动动画」会在应用窗口下方铺一张纯白（夜间纯黑）底板，
+     * 启动动画收尾前不会撤掉。页面是半透明窗口，会把这层底板透出来，观感就是「先闪白/黑，再变透明」。
+     * 冷启动首帧先用 100% 实心底色盖住，等启动动画结束再淡入用户设置的透明度。
+     */
+    private boolean coldStartMask;
     /** 快捷方式带进来的待执行动作，数据就绪后消费一次。 */
     private String pendingAction;
     /** 选应用回传后的第一个新包名：刷新完成后切到它所属的标签并滚过去。 */
@@ -883,6 +906,12 @@ public class FreezeListActivity extends BaseActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         panelMode = isPanelMode();
+        // 冷启动（桌面图标/抽屉进入）时先按实心出，避开系统预启动动画的纯白/纯黑底板。
+        // 只在这个「消除启动白底」开关打开、且模块 hook 没装上时才兜底；
+        // 开关关掉就完全按系统默认的启动动画走。
+        coldStartMask = savedInstanceState == null && !panelMode && fullSurfacePct() < SURFACE_SOLID
+                && SwipeFreeze.noLaunchBg(this)
+                && !prefs().getBoolean(KEY_PRESTARTUP_FIXED, false);
         // 先让 ShizukuGate 拿到 Context：权限探测要用它读「用户点过允许」的记录
         ShizukuGate.installed(this);
         // 列表选中项不再有高亮框，清掉历史遗留的档位键
@@ -890,7 +919,8 @@ public class FreezeListActivity extends BaseActivity {
         // 名单类数据都在应用内部目录（SharedPreferences），升级安装不会丢，不再做外部自动备份/恢复
         // 先在进内容之前把壁纸准备好：解码有进程内缓存，首帧就可以直接挂上，不会先露一帧白底
         loadWallpaperFromPrefs();
-        // 整页底板在窗口第一次显示之前就挂到窗口背景上：首帧就带着「全屏背景」设定的透明度，
+        // 整页底板在窗口第一次显示之前就挂到窗口背景上：首帧就带着「全屏背景」设定的透明度
+        //（冷启动那一次是 100% 实心，等系统预启动动画收尾后再淡回设置档位，见 coldStartMask），
         // 不会先由系统/窗口兜一层实心（浅色模式是白）底、下一帧才被透明度盖回来
         applyWindowBackdrop();
         // 隐藏状态栏要在内容上屏之前就生效：窗口显示后再 hide 会触发一次布局，
@@ -915,6 +945,19 @@ public class FreezeListActivity extends BaseActivity {
                 new IntentFilter(SwipeFreeze.ACTION_STATUS_PONG),
                 androidx.core.content.ContextCompat.RECEIVER_EXPORTED);
         applyWallpaperBackground();
+        // 顺手问一次模块「预启动底板透明化」的状态：刚装模块时缓存里还没有，
+        // 收到 pong 后就按真实状态显示，并把结果留给下次冷启动
+        if (SwipeFreeze.noLaunchBg(this)
+                && !prefs().getBoolean(KEY_PRESTARTUP_FIXED, false)) {
+            sendBroadcast(new Intent(SwipeFreeze.ACTION_STATUS_PING).setPackage("android"));
+        }
+        // 系统预启动动画在首帧之后还要收尾一小段（实测约 250ms），撤掉后再把实心底色淡回设置档位
+        if (coldStartMask) {
+            View maskRoot = findViewById(R.id.page_root);
+            if (maskRoot != null) {
+                maskRoot.postDelayed(this::releaseColdStartMask, 480);
+            }
+        }
         // 长按选项框勾了「同步」时，提前在后台备好半屏壁纸，长按弹出就不用等解码/模糊
         if (prefs().getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)) {
             IO.execute(() -> WallpaperSource.sheetBitmap(this, srcMode()));
@@ -1098,6 +1141,8 @@ public class FreezeListActivity extends BaseActivity {
         whiteBadgeRight = prefs().getBoolean(KEY_WHITE_BADGE_RIGHT, true);
         seedPanelFabDefaults();
         seedFullscreenFabDefaults();
+        seedFullscreenFabSurface40();
+        seedHeaderSurface();
         seedFoldedSettingsDefaults();
         fabDx = prefs().getInt(lk(KEY_FAB_DX), 0);
         fabDy = Math.max(0, prefs().getInt(lk(KEY_FAB_DY),
@@ -1233,6 +1278,24 @@ public class FreezeListActivity extends BaseActivity {
         e.putBoolean(KEY_FULL_FAB_SEED, true).apply();
     }
 
+    /** 全屏底部冻结按钮透明度默认改为 40%：只把仍是旧默认 85（15% 透明）的设备换掉。 */
+    private void seedFullscreenFabSurface40() {
+        if (prefs().getBoolean(KEY_FULL_FAB_SEED_40, false)) {
+            return;
+        }
+        if (prefs().getInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT) == 85) {
+            prefs().edit().putInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT).apply();
+        }
+        prefs().edit().putBoolean(KEY_FULL_FAB_SEED_40, true).apply();
+    }
+
+    /** 横幅档位从「跟随全屏背景」改为独立记忆：首次升级按当前全屏背景落一次盘。 */
+    private void seedHeaderSurface() {
+        if (!prefs().contains(KEY_HEADER_SURFACE)) {
+            prefs().edit().putInt(KEY_HEADER_SURFACE, fullSurfacePct()).apply();
+        }
+    }
+
     /** 设置栏目「默认折叠」升级：老版本默认展开的存量状态一次性收起，让「默认折叠」立刻生效。 */
     private void seedFoldedSettingsDefaults() {
         if (prefs().getBoolean(KEY_SETTINGS_FOLD_SEEDED, false)) {
@@ -1284,7 +1347,7 @@ public class FreezeListActivity extends BaseActivity {
         // 切形态时新窗口头一两帧既没模糊也没压暗，看起来就是「先透明一下再回模糊」
         View scrim = findViewById(R.id.panel_scrim);
         if (scrim != null) {
-            scrim.setBackgroundColor((0x33 * pct / 100) << 24);
+            scrim.setBackgroundColor(panelScrimColor());
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             try {
@@ -1299,6 +1362,12 @@ public class FreezeListActivity extends BaseActivity {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    /** 半屏外侧的压暗色：0x33 × 档位。面板遮罩与状态栏那条共用，避免顶部接缝。 */
+    private int panelScrimColor() {
+        int pct = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_BLUR), 20)));
+        return (0x33 * pct / 100) << 24;
     }
 
     /** 半屏面板本体：只动面板自己的背景透明度，不碰上方遮罩的深浅与窗口模糊。 */
@@ -1437,12 +1506,21 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 全屏顶栏（横幅）档位：没单独设过时跟随「全屏背景」，
-     * 这样已有用户升级后横幅观感不变，动过新滑块才改为独立记忆。
+     * 全屏「外部模糊」档位：0 = 外面一点不糊（透明），100 = 最糊。
+     * 没单独设过时跟随全屏背景，保持升级前后的观感一致。
+     */
+    private int fullBlurPct() {
+        int v = prefs().getInt(KEY_FULL_BLUR, -1);
+        return v < 0 ? fullSurfacePct() : Math.max(0, Math.min(100, v));
+    }
+
+    /**
+     * 全屏顶栏（横幅）档位：独立记忆，不再跟随「全屏背景」。
+     * 第一次升级时用当前全屏背景档位落一次盘，保证横幅观感不变且之后互不影响。
      */
     private int headerSurfacePct() {
-        int v = prefs().getInt(KEY_HEADER_SURFACE, -1);
-        return v < 0 ? fullSurfacePct() : Math.max(0, Math.min(100, v));
+        return Math.max(0, Math.min(100,
+                prefs().getInt(KEY_HEADER_SURFACE, SURFACE_SOLID)));
     }
 
     /** 全屏标签页胶囊整体档位：默认实心，与页面背景互不影响。 */
@@ -1480,7 +1558,7 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         int pct = fullSurfacePct();
-        int alpha = Math.round(255f * pct / 100f);
+        int alpha = coldStartMask ? 255 : Math.round(255f * pct / 100f);
         // 窗口背景保持全透明，整页底色只由 page_root 一层承担，避免两层各带一次 alpha
         w.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
         // 窗口背景已经覆盖整块窗口（含状态栏/导航栏那两条），系统栏再刷一层同色会比页面更实；
@@ -1496,38 +1574,73 @@ public class FreezeListActivity extends BaseActivity {
             } catch (Throwable ignored) {
             }
         }
-        View root = findViewById(R.id.page_root);
-        if (root != null) {
-            if (wallpaperDrawable != null) {
-                // 新实例：同一个 drawable 重复 setBackground 不会触发重绘
-                WallpaperDrawable next = new WallpaperDrawable(wallpaperBitmap, 0);
-                next.setAlpha(alpha);
-                root.setBackground(next);
-            } else {
-                // 底色沿用 2.10.13 的 page_bg；列表区与底栏同色，透明度只由这一层承担
-                int base = getColor(R.color.page_bg);
-                root.setBackground(new ColorDrawable(android.graphics.Color.argb(alpha,
-                        android.graphics.Color.red(base),
-                        android.graphics.Color.green(base),
-                        android.graphics.Color.blue(base))));
-            }
-        }
+        setPageBackdropAlpha(alpha);
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             try {
                 w.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
                 android.view.WindowManager.LayoutParams attrs = w.getAttributes();
                 int maxRadius = Ui.dp(this, 28);
-                attrs.setBlurBehindRadius(Math.round(maxRadius * pct / 100f));
+                // 外面糊到什么程度由「全屏外模糊」单独控制（0 = 外面看得清，100 = 最糊）
+                attrs.setBlurBehindRadius(Math.round(maxRadius * fullBlurPct() / 100f));
                 w.setAttributes(attrs);
             } catch (Exception ignored) {
             }
         }
         // 状态栏/导航栏压在页面背景上：背景偏实（浅色）时用深色图标，
-        // 偏透明时页面可能压着深色壁纸，切成浅色图标保证可读
+        // 偏透明时页面可能压着深色壁纸，切成浅色图标保证可读；
+        // 冷启动遮罩期间页面是实心底色，图标明暗直接跟页面底色走
+        boolean lightBars = coldStartMask ? !nightMode() : pct >= 50;
         androidx.core.view.WindowInsetsControllerCompat controller =
                 androidx.core.view.WindowCompat.getInsetsController(w, w.getDecorView());
-        controller.setAppearanceLightStatusBars(pct >= 50);
-        controller.setAppearanceLightNavigationBars(pct >= 50);
+        controller.setAppearanceLightStatusBars(lightBars);
+        controller.setAppearanceLightNavigationBars(lightBars);
+    }
+
+    /** 只刷新 page_root 底色这一层：整页 alpha 始终只有这一个来源。 */
+    private void setPageBackdropAlpha(int alpha) {
+        View root = findViewById(R.id.page_root);
+        if (root == null) {
+            return;
+        }
+        if (wallpaperDrawable != null) {
+            // 新实例：同一个 drawable 重复 setBackground 不会触发重绘
+            WallpaperDrawable next = new WallpaperDrawable(wallpaperBitmap, 0);
+            next.setAlpha(alpha);
+            root.setBackground(next);
+        } else {
+            // 底色沿用 2.10.13 的 page_bg；列表区与底栏同色，透明度只由这一层承担
+            int base = getColor(R.color.page_bg);
+            root.setBackground(new ColorDrawable(android.graphics.Color.argb(alpha,
+                    android.graphics.Color.red(base),
+                    android.graphics.Color.green(base),
+                    android.graphics.Color.blue(base))));
+        }
+    }
+
+    /**
+     * 系统预启动动画（那张铺在白/黑底板上的圆角卡片）撤除后，把遮罩用的实心底色
+     * 淡回用户设置的档位：冷启动不再出现「白底整块 → 突然透明」的闪跳。
+     */
+    private void releaseColdStartMask() {
+        if (!coldStartMask) {
+            return;
+        }
+        coldStartMask = false;
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        int target = Math.round(255f * fullSurfacePct() / 100f);
+        android.animation.ValueAnimator va = android.animation.ValueAnimator.ofInt(255, target);
+        va.setDuration(220);
+        va.setInterpolator(new DecelerateInterpolator());
+        va.addUpdateListener(a -> setPageBackdropAlpha((int) a.getAnimatedValue()));
+        va.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                applyWindowBackdrop();
+            }
+        });
+        va.start();
     }
 
     private void clearCustomWallpaper() {
@@ -1636,7 +1749,7 @@ public class FreezeListActivity extends BaseActivity {
                 w.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
                 android.view.WindowManager.LayoutParams attrs = w.getAttributes();
                 int maxRadius = Ui.dp(this, 28);
-                attrs.setBlurBehindRadius(Math.round(maxRadius * pct / 100f));
+                attrs.setBlurBehindRadius(Math.round(maxRadius * fullBlurPct() / 100f));
                 w.setAttributes(attrs);
             } catch (Exception ignored) {
             }
@@ -1873,9 +1986,6 @@ public class FreezeListActivity extends BaseActivity {
         if (introScrimView == null) {
             return;
         }
-        // 窗口是透明的：首帧就把过渡遮罩铺满，避免等待动画起跑的那几帧把背后页面/桌面露出来
-        introScrimView.setVisibility(View.VISIBLE);
-        introScrimView.setAlpha(1f);
         if (introStatusView == null) {
             ensureIntroStatusView();
         }
@@ -1935,13 +2045,21 @@ public class FreezeListActivity extends BaseActivity {
         }
         main.removeCallbacks(introReveal);
         main.removeCallbacks(introSafety);
-        // 首帧已是全黑（见 playIntro）：不再从透明淡入，保持压满，等停留结束再淡出
+        // 与 2.9.99 一致：整屏由透明慢慢压暗 → 停留 → 淡出
         introScrimView.setVisibility(View.VISIBLE);
-        introScrimView.setAlpha(1f);
-        syncIntroIcons(1f);
+        introScrimView.setAlpha(0f);
+        introScrimView.animate().alpha(1f)
+                .setDuration(INTRO_IN_MS)
+                .setInterpolator(new DecelerateInterpolator())
+                .setUpdateListener(a -> syncIntroIcons(introScrimView.getAlpha()))
+                .start();
         if (introStatusView != null) {
             introStatusView.setVisibility(View.VISIBLE);
-            introStatusView.setAlpha(1f);
+            introStatusView.setAlpha(0f);
+            introStatusView.animate().alpha(1f)
+                    .setDuration(INTRO_IN_MS)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .start();
         }
         main.postDelayed(introReveal, INTRO_IN_MS + INTRO_HOLD_MS);
         main.postDelayed(introSafety, INTRO_IN_MS + INTRO_HOLD_MS + INTRO_OUT_MS + 400);
@@ -2202,7 +2320,28 @@ public class FreezeListActivity extends BaseActivity {
         super.onWindowFocusChanged(hasFocus);
         // 窗口属性（模糊标志等）重新下发后，系统栏外观与可见性可能被重置，这里再压一次
         if (hasFocus && panelMode) {
+            schedulePanelBackdrop();
             schedulePanelStatusTone();
+        }
+    }
+
+    /**
+     * 半屏回到前台后分多个时间点重压外侧遮罩与窗口模糊。
+     * 系统在切后台/回前台的过程中会多次刷新窗口属性（模糊标志常被清掉），
+     * 单次 onResume 压不住，这里补压到 1.2s，与状态栏外观的处理保持一致。
+     */
+    private void schedulePanelBackdrop() {
+        if (!panelMode) {
+            return;
+        }
+        View decor = getWindow().getDecorView();
+        long[] delays = {0, 120, 350, 700, 1200};
+        for (long delay : delays) {
+            decor.postDelayed(() -> {
+                if (panelMode && !isFinishing() && !isDestroyed()) {
+                    applyBackdropStrength();
+                }
+            }, delay);
         }
     }
 
@@ -2568,6 +2707,7 @@ public class FreezeListActivity extends BaseActivity {
                 ? (hideTarget ? FreezeListHiddenActivity.class : FreezeListActivity.class)
                 : (hideTarget ? FreezePanelHiddenActivity.class : FreezePanelActivity.class);
         Intent intent = new Intent(this, next);
+        // 与 2.9.99 一致：瞬时切换（无过渡动画），两条路径（开关开/关）速度相同
         intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(intent);
         finish();
@@ -2795,6 +2935,11 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 半屏从后台回到前台（含从桌面图标再次拉起）时重压一次外侧遮罩与窗口模糊：
+        // 系统在切后台时会把窗口模糊/遮罩相关属性刷掉，不重压就会出现「外面全透明、滑块失效」
+        if (panelMode) {
+            schedulePanelBackdrop();
+        }
         // 选择应用页里也能改标签页，这里重读一次归属，否则返回列表后仍按旧内存数据分组
         loadAppTabs();
         // 每次回到页面都重新读一次系统真值
@@ -2866,9 +3011,8 @@ public class FreezeListActivity extends BaseActivity {
     private void syncRecentsExclusion() {
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                // 默认打开形态是半屏时，全屏页不再让系统留快照：否则下次从图标拉起半屏，
-                // A14+ 的启动快照会先闪一张上一次的全屏列表再切半屏。
-                // 默认全屏的用户保持原样，最近任务里仍然有预览。
+                // 冷启动的白底/黑底来自系统「预启动动画」的实色底板（见 coldStartMask），
+                // 与最近任务快照无关，不要为了启动观感把最近任务截图整体关掉
                 boolean allowShot = !panelHideRecents
                         && (panelMode || prefs().getBoolean(KEY_FULLSCREEN_OPEN, true));
                 setRecentsScreenshotEnabled(allowShot);
@@ -3973,8 +4117,13 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 「专属LSPosed」标题点开的说明卡片。 */
     private void showLspHintDialog(TextView titleView) {
-        showHintCard("LSPosed框架里激活凚后，\n无需保留凚的后台也可生效。\n划卡冻结：划卡最近任务卡片即冻结；\n锁屏冻结：锁屏后按时间冻结，亮屏后重计。",
-                "lsp", titleView, "专属LSPosed");
+        String text = "LSPosed框架里激活凚后，\n无需保留凚的后台也可生效。\n划卡冻结：划卡最近任务卡片即冻结；\n锁屏冻结：锁屏后按时间冻结，亮屏后重计。";
+        // 只有 HyperOS 4 才有「消除启动白底」这个开关，说明也只在能显示开关时才带上
+        if (isHyperOs4()) {
+            text += "\n消除启动白底：全屏背景透明度调节后，冷启动会先闪白色背景，开启后可消除。"
+                    + "\n开启此功能，可优化半屏列表打开动画。";
+        }
+        showHintCard(text, "lsp", titleView, "专属LSPosed");
     }
 
     /** 列表白名单标题点开的说明卡片。 */
@@ -7646,12 +7795,60 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 布局设置里的「锁屏冻结（lsposed）」开关，勾选后显示 0-300 秒延时滑块。
+     * 布局设置里的「消除启动白底」开关（HyperOS 4 专属，默认关）。
      *
-     * 名单与标签口径和划卡冻结共用；开关、延时都写进 /data/system/jin_freeze_list.json，
-     * hook 侧锁屏时按 mtime 重读，改完即生效、不用重启 system_server。
+     * 打开后模块会把系统预启动动画铺在窗口下方的白/黑底板 alpha 压成 0，
+     * 冷启动第一帧直接是设置的透明度；关掉则完全按 2.10.14 的默认表现走
+     * （系统动画自己铺什么颜色就是什么颜色，凚 不插手）。
+     * 开关写进 /data/system/jin_freeze_list.json，hook 侧按 mtime 重读，不用重启 system_server。
      * 同样只在 root 通道可用（Shizuku 的 uid 2000 写不进 /data/system）。
      */
+    private void addNoLaunchBgSection(LinearLayout box) {
+        final CheckBox enableBox = new CheckBox(this);
+        enableBox.setText("消除启动白底");
+        enableBox.setTextSize(11);
+        enableBox.setTextColor(getColor(R.color.text_secondary));
+        enableBox.setMinimumHeight(Ui.dp(this, 32));
+        enableBox.setChecked(SwipeFreeze.noLaunchBg(this));
+        // 先置灰，root 检测完成后再决定是否可用
+        enableBox.setEnabled(false);
+        enableBox.setOnCheckedChangeListener((btn, on) -> {
+            SwipeFreeze.setNoLaunchBg(this, on);
+            SwipeFreeze.syncAsync(this);
+        });
+        box.addView(enableBox);
+
+        JinApp.IO.execute(() -> {
+            boolean root = SwipeFreeze.hasRoot();
+            runOnUiThread(() -> {
+                enableBox.setEnabled(root);
+                if (!root) {
+                    enableBox.setChecked(false);
+                }
+            });
+        });
+    }
+
+    /** HyperOS 4（OS4.x）才有这套预启动动画的实色底板，别的 ROM 不显示这个开关。 */
+    private static boolean isHyperOs4() {
+        String name = systemProp("ro.mi.os.version.name");
+        if (name != null && name.trim().startsWith("OS4")) {
+            return true;
+        }
+        return "4".equals(systemProp("ro.mi.os.version.code").trim());
+    }
+
+    /** 读系统属性：SystemProperties 是隐藏类，只能反射取。 */
+    private static String systemProp(String key) {
+        try {
+            Class<?> cls = Class.forName("android.os.SystemProperties");
+            Object value = cls.getMethod("get", String.class).invoke(null, key);
+            return value instanceof String ? (String) value : "";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     private void addLockFreezeSection(LinearLayout box) {
         final CheckBox enableBox = new CheckBox(this);
         enableBox.setText("锁屏冻结");
@@ -8452,6 +8649,10 @@ public class FreezeListActivity extends BaseActivity {
                 KEY_SETTINGS_LSP_COLLAPSED, null, () -> showLspHintDialog(lspTitle));
         addSwipeFreezeSection(lspBody);
         addLockFreezeSection(lspBody);
+        // 消除启动白底：只针对 HyperOS 4 的预启动动画底板，别的 ROM 不显示
+        if (isHyperOs4()) {
+            addNoLaunchBgSection(lspBody);
+        }
         // 标签：标题右侧箭头负责折叠，与「手势调节」同一套把手；标题点击仍是看说明
         final LinearLayout tabBody = new LinearLayout(this);
         tabBody.setOrientation(LinearLayout.VERTICAL);
@@ -9099,8 +9300,9 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
             }
         });
-        itsBody.addView(settingsLabel);
-        itsBody.addView(settingsBar);
+        // 这一组滑块的展示顺序在最后统一排（全屏/半屏各自一套），这里只登记内容
+        final java.util.LinkedHashMap<String, View[]> opacityRows = new java.util.LinkedHashMap<>();
+        opacityRows.put("settings", new View[]{settingsLabel, settingsBar});
 
         // 列表图标透明度：0 不透明，越大越透明；只影响列表格子里的应用图标
         final TextView iconAlphaLabel = new TextView(this);
@@ -9137,8 +9339,7 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
             }
         });
-        itsBody.addView(iconAlphaLabel);
-        itsBody.addView(iconAlphaBar);
+        opacityRows.put("icon", new View[]{iconAlphaLabel, iconAlphaBar});
 
         if (panelMode) {
             // 半屏外侧（上方遮罩）透明度：越大越透明，背后页面看得越清
@@ -9170,8 +9371,7 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            itsBody.addView(outerLabel);
-            itsBody.addView(outerBar);
+            opacityRows.put("outer", new View[]{outerLabel, outerBar});
 
             // 半屏内侧（面板本体）透明度
             final TextView innerLabel = new TextView(this);
@@ -9206,8 +9406,7 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            itsBody.addView(innerLabel);
-            itsBody.addView(innerBar);
+            opacityRows.put("inner", new View[]{innerLabel, innerBar});
         } else {
             // 全屏背景透明度：整页底板（含状态栏那条）一起淡出
             final TextView bgLabel = new TextView(this);
@@ -9243,8 +9442,7 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            itsBody.addView(bgLabel);
-            itsBody.addView(bgBar);
+            opacityRows.put("bg", new View[]{bgLabel, bgBar});
 
             // 横幅（全屏顶部冻结列表那条）透明度：滑块与「全屏背景」同一套逻辑
             // （0 = 不透明、100 = 全透明），档位单独记忆，没设过时跟随全屏背景
@@ -9276,8 +9474,7 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            itsBody.addView(headerLabel);
-            itsBody.addView(headerBar);
+            opacityRows.put("header", new View[]{headerLabel, headerBar});
         }
 
         // 搜索框透明度：只属于全屏（半屏底部没有搜索框）；独立档位，与背景档位解耦
@@ -9311,8 +9508,38 @@ public class FreezeListActivity extends BaseActivity {
                 public void onStopTrackingTouch(SeekBar sb) {
                 }
             });
-            itsBody.addView(searchLabel);
-            itsBody.addView(searchBar);
+            opacityRows.put("search", new View[]{searchLabel, searchBar});
+
+            // 全屏外模糊：0 = 外面一点不糊（透明），越大越模糊；与「全屏背景」解耦
+            final TextView blurLabel = new TextView(this);
+            blurLabel.setTextSize(11);
+            blurLabel.setTextColor(getColor(R.color.text_secondary));
+            final SeekBar blurBar = new SeekBar(this);
+            blurBar.setMax(100);
+            int blurStart = fullBlurPct();
+            blurBar.setProgress(blurStart);
+            blurLabel.setText("全屏外模糊：" + blurStart + "%");
+            blurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                    if (!fromUser) {
+                        return;
+                    }
+                    prefs().edit().putInt(KEY_FULL_BLUR, p).apply();
+                    blurLabel.setText("全屏外模糊：" + p + "%");
+                    // 窗口模糊半径在 applyWindowBackdrop 里统一挂
+                    applyFullscreenSurface();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar sb) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                }
+            });
+            opacityRows.put("blur", new View[]{blurLabel, blurBar});
         }
         // 快面板透明度：独立档位，0 不透明、越大越透明；不再跟随「设置页」那条
         final TextView qpAlphaLabel = new TextView(this);
@@ -9344,8 +9571,20 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
             }
         });
-        itsBody.addView(qpAlphaLabel);
-        itsBody.addView(qpAlphaBar);
+        opacityRows.put("qp", new View[]{qpAlphaLabel, qpAlphaBar});
+        // 统一按最终顺序铺进组体：
+        // 全屏：横幅、搜索、列表图标、全屏背景、全屏外模糊、快面板、设置页
+        // 半屏：列表图标、半屏面板、半屏外侧、快面板、设置页
+        String[] opacityOrder = panelMode
+                ? new String[]{"icon", "inner", "outer", "qp", "settings"}
+                : new String[]{"header", "search", "icon", "bg", "blur", "qp", "settings"};
+        for (String key : opacityOrder) {
+            View[] row = opacityRows.get(key);
+            if (row != null) {
+                itsBody.addView(row[0]);
+                itsBody.addView(row[1]);
+            }
+        }
         box.addView(its, Math.max(0, box.indexOfChild(fabHead)));
 
         // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
@@ -11528,6 +11767,39 @@ public class FreezeListActivity extends BaseActivity {
                 body.addView(headerBar);
                 return body;
             }
+            case "op_blur": {
+                final TextView blurLabel = new TextView(this);
+                blurLabel.setTextSize(11);
+                blurLabel.setTextColor(getColor(R.color.text_secondary));
+                final SeekBar blurBar = new SeekBar(this);
+                blurBar.setMax(100);
+                int blurStart = fullBlurPct();
+                blurBar.setProgress(blurStart);
+                blurLabel.setText("全屏外模糊：" + blurStart + "%");
+                blurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        // 滑块值 = 模糊度：0 外面看得清，100 最糊
+                        prefs().edit().putInt(KEY_FULL_BLUR, p).apply();
+                        blurLabel.setText("全屏外模糊：" + p + "%");
+                        applyFullscreenSurface();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                body.addView(blurLabel);
+                body.addView(blurBar);
+                return body;
+            }
             case "op_search": {
                 final TextView searchLabel = new TextView(this);
                 searchLabel.setTextSize(11);
@@ -11571,15 +11843,13 @@ public class FreezeListActivity extends BaseActivity {
     private View quickPanelOpacityBody() {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.addView(quickPanelSliderBody("op_settings"));
-        body.addView(quickPanelSliderBody("op_icon_alpha"));
-        if (panelMode) {
-            body.addView(quickPanelSliderBody("op_outer"));
-            body.addView(quickPanelSliderBody("op_inner"));
-        } else {
-            body.addView(quickPanelSliderBody("op_bg"));
-            body.addView(quickPanelSliderBody("op_header"));
-            body.addView(quickPanelSliderBody("op_search"));
+        // 顺序与设置页「界面透明度」保持一致（快面板里没有「快面板」这一条）
+        String[] order = panelMode
+                ? new String[]{"op_icon_alpha", "op_inner", "op_outer", "op_settings"}
+                : new String[]{"op_header", "op_search", "op_icon_alpha", "op_bg",
+                        "op_blur", "op_settings"};
+        for (String id : order) {
+            body.addView(quickPanelSliderBody(id));
         }
         return body;
     }
@@ -11818,6 +12088,11 @@ public class FreezeListActivity extends BaseActivity {
         root.setOrientation(LinearLayout.VERTICAL);
         int side = Ui.dp(this, 16);
         root.setPadding(side, Ui.dp(this, 4), side, Ui.dp(this, 4));
+        // 与设置面板同一套阴影：圆角 outline + elevation，外层 shell 留出绘制空间
+        boolean qpNight = (getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        root.setElevation(Ui.dp(this, qpNight ? 18 : 10));
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -14643,7 +14918,9 @@ public class FreezeListActivity extends BaseActivity {
         }
         if (grid != null && grid.getHeight() > 0) {
             grid.getLocationOnScreen(loc);
-            return loc[1] + grid.getHeight() - grid.getPaddingBottom();
+            // 底栏是列表底部预留的 54dp 区域（与半屏底栏同高、与布局里的分割线一致），
+            // 不能用列表自身的 4dp 内边距，否则只剩最底下一条几像素能触发长按
+            return loc[1] + grid.getHeight() - Ui.dp(this, 54);
         }
         return -1;
     }

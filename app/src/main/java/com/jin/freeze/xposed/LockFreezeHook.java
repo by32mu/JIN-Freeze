@@ -78,6 +78,9 @@ final class LockFreezeHook {
             }
             Intent reply = new Intent(ACTION_STATUS_PONG)
                     .setPackage("com.jin.freeze")
+                    // 顺带告诉 App：预启动动画的白/黑底板已被透明化，冷启动不用再套实色遮罩
+                    // （键名与 App 侧 SwipeFreeze.EXTRA_PRESTARTUP_FIXED 一致，模块内不引用 App 类）
+                    .putExtra("prestartup_fixed", PreStartupHook.installed)
                     .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
             context.sendBroadcast(reply);
         }

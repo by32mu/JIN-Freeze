@@ -43,10 +43,13 @@ public final class JinHookConfig {
         final Set<String> selected;
         /** 锁屏冻结自己的标签勾选；null = 未写该字段（视为全选） */
         final Set<String> lockSelected;
+        /** 消除启动白底：关掉时完全按系统默认的启动动画走。 */
+        final boolean noLaunchBg;
 
         Snapshot(boolean enabled, boolean lockEnabled, int lockDelaySeconds,
                  Set<String> packages, Map<String, Set<String>> tags,
-                 Map<String, String> labels, Set<String> selected, Set<String> lockSelected) {
+                 Map<String, String> labels, Set<String> selected, Set<String> lockSelected,
+                 boolean noLaunchBg) {
             this.enabled = enabled;
             this.lockEnabled = lockEnabled;
             this.lockDelaySeconds = lockDelaySeconds;
@@ -55,6 +58,7 @@ public final class JinHookConfig {
             this.labels = labels;
             this.selected = selected;
             this.lockSelected = lockSelected;
+            this.noLaunchBg = noLaunchBg;
         }
     }
 
@@ -198,10 +202,17 @@ public final class JinHookConfig {
 
         Set<String> selected = readIds(root, "selected");
         Set<String> lockSelected = readIds(root, "lock_tags");
+        boolean noLaunchBg = root.optBoolean("no_launch_bg", false);
         return new Snapshot(enabled, lockEnabled, lockDelaySeconds,
                 Collections.unmodifiableSet(packages),
                 Collections.unmodifiableMap(tags), Collections.unmodifiableMap(labels),
-                selected, lockSelected);
+                selected, lockSelected, noLaunchBg);
+    }
+
+    /** 消除启动白底开关：配置里显式打开才生效，默认关、完全走系统默认。 */
+    public static boolean noLaunchBg() {
+        Snapshot snap = snapshot();
+        return snap != null && snap.noLaunchBg;
     }
 
     /** 读字符串数组字段；字段缺失（或 null）= 未设置，返回 null；空数组 = 一个都没勾。 */
