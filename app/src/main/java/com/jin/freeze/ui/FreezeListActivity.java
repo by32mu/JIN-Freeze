@@ -263,10 +263,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_ICON_THEME_MODE = "icon_theme_mode";
     /** 列表图标透明度：0 = 不透明，100 = 全透明（只影响列表里的应用图标）。 */
     private static final String KEY_ICON_ALPHA = "icon_alpha";
-    /** 三组「同步到另一形态」开关：打开后再改当前形态的值会同时写进另一形态。 */
-    private static final String KEY_SYNC_SURFACE = "sync_surface";
-    private static final String KEY_SYNC_ICON = "sync_icon";
-    private static final String KEY_SYNC_FAB = "sync_fab";
+    /** 全局美化：自定义壁纸 / 列表图标 / 界面透明度 / 底部冻结按钮 / 标签文字 / 应用名称在半屏、全屏之间同步。 */
+    private static final String KEY_GLOBAL_THEME = "global_theme";
     private static final String[] ICON_THEME_MODE_NAMES = {"系统默认", "当前主题图标"};
     private static final String[] ICON_STYLE_NAMES = {
             "全彩", "全灰", "左灰右彩", "右灰左彩", "上灰下彩", "下灰上彩",
@@ -608,6 +606,8 @@ public class FreezeListActivity extends BaseActivity {
     private TextView layoutWpSheetEntry;
     /** 设置面板里「桌面图标模式 → 冻结后是否保留桌面图标」这一行，选完即时刷新。 */
     private TextView layoutKeepIconEntry;
+    /** 设置面板里「隐藏半屏/全屏的标签文字」：全局美化打开后文案变成「隐藏标签文字」。 */
+    private CheckBox settingsHideTabRowBox;
     /** 主副关联 / 列表白名单的管理弹窗：添加应用的手势返回要能回到这一页。 */
     private AlertDialog pairManagerDialog;
     private AlertDialog whitelistManagerDialog;
@@ -848,6 +848,7 @@ public class FreezeListActivity extends BaseActivity {
                         .putString(lk(KEY_WALLPAPER_URI), uri.toString())
                         .putInt(lk(KEY_WALLPAPER_BLUR), 0)
                         .apply();
+                mirrorWallpaperToOtherIfGlobal();
                 rebuildWallpaperDrawable();
                 applyWallpaperBackground();
                 if (layoutWpState != null) {
@@ -1537,6 +1538,7 @@ public class FreezeListActivity extends BaseActivity {
         wallpaperBlur = 0;
         releaseWallpaper();
         WallpaperSource.drop(srcMode());
+        mirrorWallpaperToOtherIfGlobal();
         applyWallpaperBackground();
     }
 
@@ -3167,7 +3169,7 @@ public class FreezeListActivity extends BaseActivity {
         }, xOffset, settingsSurfaceAlpha());
     }
 
-    /** 长按标签页：改名、设默认、排序、隐藏标签页文字、隐藏标签列表、仅冻结/解冻当前页面。 */
+    /** 长按标签页：改名、设默认、排序、隐藏标签列表。 */
     private void showTabLongPressMenu(Tab t) {
         if (t == null) {
             return;
@@ -3183,6 +3185,24 @@ public class FreezeListActivity extends BaseActivity {
                 () -> showTabSortDialog(null)));
         items.add(new AppActionSheet.TextItem(R.drawable.ic_add, "新建标签", null,
                 () -> showTabNameDialog(null, null)));
+        // 隐藏该标签：与设置页「标签设定」里取消勾选完全一致（至少保留一个、当前标签被隐藏后切到第一个可见标签）
+        items.add(new AppActionSheet.TextItem(R.drawable.ic_qp_eye_off, "隐藏该标签", null, () -> {
+            if (t.visible && visibleTabCount() == 1) {
+                toast("至少保留一个标签");
+                return;
+            }
+            t.visible = false;
+            Tab curTab = findTab(currentTabId);
+            if (curTab == null || !curTab.visible) {
+                currentTabId = firstVisibleTabId();
+                prefs().edit().putString(KEY_CURRENT_TAB, currentTabId).apply();
+            }
+            saveTabs();
+            setSysHintVisible();
+            renderTabBar();
+            render();
+            toast("已隐藏「" + t.name + "」标签");
+        }));
         items.add(new AppActionSheet.TextItem(R.drawable.ic_action_home,
                 "每次默认进入此标签", isDefault ? "已开启" : "未开启", !isDefault, () -> {
             if (isDefault) {
@@ -3194,13 +3214,6 @@ public class FreezeListActivity extends BaseActivity {
             }
             renderTabBar();
         }));
-        items.add(new AppActionSheet.TextItem(R.drawable.ic_sc_freeze, "仅冻结/解冻当前标签",
-                batchCurrentTabOnly ? "已开启" : "未开启", !batchCurrentTabOnly, () -> {
-                    batchCurrentTabOnly = !batchCurrentTabOnly;
-                    prefs().edit().putBoolean(KEY_BATCH_CURRENT_TAB_ONLY, batchCurrentTabOnly).apply();
-                    toast(batchCurrentTabOnly
-                            ? "一键冻结与长按解冻只处理当前标签" : "一键冻结与长按解冻处理全部标签");
-                }));
         // 与长按图标弹出的选项框同一套宽度、圆角、壁纸与背景透明度
         int sheetAlpha = panelMode
                 ? prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)
@@ -4104,6 +4117,166 @@ public class FreezeListActivity extends BaseActivity {
         dialog.show();
         Ui.roundAlertDialog(dialog);
         applySettingsAlignment(dialog);
+    }
+
+    /** 勾选全局美化同步时的说明卡片：确认才打开，取消保持未勾选；「不再提醒」以后直接点复选框生效。 */
+    private void showGlobalBeautyHint(Runnable onConfirm, Runnable onCancel) {
+        int padH = Ui.dp(this, 18);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 6));
+
+        TextView body = new TextView(this);
+        body.setText("首次打开此项；\n以当前列表数据为准；\n后续调节美化全局同步；\n同步项：\n"
+                + "1.自定义壁纸\n2.列表图标\n3.界面透明度\n4.底部冻结按钮\n5.隐藏标签文字\n6.显示应用名称");
+        body.setTextSize(13);
+        body.setTextColor(getColor(R.color.text_primary));
+        body.setLineSpacing(Ui.dp(this, 2), 1f);
+        card.addView(body, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView never = hintButton("不再提醒", false);
+        TextView confirm = hintButton("确认", true);
+        TextView cancel = hintButton("取消", false);
+        btnRow.addView(never, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        btnRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        btnRow.addView(confirm, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        btnRow.addView(cancel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(btnRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final AlertDialog d = new AlertDialog.Builder(this)
+                .setView(card)
+                .create();
+        d.show();
+        Ui.roundAlertDialog(d);
+        applySettingsAlignment(d);
+        never.setOnClickListener(v -> {
+            // 不再提醒：以后勾选直接生效，这次按「确认」处理
+            prefs().edit().putBoolean(KEY_HINT_SUFFIX_HIDDEN + "global_beauty", true).apply();
+            onConfirm.run();
+            d.dismiss();
+        });
+        confirm.setOnClickListener(v -> {
+            onConfirm.run();
+            d.dismiss();
+        });
+        cancel.setOnClickListener(v -> {
+            onCancel.run();
+            d.dismiss();
+        });
+    }
+
+    /** 全局美化开关落盘并生效：说明弹窗点确认后打开，或不再提醒后直接勾选/取消。 */
+    private void setGlobalTheme(boolean on) {
+        prefs().edit().putBoolean(KEY_GLOBAL_THEME, on).apply();
+        applyGlobalBeauty(on);
+    }
+
+    /** 全局美化打开时同步生效，否则只写当前形态。 */
+    private void applyGlobalBeauty(boolean on) {
+        if (on) {
+            pushBeautyToOther();
+        }
+        refreshGlobalBeautyEntries();
+    }
+
+    /** 全局美化打开后，「隐藏半屏/全屏的标签文字」统一显示为「隐藏标签文字」。 */
+    private String hideTabRowLabel() {
+        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
+            return "隐藏标签文字";
+        }
+        return panelMode ? "隐藏半屏的标签文字" : "隐藏全屏的标签文字";
+    }
+
+    /** 隐藏标签文字落盘：全局美化打开时两个形态一起写，否则只写当前形态。 */
+    private void setHideTabRowPref(boolean on) {
+        SharedPreferences.Editor e = prefs().edit().putBoolean(lk(KEY_HIDE_TAB_ROW), on);
+        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
+            e.putBoolean(otherKey(KEY_HIDE_TAB_ROW), on);
+        }
+        e.apply();
+    }
+
+    /** 显示应用名称落盘：全局美化打开时两个形态一起写，否则只写当前形态。 */
+    private void setShowNamePref(boolean on) {
+        SharedPreferences.Editor e = prefs().edit().putBoolean(lk(KEY_SHOW_NAME), on);
+        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
+            e.putBoolean(otherKey(KEY_SHOW_NAME), on);
+        }
+        e.apply();
+    }
+
+    /** 首次打开全局美化：壁纸、列表图标、界面透明度、底部按钮都以当前形态为准写到另一形态。 */
+    private void pushBeautyToOther() {
+        SharedPreferences.Editor e = prefs().edit();
+        String wpUri = prefs().getString(lk(KEY_WALLPAPER_URI), null);
+        if (wpUri == null || wpUri.isEmpty()) {
+            e.remove(otherKey(KEY_WALLPAPER_URI));
+        } else {
+            e.putString(otherKey(KEY_WALLPAPER_URI), wpUri);
+        }
+        e.putInt(otherKey(KEY_WALLPAPER_BLUR), prefs().getInt(lk(KEY_WALLPAPER_BLUR), 0))
+                .putBoolean(otherKey(KEY_HIDE_TAB_ROW),
+                        prefs().getBoolean(lk(KEY_HIDE_TAB_ROW), false))
+                .putBoolean(otherKey(KEY_SHOW_NAME),
+                        prefs().getBoolean(lk(KEY_SHOW_NAME), true))
+                .putInt(otherKey(KEY_COLUMNS), prefs().getInt(lk(KEY_COLUMNS), COLUMNS))
+                .putInt(otherKey(KEY_ICON_DP), prefs().getInt(lk(KEY_ICON_DP), 52))
+                .putBoolean(otherKey(KEY_ICON_MANUAL),
+                        prefs().getBoolean(lk(KEY_ICON_MANUAL), false))
+                .putInt(otherKey(KEY_SETTINGS_SURFACE),
+                        prefs().getInt(lk(KEY_SETTINGS_SURFACE), 0))
+                .putInt(otherKey(KEY_ICON_ALPHA), prefs().getInt(lk(KEY_ICON_ALPHA), 0));
+        if (panelMode) {
+            e.putInt(KEY_FULL_SURFACE, prefs().getInt("panel_" + KEY_SURFACE, SURFACE_SOLID));
+        } else {
+            e.putInt("panel_" + KEY_SURFACE, prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID));
+        }
+        e.putInt(otherKey(KEY_FAB_SIZE), prefs().getInt(lk(KEY_FAB_SIZE),
+                        panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT))
+                .putInt(otherKey(KEY_FAB_DX), prefs().getInt(lk(KEY_FAB_DX), 0))
+                .putInt(otherKey(KEY_FAB_DY), prefs().getInt(lk(KEY_FAB_DY),
+                        panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT));
+        if (panelMode) {
+            e.putInt(KEY_FULL_FAB_SURFACE,
+                    prefs().getInt("panel_" + KEY_FAB_SURFACE, PANEL_FAB_SURFACE_DEFAULT));
+        } else {
+            e.putInt("panel_" + KEY_FAB_SURFACE,
+                    prefs().getInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT));
+        }
+        e.apply();
+        WallpaperSource.drop(panelMode ? WallpaperSource.MODE_FULL : WallpaperSource.MODE_PANEL);
+    }
+
+    /** 全局美化开关变化后，标签文字那一行的文案即时刷新。 */
+    private void refreshGlobalBeautyEntries() {
+        if (settingsHideTabRowBox != null) {
+            settingsHideTabRowBox.setText(hideTabRowLabel());
+        }
+    }
+
+    /** 全局美化打开时，壁纸的选图 / 清除 / 模糊度改动同样写到另一形态。 */
+    private void mirrorWallpaperToOtherIfGlobal() {
+        if (!prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
+            return;
+        }
+        SharedPreferences.Editor e = prefs().edit();
+        String uri = prefs().getString(lk(KEY_WALLPAPER_URI), null);
+        if (uri == null || uri.isEmpty()) {
+            e.remove(otherKey(KEY_WALLPAPER_URI));
+        } else {
+            e.putString(otherKey(KEY_WALLPAPER_URI), uri);
+        }
+        e.putInt(otherKey(KEY_WALLPAPER_BLUR), prefs().getInt(lk(KEY_WALLPAPER_BLUR), 0));
+        e.apply();
+        WallpaperSource.drop(panelMode ? WallpaperSource.MODE_FULL : WallpaperSource.MODE_PANEL);
     }
 
     /** 同步开关落地：只存偏好，下次打开长按选项框时生效。 */
@@ -7796,7 +7969,7 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
                 prefs().edit().putInt(lk(KEY_ICON_DP), iconDp)
                         .putBoolean(lk(KEY_ICON_MANUAL), true).apply();
-                if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit().putInt(otherKey(KEY_ICON_DP), iconDp)
                             .putBoolean(otherKey(KEY_ICON_MANUAL), true).apply();
                 }
@@ -7812,7 +7985,7 @@ public class FreezeListActivity extends BaseActivity {
         nameBox.setChecked(showName);
         nameBox.setOnCheckedChangeListener((btn, on) -> {
             showName = on;
-            prefs().edit().putBoolean(lk(KEY_SHOW_NAME), on).apply();
+            setShowNamePref(on);
             render();
         });
 
@@ -7847,8 +8020,7 @@ public class FreezeListActivity extends BaseActivity {
             batchCurrentTabOnly = on;
             prefs().edit().putBoolean(KEY_BATCH_CURRENT_TAB_ONLY, on).apply();
         });
-        tabOnlyBox.setVisibility((hideTabRow || visibleTabCount() == 0)
-                ? View.VISIBLE : View.GONE);
+        tabOnlyBox.setVisibility(View.VISIBLE);
 
         // 半屏专属：顶部小白条是否允许拖动改高度（开关与高度值分开存）
         CheckBox handleBox = null;
@@ -7947,7 +8119,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 fabSizeDp = FAB_SIZE_MIN + p;
                 prefs().edit().putInt(lk(KEY_FAB_SIZE), fabSizeDp).apply();
-                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit().putInt(otherKey(KEY_FAB_SIZE), fabSizeDp).apply();
                 }
                 sizeValue.setText("按钮大小：" + fabSizeDp + "dp");
@@ -7986,7 +8158,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 fabDx = xMinDp + p;
                 prefs().edit().putInt(lk(KEY_FAB_DX), fabDx).apply();
-                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit().putInt(otherKey(KEY_FAB_DX), fabDx).apply();
                 }
                 refreshFabLabels.run();
@@ -8013,7 +8185,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 fabDy = p;
                 prefs().edit().putInt(lk(KEY_FAB_DY), fabDy).apply();
-                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit().putInt(otherKey(KEY_FAB_DY), fabDy).apply();
                 }
                 refreshFabLabels.run();
@@ -8044,7 +8216,8 @@ public class FreezeListActivity extends BaseActivity {
         // 隐藏标签页文字：半屏与全屏各自独立，只收起标签名那一排视图，列表与手势不受影响；
         // 全屏里这一行还放着布局/备份/恢复，收起后它们仍贴右
         CheckBox hideRowBox = new CheckBox(this);
-        hideRowBox.setText(panelMode ? "隐藏半屏的标签文字" : "隐藏全屏的标签文字");
+        settingsHideTabRowBox = hideRowBox;
+        hideRowBox.setText(hideTabRowLabel());
         hideRowBox.setTextSize(11);
         hideRowBox.setTextColor(getColor(R.color.text_secondary));
         hideRowBox.setMinimumHeight(Ui.dp(this, 32));
@@ -8054,10 +8227,7 @@ public class FreezeListActivity extends BaseActivity {
                 return;
             }
             hideTabRow = on;
-            prefs().edit().putBoolean(lk(KEY_HIDE_TAB_ROW), on).apply();
-            // 「仅冻结/解冻当前标签」跟着本次勾选实时出现 / 收起
-            tabOnlyBox.setVisibility((on || visibleTabCount() == 0)
-                    ? View.VISIBLE : View.GONE);
+            setHideTabRowPref(on);
             renderTabBar();
             if (grid != null) {
                 grid.requestLayout();
@@ -8208,9 +8378,12 @@ public class FreezeListActivity extends BaseActivity {
         if (dismissBox != null) {
             personalBody.addView(dismissBox);
         }
-        // 隐藏标签文字放在「仅冻结/解冻当前标签」上面
+        // 隐藏标签文字放在「一键冻结后收起列表」下面
         personalBody.addView(hideRowBox);
-        personalBody.addView(tabOnlyBox);
+        // 仅冻结/解冻当前标签放在「一键冻结后收起列表」上面
+        int tabOnlyIdx = dismissBox == null
+                ? personalBody.getChildCount() : personalBody.indexOfChild(dismissBox);
+        personalBody.addView(tabOnlyBox, Math.max(0, tabOnlyIdx));
 
         if (handleBox != null) {
             personalBody.addView(handleBox);
@@ -8287,7 +8460,7 @@ public class FreezeListActivity extends BaseActivity {
                         .putInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE, 100 - p)
                         .apply();
                 // 底部按钮透明度：开了同步就一起写另一形态（半屏 panel_fab_surface ↔ 全屏 full_fab_surface）
-                if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit()
                             .putInt(panelMode ? KEY_FULL_FAB_SURFACE : "panel_" + KEY_FAB_SURFACE,
                                     100 - p)
@@ -8312,11 +8485,6 @@ public class FreezeListActivity extends BaseActivity {
         // 按钮底板透明度也归「底部冻结按钮」这一组，跟着标题一起折叠
         fabBody.addView(fabAlphaLabel);
         fabBody.addView(fabAlphaBar);
-        fabBody.addView(syncEntry(KEY_SYNC_FAB,
-                        "将底部按钮透明度调节同步" + (panelMode ? "全屏" : "半屏"),
-                        this::copyFabGroupFromOther),
-                0);
-
         // 手势功能：标题可点开说明；下面是长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的
         // 触发距离滑块，实时生效；整块最后插到「标签」上面
         LinearLayout gestureSec = new LinearLayout(this);
@@ -8491,7 +8659,7 @@ public class FreezeListActivity extends BaseActivity {
         // 长按手势总开关：放在手势栏外面，关掉后才能再点开；
         // 关闭后整个「手势触发距离」栏与下方边缘触发一起隐藏，长按空白也不再起手势
         CheckBox gestureEnabledBox = new CheckBox(this);
-        gestureEnabledBox.setText("长按空白处手势");
+        gestureEnabledBox.setText("长按列表空白处手势");
         gestureEnabledBox.setTextSize(11);
         gestureEnabledBox.setTextColor(getColor(R.color.text_secondary));
         gestureEnabledBox.setMinimumHeight(Ui.dp(this, 32));
@@ -8524,6 +8692,44 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         personalBody.addView(quickPanelBox);
+        // 全局美化同步：打开后壁纸 / 列表图标 / 界面透明度 / 底部冻结按钮 / 标签文字 / 应用名称在半屏、全屏之间同步；
+        // 勾选时弹一次说明，点过「不再提醒」后不再自动弹出
+        CheckBox globalBox = new CheckBox(this);
+        globalBox.setText("全局美化同步");
+        globalBox.setTextSize(11);
+        globalBox.setTextColor(getColor(R.color.text_secondary));
+        globalBox.setMinimumHeight(Ui.dp(this, 32));
+        final boolean[] globalOnNow = {prefs().getBoolean(KEY_GLOBAL_THEME, false)};
+        globalBox.setChecked(globalOnNow[0]);
+        final android.widget.CompoundButton.OnCheckedChangeListener[] globalListener =
+                new android.widget.CompoundButton.OnCheckedChangeListener[1];
+        globalListener[0] = (b, on) -> {
+            if (on == globalOnNow[0]) {
+                return;
+            }
+            if (on && !hintSuffixHidden("global_beauty")) {
+                // 勾选先弹说明：确认才真正打开，取消则把勾去掉
+                showGlobalBeautyHint(
+                        () -> {
+                            globalOnNow[0] = true;
+                            setGlobalTheme(true);
+                        },
+                        () -> {
+                            b.setOnCheckedChangeListener(null);
+                            b.setChecked(false);
+                            b.setOnCheckedChangeListener(globalListener[0]);
+                        });
+                return;
+            }
+            globalOnNow[0] = on;
+            setGlobalTheme(on);
+        };
+        globalBox.setOnCheckedChangeListener(globalListener[0]);
+        // 全局美化同步紧跟在「默认全屏/半屏列表」下面；长按列表空白处手势放在「长按底栏空白处打开快面板」下面
+        personalBody.addView(globalBox, 1);
+        personalBody.removeView(gestureEnabledBox);
+        personalBody.addView(gestureEnabledBox,
+                personalBody.indexOfChild(quickPanelBox) + 1);
         int gestureVis = gestureEnabled ? View.VISIBLE : View.GONE;
         gestureTail.setVisibility(gestureVis);
         gestureSec.setVisibility(gestureVis);
@@ -8557,7 +8763,7 @@ public class FreezeListActivity extends BaseActivity {
                 iconManual = false;
                 prefs().edit().putInt(lk(KEY_COLUMNS), gridColumns)
                         .putBoolean(lk(KEY_ICON_MANUAL), false).apply();
-                if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit().putInt(otherKey(KEY_COLUMNS), gridColumns)
                             .putBoolean(otherKey(KEY_ICON_MANUAL), false).apply();
                 }
@@ -8617,13 +8823,6 @@ public class FreezeListActivity extends BaseActivity {
         iconBody.addView(colsBar);
         iconBody.addView(sizeLabel);
         iconBody.addView(sizeBar);
-        // 列数/图标大小的同步入口：紧跟在「冻结图标样式」下面，上边距为 0 以便两行紧挨
-        TextView iconSyncEntry = syncEntry(KEY_SYNC_ICON,
-                "将列数与图标大小同步" + (panelMode ? "全屏" : "半屏"),
-                this::copyIconGroupFromOther);
-        iconSyncEntry.setPadding(0, 0, 0, Ui.dp(this, 8));
-        iconBody.addView(iconSyncEntry,
-                iconBody.indexOfChild(iconStyleEntry) + 1);
         box.addView(ias, Math.max(0, box.indexOfChild(fabHead)));
         // 手势触发距离整栏放在「标签（查看说明）」上面（tabTitle 已包进 tabHead，按整块定位）
         box.addView(gestureSec, Math.max(0, box.indexOfChild(tabHead)));
@@ -8723,6 +8922,7 @@ public class FreezeListActivity extends BaseActivity {
             public void onStopTrackingTouch(SeekBar sb) {
                 wallpaperBlur = Math.max(0, Math.min(100, sb.getProgress()));
                 prefs().edit().putInt(lk(KEY_WALLPAPER_BLUR), wallpaperBlur).apply();
+                mirrorWallpaperToOtherIfGlobal();
                 rebuildWallpaperDrawable();
                 applyWallpaperBackground();
             }
@@ -8844,7 +9044,7 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 prefs().edit().putInt(lk(KEY_SETTINGS_SURFACE), p).apply();
-                if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit().putInt(otherKey(KEY_SETTINGS_SURFACE), p).apply();
                 }
                 settingsLabel.setText(settingsSurfaceText(p));
@@ -8878,7 +9078,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 iconAlpha = clampInt(p, 0, 100);
                 prefs().edit().putInt(lk(KEY_ICON_ALPHA), iconAlpha).apply();
-                if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                     prefs().edit().putInt(otherKey(KEY_ICON_ALPHA), iconAlpha).apply();
                 }
                 iconAlphaLabel.setText(iconAlphaText(iconAlpha));
@@ -8951,7 +9151,7 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     prefs().edit().putInt(lk(KEY_SURFACE), 100 - p).apply();
                     // 半屏面板透明度 ↔ 全屏背景：开了同步就一起写
-                    if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                    if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                         prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                     }
                     innerLabel.setText("半屏面板透明度：" + p + "%");
@@ -8987,7 +9187,7 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                     // 全屏背景 ↔ 半屏面板透明度：开了同步就一起写
-                    if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                    if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                         prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
                     }
                     bgLabel.setText("全屏背景：" + p + "%");
@@ -9106,11 +9306,6 @@ public class FreezeListActivity extends BaseActivity {
         });
         itsBody.addView(qpAlphaLabel);
         itsBody.addView(qpAlphaBar);
-        // 界面透明度整组的同步开关：紧跟标题，半屏外侧、横幅、搜索框是形态专属，不参与同步
-        itsBody.addView(syncEntry(KEY_SYNC_SURFACE,
-                        "将界面透明度调节同步" + (panelMode ? "全屏" : "半屏"),
-                        this::copySurfaceGroupFromOther),
-                0);
         box.addView(its, Math.max(0, box.indexOfChild(fabHead)));
 
         // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
@@ -10183,7 +10378,7 @@ public class FreezeListActivity extends BaseActivity {
             case "dismiss":
                 return "一键冻结后收起列表";
             case "hide_tab_row":
-                return panelMode ? "隐藏半屏的标签文字" : "隐藏全屏的标签文字";
+                return hideTabRowLabel();
             case "batch_tab_only":
                 return "仅冻结/解冻当前标签";
             case "panel_handle":
@@ -10195,7 +10390,7 @@ public class FreezeListActivity extends BaseActivity {
             case "quick_remove":
                 return "批量移除应用";
             case "gesture_enabled":
-                return "长按空白处手势";
+                return "长按列表空白处手势";
             case "quick_panel_enabled":
                 return "长按底栏空白处打开快面板";
             case "edge_only":
@@ -10345,7 +10540,7 @@ public class FreezeListActivity extends BaseActivity {
             }
             case "show_name": {
                 showName = on;
-                prefs().edit().putBoolean(lk(KEY_SHOW_NAME), on).apply();
+                setShowNamePref(on);
                 render();
                 break;
             }
@@ -10364,7 +10559,7 @@ public class FreezeListActivity extends BaseActivity {
                     break;
                 }
                 hideTabRow = on;
-                prefs().edit().putBoolean(lk(KEY_HIDE_TAB_ROW), on).apply();
+                setHideTabRowPref(on);
                 renderTabBar();
                 if (grid != null) {
                     grid.requestLayout();
@@ -10461,7 +10656,7 @@ public class FreezeListActivity extends BaseActivity {
                     public void onStopTrackingTouch(SeekBar sb) {
                         prefs().edit().putInt(lk(KEY_ICON_DP), iconDp)
                                 .putBoolean(lk(KEY_ICON_MANUAL), true).apply();
-                        if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(otherKey(KEY_ICON_DP), iconDp)
                                     .putBoolean(otherKey(KEY_ICON_MANUAL), true).apply();
                         }
@@ -10492,7 +10687,7 @@ public class FreezeListActivity extends BaseActivity {
                         iconManual = false;
                         prefs().edit().putInt(lk(KEY_COLUMNS), gridColumns)
                                 .putBoolean(lk(KEY_ICON_MANUAL), false).apply();
-                        if (prefs().getBoolean(KEY_SYNC_ICON, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(otherKey(KEY_COLUMNS), gridColumns)
                                     .putBoolean(otherKey(KEY_ICON_MANUAL), false).apply();
                         }
@@ -10529,7 +10724,7 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         fabSizeDp = FAB_SIZE_MIN + p;
                         prefs().edit().putInt(lk(KEY_FAB_SIZE), fabSizeDp).apply();
-                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(otherKey(KEY_FAB_SIZE), fabSizeDp).apply();
                         }
                         sizeValue.setText("按钮大小：" + fabSizeDp + "dp");
@@ -10572,7 +10767,7 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         fabDx = xMinDp + p;
                         prefs().edit().putInt(lk(KEY_FAB_DX), fabDx).apply();
-                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(otherKey(KEY_FAB_DX), fabDx).apply();
                         }
                         xValue.setText("左右偏移：" + (fabDx > 0 ? "+" : "") + fabDx + "dp");
@@ -10612,7 +10807,7 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         fabDy = p;
                         prefs().edit().putInt(lk(KEY_FAB_DY), fabDy).apply();
-                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(otherKey(KEY_FAB_DY), fabDy).apply();
                         }
                         yValue.setText("距底部：" + fabDy + "dp");
@@ -10659,7 +10854,7 @@ public class FreezeListActivity extends BaseActivity {
                                 .putInt(panelMode ? lk(KEY_FAB_SURFACE) : KEY_FULL_FAB_SURFACE, 100 - p)
                                 .apply();
                         // 底部按钮透明度：开了同步就一起写另一形态（半屏 panel_fab_surface ↔ 全屏 full_fab_surface）
-                        if (prefs().getBoolean(KEY_SYNC_FAB, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit()
                                     .putInt(panelMode ? KEY_FULL_FAB_SURFACE : "panel_" + KEY_FAB_SURFACE,
                                             100 - p)
@@ -10848,6 +11043,7 @@ public class FreezeListActivity extends BaseActivity {
                     public void onStopTrackingTouch(SeekBar sb) {
                         wallpaperBlur = Math.max(0, Math.min(100, sb.getProgress()));
                         prefs().edit().putInt(lk(KEY_WALLPAPER_BLUR), wallpaperBlur).apply();
+                        mirrorWallpaperToOtherIfGlobal();
                         rebuildWallpaperDrawable();
                         applyWallpaperBackground();
                     }
@@ -10872,7 +11068,7 @@ public class FreezeListActivity extends BaseActivity {
                             return;
                         }
                         prefs().edit().putInt(lk(KEY_SETTINGS_SURFACE), p).apply();
-                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(otherKey(KEY_SETTINGS_SURFACE), p).apply();
                         }
                         settingsLabel.setText(settingsSurfaceText(p));
@@ -10907,7 +11103,7 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         iconAlpha = clampInt(p, 0, 100);
                         prefs().edit().putInt(lk(KEY_ICON_ALPHA), iconAlpha).apply();
-                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(otherKey(KEY_ICON_ALPHA), iconAlpha).apply();
                         }
                         iconAlphaLabel.setText(iconAlphaText(iconAlpha));
@@ -10981,7 +11177,7 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         prefs().edit().putInt(lk(KEY_SURFACE), 100 - p).apply();
                         // 半屏面板透明度 ↔ 全屏背景：开了同步就一起写
-                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                         }
                         innerLabel.setText("半屏面板透明度：" + p + "%");
@@ -11018,7 +11214,7 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                         // 全屏背景 ↔ 半屏面板透明度：开了同步就一起写
-                        if (prefs().getBoolean(KEY_SYNC_SURFACE, false)) {
+                        if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
                         }
                         bgLabel.setText("全屏背景：" + p + "%");
@@ -11114,9 +11310,6 @@ public class FreezeListActivity extends BaseActivity {
     private View quickPanelOpacityBody() {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.addView(syncEntry(KEY_SYNC_SURFACE,
-                "将界面透明度调节同步" + (panelMode ? "全屏" : "半屏"),
-                this::copySurfaceGroupFromOther));
         body.addView(quickPanelSliderBody("op_settings"));
         body.addView(quickPanelSliderBody("op_icon_alpha"));
         if (panelMode) {
@@ -11138,9 +11331,6 @@ public class FreezeListActivity extends BaseActivity {
                 body.setOrientation(LinearLayout.VERTICAL);
                 body.addView(quickPanelEntryRow("theme_icon"));
                 body.addView(quickPanelEntryRow("icon_style"));
-                body.addView(syncEntry(KEY_SYNC_ICON,
-                        "将列数与图标大小同步" + (panelMode ? "全屏" : "半屏"),
-                        this::copyIconGroupFromOther));
                 body.addView(quickPanelSliderBody("icon_size"));
                 body.addView(quickPanelSliderBody("columns"));
                 return body;
@@ -11152,9 +11342,6 @@ public class FreezeListActivity extends BaseActivity {
                 body.addView(quickPanelSliderBody("fab_dx"));
                 body.addView(quickPanelSliderBody("fab_dy"));
                 body.addView(quickPanelSliderBody("fab_alpha"));
-                body.addView(syncEntry(KEY_SYNC_FAB,
-                        "将底部按钮透明度调节同步" + (panelMode ? "全屏" : "半屏"),
-                        this::copyFabGroupFromOther));
                 return body;
             }
             case "gesture_group": {
@@ -12176,129 +12363,297 @@ public class FreezeListActivity extends BaseActivity {
         return out;
     }
 
-    /** 冻结白名单 → 白名单列表：已加入的应用 + 勾选批量移除 + 添加应用。 */
+    /** 冻结白名单 → 白名单列表：右上角多选 / 宫格切换 / 减号 / 加号；减号进入单删模式，多选勾选后减号批量移除。 */
     private void showWhitelistManager() {
-        final Set<String> set = whitelistSet();
-        final List<String> keys = new ArrayList<>(set);
-        Collections.sort(keys, (a, b) -> labelFor(a).compareToIgnoreCase(labelFor(b)));
-
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        int side = Ui.dp(this, 16);
-        col.setPadding(side, Ui.dp(this, 2), side, Ui.dp(this, 2));
-
-        if (keys.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("白名单为空，点下面添加");
-            empty.setTextSize(12);
-            empty.setTextColor(getColor(R.color.text_secondary));
-            empty.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
-            col.addView(empty);
-        }
-
+        final int modeNormal = 0;
+        final int modeRemove = 1;
+        final int modeMulti = 2;
+        final int[] mode = {modeNormal};
         final Set<String> checked = new HashSet<>();
-        final AlertDialog[] holder = new AlertDialog[1];
-        final int iconPx = Ui.dp(this, 28);
-        for (String key : keys) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, Ui.dp(this, 3), 0, Ui.dp(this, 3));
-
-            final CheckBox cb = new CheckBox(this);
-            cb.setClickable(false);
-            cb.setFocusable(false);
-            row.addView(cb, new LinearLayout.LayoutParams(Ui.dp(this, 36), Ui.dp(this, 36)));
-
-            ImageView icon = new ImageView(this);
-            Drawable d = null;
-            try {
-                ApplicationInfo ai = getPackageManager()
-                        .getApplicationInfo(packagePart(key), 0);
-                d = AppIconCache.load(this, packagePart(key), ai);
-            } catch (Exception ignored) {
+        final Runnable[] renderList = new Runnable[1];
+        final AlertDialog[] dlgHolder = new AlertDialog[1];
+        // 左下角按钮文案：普通态「多选」，多选态按勾选情况在全选 / 全不选 / 反选之间切换
+        final java.util.function.IntConsumer syncNeutral = total -> {
+            if (dlgHolder[0] == null) {
+                return;
             }
-            icon.setImageDrawable(d != null ? d
-                    : androidx.core.content.ContextCompat.getDrawable(this,
-                    android.R.drawable.sym_def_app_icon));
-            row.addView(icon, new LinearLayout.LayoutParams(iconPx, iconPx));
+            android.widget.Button nb = dlgHolder[0].getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (nb == null) {
+                return;
+            }
+            if (mode[0] != modeMulti) {
+                nb.setText("多选");
+            } else if (checked.isEmpty()) {
+                nb.setText("全选");
+            } else if (checked.size() >= total) {
+                nb.setText("全不选");
+            } else {
+                nb.setText("反选");
+            }
+        };
 
-            TextView name = new TextView(this);
-            name.setText(labelFor(key));
-            name.setTextSize(13);
-            name.setTextColor(getColor(R.color.text_primary));
-            name.setSingleLine(true);
-            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            nlp.leftMargin = Ui.dp(this, 10);
-            row.addView(name, nlp);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        final int side = Ui.dp(this, 16);
+        root.setPadding(side, Ui.dp(this, 6), side, Ui.dp(this, 2));
 
-            row.setOnClickListener(v -> {
-                if (checked.contains(key)) {
-                    checked.remove(key);
-                } else {
-                    checked.add(key);
+        // 标题行：左侧标题；右侧减号 / 加号，多选态只留「减号 / 返回」
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = Ui.text(this, "白名单列表", 16, Ui.TEXT_PRIMARY, true);
+        header.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final android.widget.ImageButton minusBtn =
+                whitelistHeaderBtn(R.drawable.ic_minus, "移除");
+        final android.widget.ImageButton plusBtn =
+                whitelistHeaderBtn(R.drawable.ic_add, "添加");
+        final android.widget.ImageButton backBtn =
+                whitelistHeaderBtn(R.drawable.ic_back, "返回");
+        header.addView(minusBtn);
+        header.addView(plusBtn);
+        header.addView(backBtn);
+        root.addView(header);
+
+        LinearLayout listBox = new LinearLayout(this);
+        listBox.setOrientation(LinearLayout.VERTICAL);
+        MaxHeightScrollView sv = new MaxHeightScrollView(this,
+                (int) (getResources().getDisplayMetrics().heightPixels * 0.58f));
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(listBox, new android.widget.ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(sv);
+
+        // 单删模式：点行右侧的红减号立即移出该应用
+        final java.util.function.Consumer<String> removeOne = key -> {
+            Set<String> cur = whitelistSet();
+            if (!cur.remove(key)) {
+                return;
+            }
+            prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
+            SwipeFreeze.syncAsync(this);
+            refreshWhitelistEntry();
+            rebindCells();
+            checked.remove(key);
+            toast("已移出白名单：" + labelFor(key));
+            renderList[0].run();
+        };
+
+        renderList[0] = () -> {
+            listBox.removeAllViews();
+            final boolean multi = mode[0] == modeMulti;
+            final boolean remove = mode[0] == modeRemove;
+            plusBtn.setVisibility(multi ? View.GONE : View.VISIBLE);
+            backBtn.setVisibility(multi ? View.VISIBLE : View.GONE);
+            minusBtn.setImageTintList(ColorStateList.valueOf(mode[0] == modeNormal
+                    ? getColor(R.color.text_primary) : getColor(R.color.danger)));
+
+            List<String> keys = new ArrayList<>(whitelistSet());
+            Collections.sort(keys, (a, b) -> labelFor(a).compareToIgnoreCase(labelFor(b)));
+            syncNeutral.accept(keys.size());
+            if (keys.isEmpty()) {
+                TextView empty = new TextView(this);
+                empty.setText("白名单为空，点右上角＋添加");
+                empty.setTextSize(12);
+                empty.setTextColor(getColor(R.color.text_secondary));
+                empty.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 12));
+                listBox.addView(empty);
+                return;
+            }
+            final int cols = 5;
+            final int rowIconPx = Ui.dp(this, 40);
+            // 宫格：每行 5 个，多选小方框在图标右下、单删红减号在右上
+            LinearLayout gridRow = null;
+            for (int i = 0; i < keys.size(); i++) {
+                if (i % cols == 0) {
+                    gridRow = new LinearLayout(this);
+                    gridRow.setOrientation(LinearLayout.HORIZONTAL);
+                    LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    if (i > 0) {
+                        rlp.topMargin = Ui.dp(this, 2);
+                    }
+                    listBox.addView(gridRow, rlp);
                 }
-                cb.setChecked(checked.contains(key));
-            });
-            col.addView(row);
-        }
+                final String key = keys.get(i);
+                LinearLayout cell = new LinearLayout(this);
+                cell.setOrientation(LinearLayout.VERTICAL);
+                cell.setGravity(Gravity.CENTER_HORIZONTAL);
+                cell.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 4));
 
-        TextView add = new TextView(this);
-        add.setText("＋ 添加应用");
-        add.setTextSize(13);
-        add.setTextColor(getColor(R.color.text_primary));
-        add.setGravity(Gravity.CENTER);
-        add.setPadding(0, Ui.dp(this, 14), 0, Ui.dp(this, 14));
-        add.setOnClickListener(v -> showWhitelistAddPicker());
-        col.addView(add);
+                FrameLayout iconBox = new FrameLayout(this);
+                ImageView icon = new ImageView(this);
+                Drawable d = quickPanelIconFor(key);
+                if (d != null) {
+                    icon.setImageDrawable(d);
+                } else {
+                    icon.setImageResource(android.R.drawable.sym_def_app_icon);
+                }
+                iconBox.addView(icon, new FrameLayout.LayoutParams(
+                        rowIconPx, rowIconPx));
+                // 宫格里用自绘小方框：CheckBox 自带 48dp 触点画布，缩小后会裁掉半个框
+                final TextView cb = new TextView(this);
+                cb.setTextSize(9);
+                cb.setTextColor(0xFFFFFFFF);
+                cb.setGravity(Gravity.CENTER);
+                cb.setBackgroundResource(checked.contains(key)
+                        ? R.drawable.bg_check_on : R.drawable.bg_check_off);
+                cb.setText(checked.contains(key) ? "✓" : "");
+                cb.setVisibility(multi ? View.VISIBLE : View.GONE);
+                FrameLayout.LayoutParams cbLp = new FrameLayout.LayoutParams(
+                        Ui.dp(this, 15), Ui.dp(this, 15));
+                cbLp.gravity = Gravity.BOTTOM | Gravity.END;
+                iconBox.addView(cb, cbLp);
+                final TextView rm = new TextView(this);
+                rm.setText("−");
+                rm.setTextColor(0xFFFFFFFF);
+                rm.setTextSize(12);
+                rm.setGravity(Gravity.CENTER);
+                rm.setBackgroundResource(R.drawable.bg_remove_badge);
+                rm.setVisibility(remove ? View.VISIBLE : View.GONE);
+                FrameLayout.LayoutParams rmLp = new FrameLayout.LayoutParams(
+                        Ui.dp(this, 18), Ui.dp(this, 18));
+                rmLp.gravity = Gravity.TOP | Gravity.END;
+                rm.setOnClickListener(v -> removeOne.accept(key));
+                iconBox.addView(rm, rmLp);
 
-        if (!keys.isEmpty()) {
-            TextView del = new TextView(this);
-            del.setText("移除选中");
-            del.setTextSize(13);
-            del.setTextColor(getColor(R.color.danger));
-            del.setGravity(Gravity.CENTER);
-            del.setPadding(0, 0, 0, Ui.dp(this, 14));
-            del.setOnClickListener(v -> {
+                cell.addView(iconBox, new LinearLayout.LayoutParams(
+                        rowIconPx, rowIconPx));
+                TextView name = new TextView(this);
+                name.setText(labelFor(key));
+                name.setTextSize(10);
+                name.setTextColor(getColor(R.color.text_primary));
+                name.setSingleLine(true);
+                name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                name.setGravity(Gravity.CENTER);
+                name.setPadding(0, Ui.dp(this, 4), 0, 0);
+                cell.addView(name, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+                cell.setOnClickListener(v -> {
+                    if (mode[0] != modeMulti) {
+                        return;
+                    }
+                    if (checked.contains(key)) {
+                        checked.remove(key);
+                    } else {
+                        checked.add(key);
+                    }
+                    boolean on = checked.contains(key);
+                    cb.setText(on ? "✓" : "");
+                    cb.setBackgroundResource(on
+                            ? R.drawable.bg_check_on : R.drawable.bg_check_off);
+                    syncNeutral.accept(keys.size());
+                });
+                gridRow.addView(cell, new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            }
+            if (gridRow != null) {
+                int rest = cols - keys.size() % cols;
+                if (rest > 0 && rest < cols) {
+                    for (int i = 0; i < rest; i++) {
+                        gridRow.addView(new View(this), new LinearLayout.LayoutParams(
+                                0, 1, 1f));
+                    }
+                }
+            }
+        };
+
+        backBtn.setOnClickListener(v -> {
+            mode[0] = modeNormal;
+            checked.clear();
+            renderList[0].run();
+        });
+        minusBtn.setOnClickListener(v -> {
+            if (mode[0] == modeMulti) {
                 if (checked.isEmpty()) {
                     toast("先勾选要移出的应用");
                     return;
                 }
+                int n = checked.size();
                 Set<String> cur = whitelistSet();
                 cur.removeAll(checked);
                 prefs().edit().putStringSet(KEY_WHITELIST, cur).apply();
                 SwipeFreeze.syncAsync(this);
                 refreshWhitelistEntry();
                 rebindCells();
-                toast("已移出白名单 " + checked.size() + " 个应用");
-                if (holder[0] != null) {
-                    holder[0].dismiss();
-                }
-                showWhitelistManager();
-            });
-            col.addView(del);
-        }
-
-        android.widget.ScrollView sv = new android.widget.ScrollView(this);
-        sv.addView(col);
+                checked.clear();
+                toast("已移出白名单 " + n + " 个应用");
+                renderList[0].run();
+            } else {
+                mode[0] = mode[0] == modeRemove ? modeNormal : modeRemove;
+                renderList[0].run();
+            }
+        });
+        plusBtn.setOnClickListener(v -> showWhitelistAddPicker());
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("白名单列表")
-                .setView(sv)
+                .setView(root)
+                .setNeutralButton("多选", null)
                 .setNegativeButton("关闭", null)
                 .create();
-        holder[0] = dialog;
+        dlgHolder[0] = dialog;
         whitelistManagerDialog = dialog;
         dialog.setOnDismissListener(d -> {
             if (whitelistManagerDialog == dialog) {
                 whitelistManagerDialog = null;
             }
         });
+        renderList[0].run();
         dialog.show();
         Ui.roundAlertDialog(dialog);
         applySettingsAlignment(dialog);
+        // 左下角按钮：普通态进入多选；多选态按勾选情况执行全选 / 全不选 / 反选
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+            if (mode[0] != modeMulti) {
+                mode[0] = modeMulti;
+                checked.clear();
+                renderList[0].run();
+                return;
+            }
+            List<String> keys = new ArrayList<>(whitelistSet());
+            if (checked.isEmpty()) {
+                checked.addAll(keys);
+            } else if (checked.size() >= keys.size()) {
+                checked.clear();
+            } else {
+                Set<String> inverted = new HashSet<>(keys);
+                inverted.removeAll(checked);
+                checked.clear();
+                checked.addAll(inverted);
+            }
+            renderList[0].run();
+        });
+        renderList[0].run();
+    }
+
+    /** 白名单列表标题行的小图标按钮：32dp 点击区，图形跟随正文色。 */
+    private android.widget.ImageButton whitelistHeaderBtn(int drawable, String desc) {
+        android.widget.ImageButton btn = new android.widget.ImageButton(this);
+        btn.setImageResource(drawable);
+        btn.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_primary)));
+        btn.setBackground(null);
+        btn.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        btn.setPadding(Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6));
+        btn.setContentDescription(desc);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(this, 32), Ui.dp(this, 32)));
+        return btn;
+    }
+
+    /** 限制最大高度的滚动容器：内容少时按内容收缩，内容多时在弹窗内滚动，标题行保持固定。 */
+    private static class MaxHeightScrollView extends android.widget.ScrollView {
+        private final int maxH;
+
+        MaxHeightScrollView(android.content.Context c, int maxH) {
+            super(c);
+            this.maxH = maxH;
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(maxH, MeasureSpec.AT_MOST));
+        }
     }
 
     /** 白名单添加应用：与「主副应用关联」选主应用同一种「图标 + 名称」列表。 */
@@ -12389,12 +12744,18 @@ public class FreezeListActivity extends BaseActivity {
         developer.setPadding(0, Ui.dp(this, 4), 0, 0);
         card.addView(developer);
 
+        TextView changelogEntry = Ui.text(this, "更新日志", 12, getColor(R.color.blue), false);
+        changelogEntry.setGravity(Gravity.CENTER);
+        changelogEntry.setPadding(0, Ui.dp(this, 4), 0, 0);
+        changelogEntry.setOnClickListener(v -> showChangelogDialog());
+        card.addView(changelogEntry);
+
         TextView intro = Ui.text(this,
                 "集百家之长，合凚之美\n做最人性化的应用冻结工具",
                 13, Ui.TEXT_PRIMARY, true);
         intro.setGravity(Gravity.CENTER);
         intro.setLineSpacing(Ui.dp(this, 4), 1f);
-        intro.setPadding(0, Ui.dp(this, 14), 0, 0);
+        intro.setPadding(0, Ui.dp(this, 4), 0, 0);
         card.addView(intro);
 
         TextView featureTitle = Ui.text(this, "功能介绍", 12, Ui.TEXT_SECONDARY, true);
@@ -12409,7 +12770,8 @@ public class FreezeListActivity extends BaseActivity {
                 + "· 一键解冻：长按底部冻结按钮，可触发解冻选项；\n"
                 + "· 仅冻结/解冻当前标签：长按标签页或设置开启，一键冻结与长按解冻只处理当前标签页；\n"
                 + "· 两种形态：半屏浮层随手打开，全屏列表适合慢慢整理；\n"
-                + "· 长按空白处手势：左右滑快速翻标签，上滑半屏进全屏、下滑回半屏，可自行开启；\n"
+                + "· 长按列表空白处手势：左右滑快速翻标签，上滑半屏进全屏、下滑回半屏，可自行开启；\n"
+                + "· 长按底栏空白处手势：快面板，可添加快捷设置，一目了然看完当前状态；\n"
                 + "· 半屏调节：开启调节后，拖动顶部小白条改高度；\n"
                 + "· 全屏与半屏美化：自定义壁纸、透明度等；\n"
                 + "· 冻结图标样式：全彩、全灰，左灰右彩等八种半灰半彩；\n"
@@ -12444,6 +12806,65 @@ public class FreezeListActivity extends BaseActivity {
         // 底栏高度与设置面板底部（倒三角那一行：28dp 图形 + 上下各 2dp）保持一致
         close.setPadding(0, 0, 0, 0);
 
+        showAboutSizedDialog(card, close);
+    }
+
+    /** 更新日志：使用文档中的版本内容，最新版本在最上方。 */
+    private void showChangelogDialog() {
+        int pad = Ui.dp(this, 18);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(pad, pad, pad, 0);
+
+        TextView title = Ui.text(this, "更新日志", 19, Ui.TEXT_PRIMARY, true);
+        title.setGravity(Gravity.CENTER);
+        card.addView(title);
+
+        StringBuilder raw = new StringBuilder();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(getResources().openRawResource(R.raw.changelog),
+                        java.nio.charset.StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (raw.length() > 0) {
+                    raw.append('\n');
+                }
+                raw.append(line);
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("读取更新日志失败", e);
+        }
+
+        String changelog = raw.toString();
+        android.text.SpannableString log = new android.text.SpannableString(changelog);
+        Matcher versions = Pattern.compile("(?m)^v\\S+ · \\d{4}-\\d{2}-\\d{2}$")
+                .matcher(changelog);
+        while (versions.find()) {
+            log.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                    versions.start(), versions.end(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            log.setSpan(new android.text.style.ForegroundColorSpan(Ui.primary(this)),
+                    versions.start(), versions.end(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            log.setSpan(new android.text.style.RelativeSizeSpan(1.12f),
+                    versions.start(), versions.end(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        TextView content = Ui.text(this, log, 12, Ui.TEXT_SECONDARY, false);
+        content.setLineSpacing(Ui.dp(this, 5), 1f);
+        content.setPadding(0, Ui.dp(this, 12), 0, 0);
+        card.addView(content);
+
+        TextView close = new TextView(this);
+        close.setText("返回");
+        close.setTextSize(14);
+        close.setTypeface(null, android.graphics.Typeface.BOLD);
+        close.setTextColor(getColor(R.color.blue));
+        close.setGravity(Gravity.CENTER);
+        close.setPadding(0, 0, 0, 0);
+        showAboutSizedDialog(card, close);
+    }
+
+    /** 关于凚与更新日志共用：同宽同高、同位置、内部滚动、同一透明度。 */
+    private void showAboutSizedDialog(LinearLayout card, TextView close) {
+        int pad = Ui.dp(this, 18);
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
         int widthPx = Math.min(Math.round(screenW * 0.86f), Ui.dp(this, 340));
@@ -13464,130 +13885,6 @@ public class FreezeListActivity extends BaseActivity {
     /** 另一形态的 key：半屏加 panel_ 前缀。 */
     private String otherKey(String base) {
         return panelMode ? base : "panel_" + base;
-    }
-
-    /** 「同步到另一形态」入口行：与「将壁纸同步长按选项框」同款次级色小字。 */
-    private TextView syncEntry(String syncKey, Runnable copyFromOther) {
-        return syncEntry(syncKey, syncLabel(syncKey), copyFromOther);
-    }
-
-    /** 自定义文案版本：列表图标组用「将列数与图标大小同步全屏/半屏」。 */
-    private TextView syncEntry(String syncKey, String label, Runnable copyFromOther) {
-        TextView tv = new TextView(this);
-        tv.setTextSize(11);
-        tv.setTextColor(getColor(R.color.text_secondary));
-        tv.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
-        tv.setText(syncRowText(label, syncKey));
-        tv.setOnClickListener(v -> showSyncDialog(syncKey, label, tv, copyFromOther));
-        return tv;
-    }
-
-    private String syncLabel(String syncKey) {
-        return "是否同步" + (panelMode ? "全屏" : "半屏");
-    }
-
-    private String syncRowText(String label, String syncKey) {
-        return "· " + label + "："
-                + (prefs().getBoolean(syncKey, false) ? "同步" : "不同步");
-    }
-
-    /** 同步开关的二选一弹窗：选「同步」时把另一形态的数据拉过来并刷新当前界面。 */
-    private void showSyncDialog(String syncKey, String label, TextView entry,
-                                Runnable copyFromOther) {
-        final boolean on = prefs().getBoolean(syncKey, false);
-        AlertDialog d = new AlertDialog.Builder(this)
-                .setTitle(label)
-                .setSingleChoiceItems(new String[]{"同步", "不同步"}, on ? 0 : 1,
-                        (dialog, which) -> {
-                            dialog.dismiss();
-                            boolean sync = which == 0;
-                            prefs().edit().putBoolean(syncKey, sync).apply();
-                            if (sync) {
-                                copyFromOther.run();
-                                afterSyncPulled();
-                            }
-                            entry.setText(syncRowText(label, syncKey));
-                        })
-                .setNegativeButton("取消", null)
-                .create();
-        d.show();
-        Ui.roundAlertDialog(d);
-        // 设置面板里的弹窗跟随面板位置移动（其他栏的备份/恢复/致谢等保持居中）
-        applySettingsAlignment(d);
-    }
-
-    /** 同步时把另一形态的数据拉过来：半屏点「同步全屏」就抄全屏的值，反之亦然。 */
-    private void copySurfaceGroupFromOther() {
-        SharedPreferences.Editor e = prefs().edit()
-                .putInt(lk(KEY_SETTINGS_SURFACE),
-                        prefs().getInt(otherKey(KEY_SETTINGS_SURFACE), 0))
-                .putInt(lk(KEY_ICON_ALPHA),
-                        prefs().getInt(otherKey(KEY_ICON_ALPHA), 0));
-        // 半屏「半屏面板透明度」对应全屏的「全屏背景」
-        if (panelMode) {
-            e.putInt("panel_" + KEY_SURFACE, prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID));
-        } else {
-            e.putInt(KEY_FULL_SURFACE, prefs().getInt("panel_" + KEY_SURFACE, SURFACE_SOLID));
-        }
-        e.apply();
-    }
-
-    /** 列数 / 图标大小 / 手动标记：从另一形态拉过来。 */
-    private void copyIconGroupFromOther() {
-        prefs().edit()
-                .putInt(lk(KEY_COLUMNS), prefs().getInt(otherKey(KEY_COLUMNS), COLUMNS))
-                .putInt(lk(KEY_ICON_DP), prefs().getInt(otherKey(KEY_ICON_DP), 52))
-                .putBoolean(lk(KEY_ICON_MANUAL),
-                        prefs().getBoolean(otherKey(KEY_ICON_MANUAL), false))
-                .apply();
-    }
-
-    /** 底部冻结按钮的大小 / 偏移 / 距底部 / 底板透明度：从另一形态拉过来。 */
-    private void copyFabGroupFromOther() {
-        SharedPreferences.Editor e = prefs().edit()
-                .putInt(lk(KEY_FAB_SIZE), prefs().getInt(otherKey(KEY_FAB_SIZE),
-                        panelMode ? PANEL_FAB_SIZE_DEFAULT : FAB_SIZE_DEFAULT))
-                .putInt(lk(KEY_FAB_DX), prefs().getInt(otherKey(KEY_FAB_DX), 0))
-                .putInt(lk(KEY_FAB_DY), prefs().getInt(otherKey(KEY_FAB_DY),
-                        panelMode ? PANEL_FAB_DY_DEFAULT : FAB_DY_DEFAULT));
-        if (panelMode) {
-            e.putInt("panel_" + KEY_FAB_SURFACE,
-                    prefs().getInt(KEY_FULL_FAB_SURFACE, FULL_FAB_SURFACE_DEFAULT));
-        } else {
-            e.putInt(KEY_FULL_FAB_SURFACE,
-                    prefs().getInt("panel_" + KEY_FAB_SURFACE, PANEL_FAB_SURFACE_DEFAULT));
-        }
-        e.apply();
-    }
-
-    /** 同步拉取后：重读当前形态数值、刷新界面，并重建设置面板让滑块与文字跟着变。 */
-    private void afterSyncPulled() {
-        iconAlpha = clampInt(prefs().getInt(lk(KEY_ICON_ALPHA), 0), 0, 100);
-        gridColumns = clampInt(prefs().getInt(lk(KEY_COLUMNS), COLUMNS), 4, 8);
-        iconDp = prefs().getInt(lk(KEY_ICON_DP), 52);
-        iconManual = prefs().getBoolean(lk(KEY_ICON_MANUAL), false);
-        fabSizeDp = prefs().getInt(lk(KEY_FAB_SIZE), fabSizeDp);
-        fabDx = prefs().getInt(lk(KEY_FAB_DX), fabDx);
-        fabDy = prefs().getInt(lk(KEY_FAB_DY), fabDy);
-        if (panelMode) {
-            applyPanelSurface();
-            applyFabSurface();
-        } else {
-            applyFullscreenSurface();
-            applyFullscreenFabSurface();
-        }
-        applyFabSize();
-        applyFabPosition();
-        rebindCells();
-        if (gridAdapter != null) {
-            gridAdapter.rebindAllCached();
-        }
-        render();
-        // 重建设置面板：滑块位置、百分比文字都按新值重新生成
-        if (settingsDialog != null) {
-            settingsDialog.dismiss();
-            main.postDelayed(this::showLayoutDialog, 160);
-        }
     }
 
     /** 设置面板卡片的真实左边缘（px），二级弹窗按它对齐。 */
