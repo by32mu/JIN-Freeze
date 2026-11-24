@@ -2502,10 +2502,9 @@ public class FreezeListActivity extends BaseActivity {
             case android.view.MotionEvent.ACTION_DOWN:
                 cancelBlankScrub();
                 // 全屏底部预留带（列表底部底栏上沿以下）长按：直接弹「快面板」，
-                // 这个触点专用于弹面板，不再装长按滑标签手势；其余空白照旧
-                if (!panelMode && quickPanelEnabled && !moveMode && !editMode && !selectMode && !working
-                        && inBlankListArea(ev.getRawX(), ev.getRawY()) && !edgeReserved(ev.getRawX())
-                        && bottomBarTopPx() >= 0 && ev.getRawY() >= bottomBarTopPx()) {
+                // 这个触点专用于弹面板，不再装长按滑标签手势；即使底栏透明、
+                // 底下滚上来图标也优先归快面板，其余空白照旧
+                if (inQuickPanelBar(ev.getRawX(), ev.getRawY())) {
                     quickPanelTouch = true;
                     quickPanelArmed = false;
                     quickPanelDownX = ev.getRawX();
@@ -2738,6 +2737,20 @@ public class FreezeListActivity extends BaseActivity {
     /** 边缘触发模式下的专属条带：这里的长按交给切形态手势（面板上方的遮罩区也算）。 */
     private boolean edgeReserved(float rawX) {
         return gestureEdgeOnly && atScreenEdge(rawX);
+    }
+
+    /**
+     * 全屏底栏预留区的长按归快面板：即使全屏背景透明、底下正好滚上来一个图标，
+     * 长按也优先弹快面板，不穿透成图标操作单。
+     */
+    private boolean inQuickPanelBar(float rawX, float rawY) {
+        return !panelMode && quickPanelEnabled
+                && !moveMode && !editMode && !selectMode && !working
+                && bottomBarTopPx() >= 0 && rawY >= bottomBarTopPx()
+                && inGridArea(rawX, rawY)
+                && !inView(fabGroup, rawX, rawY)
+                && !inView(unfreezeFab, rawX, rawY)
+                && !edgeReserved(rawX);
     }
 
     /** 触点是否压在真正的图标方块上：只有这里长按才弹操作单，其他位置留给长按滑标签。 */
@@ -5377,8 +5390,10 @@ public class FreezeListActivity extends BaseActivity {
                     // 不抢父容器的事件：RecyclerView 需要正常收到滑动才能滚动列表；
                     // 手指移动超过系统触摸抖动阈值时下面会取消长按计时，避免误弹菜单。
                     // 只有按在图标方块上才计长按；格子留白/名称行长按留给「长按空白滑动切标签」；
-                    // 勾了边缘触发后，边缘条带内的长按让给切形态手势，不弹图标操作单
-                    if (onAppIcon(cell.downX, cell.downY) && !edgeReserved(cell.downX)) {
+                    // 勾了边缘触发后，边缘条带内的长按让给切形态手势，不弹图标操作单；
+                    // 全屏底栏预留区归快面板，长按不穿透成图标操作单
+                    if (onAppIcon(cell.downX, cell.downY) && !edgeReserved(cell.downX)
+                            && !inQuickPanelBar(cell.downX, cell.downY)) {
                         v.postDelayed(cell.longPress, LONG_PRESS_MS);
                     }
                     break;

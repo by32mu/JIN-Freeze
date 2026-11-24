@@ -172,7 +172,8 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
-        <!-- 底部留白与半屏一致（半屏列表到分割线只有 4dp），避免最后一行与分割线之间空一大截 -->
+        <!-- 底部留白 = 底栏 54dp + 半屏同款 4dp：图标滚到底也停在分割线上方，
+             不再穿到透明的底栏区域里露出来 -->
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -185,7 +186,8 @@
                 android:paddingStart="14dp"
                 android:paddingTop="8dp"
                 android:paddingEnd="14dp"
-                android:paddingBottom="4dp"
+                android:paddingBottom="58dp"
+                android:clipToPadding="true"
                 android:scrollbars="none" />
 
             <!-- 全屏底栏分割线：与半屏底栏上沿的 1px 细线完全一致；
