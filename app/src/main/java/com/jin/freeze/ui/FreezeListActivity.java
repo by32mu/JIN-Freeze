@@ -2514,6 +2514,11 @@ public class FreezeListActivity extends BaseActivity {
                     return false;
                 }
                 quickPanelTouch = false;
+                // 底栏区域不触发「长按列表空白处」手势：快面板开关关着也一视同仁，
+                // 点击图标/滚动列表的行为照常
+                if (inFullBottomBar(ev.getRawX(), ev.getRawY())) {
+                    return false;
+                }
                 // 边缘触发模式：左右边缘条带内（含面板上方遮罩）都交给这个手势
                 boolean edgeStart = edgeReserved(ev.getRawX());
                 // 移动/编辑/多选/执行中不启用，留给原有手势与操作
@@ -2739,15 +2744,19 @@ public class FreezeListActivity extends BaseActivity {
         return gestureEdgeOnly && atScreenEdge(rawX);
     }
 
+    /** 全屏底栏预留带（列表底部 54dp）：这里的长按一律不归「长按列表空白处」手势。 */
+    private boolean inFullBottomBar(float rawX, float rawY) {
+        return !panelMode && bottomBarTopPx() >= 0 && rawY >= bottomBarTopPx()
+                && inGridArea(rawX, rawY);
+    }
+
     /**
      * 全屏底栏预留区的长按归快面板：即使全屏背景透明、底下正好滚上来一个图标，
      * 长按也优先弹快面板，不穿透成图标操作单。
      */
     private boolean inQuickPanelBar(float rawX, float rawY) {
-        return !panelMode && quickPanelEnabled
+        return inFullBottomBar(rawX, rawY) && quickPanelEnabled
                 && !moveMode && !editMode && !selectMode && !working
-                && bottomBarTopPx() >= 0 && rawY >= bottomBarTopPx()
-                && inGridArea(rawX, rawY)
                 && !inView(fabGroup, rawX, rawY)
                 && !inView(unfreezeFab, rawX, rawY)
                 && !edgeReserved(rawX);
@@ -4009,7 +4018,7 @@ public class FreezeListActivity extends BaseActivity {
         return prefs().getBoolean(KEY_HINT_SUFFIX_HIDDEN + id, false);
     }
 
-    /** 设置小标题：主标题主色，「（查看说明）」用选项行同款次级色并略缩小，整行仍可点。 */
+    /** 设置小标题：主标题主色，「（查看说明）」后缀用次级色并略缩小，整行仍可点。 */
     private CharSequence hintTitle(String title, String id) {
         if (hintSuffixHidden(id)) {
             return title;
@@ -4062,6 +4071,20 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
+    /** 说明卡标题「xxx」加粗并用主文字色，说明文字用次要色，两者明显区分（同「关于凚」功能名）。 */
+    private CharSequence boldHintTitle(String text) {
+        android.text.SpannableString s = new android.text.SpannableString(text);
+        int start = text.indexOf('「');
+        int end = start < 0 ? -1 : text.indexOf('」', start);
+        if (start >= 0 && end > start) {
+            s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                    start, end + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            s.setSpan(new android.text.style.ForegroundColorSpan(getColor(R.color.text_primary)),
+                    start, end + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return s;
+    }
+
     /** 「（查看说明）」共用说明卡片：左下「不再提示」（永久隐藏该条后缀），右下「返回」。 */
     private void showHintCard(String bodyText, String id, TextView titleView, String baseTitle) {
         int padH = Ui.dp(this, 18);
@@ -4070,9 +4093,9 @@ public class FreezeListActivity extends BaseActivity {
         card.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 6));
 
         TextView body = new TextView(this);
-        body.setText(bodyText);
-        body.setTextSize(13);
-        body.setTextColor(getColor(R.color.text_primary));
+        body.setText(boldHintTitle(bodyText));
+        body.setTextSize(12);
+        body.setTextColor(getColor(R.color.text_secondary));
         card.addView(body, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -4124,33 +4147,36 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 标签标题点开的说明卡片。 */
     private void showTabHintDialog(TextView titleView) {
-        showHintCard("勾选标签，则显示勾选的冻结列表；\n取消勾选，则不显示该标签冻结列表；\n点击设为默认，每次启动显示默认标签。",
+        showHintCard("「标签设定」\n"
+                + "·勾选显示列表；\n"
+                + "·取消则隐藏；\n"
+                + "·设为默认，启动优先打开。",
                 "tab", titleView, "标签设定");
     }
 
     /** 「专属LSPosed」标题点开的说明卡片。 */
     private void showLspHintDialog(TextView titleView) {
-        String text = "LSPosed框架里激活凚后，\n无需保留凚的后台也可生效。\n划卡冻结：划卡最近任务卡片即冻结；\n锁屏冻结：锁屏后按时间冻结，亮屏后重计。";
-        // 只有 HyperOS 4 才有「消除启动白底」这个开关，说明也只在能显示开关时才带上
-        if (isHyperOs4()) {
-            text += "\n消除启动白底：全屏背景透明度调节后，冷启动会先闪白色背景，开启后可消除。"
-                    + "\n开启此功能，可优化半屏列表打开动画。";
-        }
+        String text = "「专属 LSPosed」\n"
+                + "·激活后重启，无需常驻后台；\n"
+                + "·划卡冻结:滑动最近任务卡片冻结；\n"
+                + "·锁屏定时冻结:锁屏计时，亮屏重计；\n"
+                + "·消除启动白底:HyperOS4 专属，修复透底冷启动白闪，优化半屏动画。";
         showHintCard(text, "lsp", titleView, "专属LSPosed");
     }
 
     /** 列表白名单标题点开的说明卡片。 */
     private void showWhitelistHintDialog(TextView titleView) {
-        showHintCard("添加白名单的应用，无法被冻结，\n"
-                + "可在白名单列表进行添加与移除，\n"
-                + "长按标签页图标或多选，添加移除",
+        showHintCard("「列表白名单」\n"
+                + "·不受底部按钮 / 划卡 / 锁屏冻结；\n"
+                + "·长按图标、快捷手势冻结不受限制。",
                 "wl", titleView, "列表白名单");
     }
 
     /** 桌面图标模式标题点开的说明卡片。 */
     private void showSpecialModeHintDialog(TextView titleView) {
-        showHintCard("冻结转为暂停模式，桌面图标保留并置灰，\n"
-                + "点击图标左下角可继续打开。",
+        showHintCard("「桌面图标模式」\n"
+                + "·默认冻结:能冻则冻，失败降级暂停；\n"
+                + "·保留桌面图标:改用系统暂停，图标置灰保留，部分系统组件仍会唤醒。",
                 "sp", titleView, "桌面图标模式");
     }
 
@@ -4303,10 +4329,11 @@ public class FreezeListActivity extends BaseActivity {
         card.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 6));
 
         TextView body = new TextView(this);
-        body.setText("首次打开此项；\n以当前列表数据为准；\n后续调节美化全局同步；\n同步项：\n"
-                + "1.自定义壁纸\n2.列表图标\n3.界面透明度\n4.底部冻结按钮\n5.隐藏标签文字\n6.显示应用名称");
-        body.setTextSize(13);
-        body.setTextColor(getColor(R.color.text_primary));
+        body.setText(boldHintTitle("「全局美化同步」\n"
+                + "·首次开启以当前列表数据同步。\n"
+                + "·同步项:自定义壁纸、列表图标、界面透明度、底部冻结按钮、隐藏标签文字、显示应用名称。"));
+        body.setTextSize(12);
+        body.setTextColor(getColor(R.color.text_secondary));
         body.setLineSpacing(Ui.dp(this, 2), 1f);
         card.addView(body, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -4497,10 +4524,11 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 手势调节标题点开的说明卡片。 */
     private void showGestureHintDialog(TextView titleView) {
-        showHintCard("打开手势后，长按冻结列表空白处，成功触发会有震动反馈；\n"
-                + "触发后，左右滑动切换标签页，上滑切换全屏，下滑切换半屏；\n"
-                + "触发距离的 dp 值越大，触发的距离就越长；\n"
-                + "仅在屏幕边缘触发上下滑：从屏幕边缘到设定距离这段区域内，都可以触发手势。",
+        showHintCard("「手势说明」\n"
+                + "·左右滑:切换标签；\n"
+                + "·上滑全屏 / 下滑半屏；\n"
+                + "·触发距离:dp越大，触发距离越长；\n"
+                + "·靠内触发: dp越大，可滑动区域越宽。",
                 "gesture", titleView, "手势调节");
     }
 
@@ -5391,9 +5419,9 @@ public class FreezeListActivity extends BaseActivity {
                     // 手指移动超过系统触摸抖动阈值时下面会取消长按计时，避免误弹菜单。
                     // 只有按在图标方块上才计长按；格子留白/名称行长按留给「长按空白滑动切标签」；
                     // 勾了边缘触发后，边缘条带内的长按让给切形态手势，不弹图标操作单；
-                    // 全屏底栏预留区归快面板，长按不穿透成图标操作单
+                    // 全屏底栏预留区不触发图标长按（快面板开关开时归快面板，关时也不弹操作单）
                     if (onAppIcon(cell.downX, cell.downY) && !edgeReserved(cell.downX)
-                            && !inQuickPanelBar(cell.downX, cell.downY)) {
+                            && !inFullBottomBar(cell.downX, cell.downY)) {
                         v.postDelayed(cell.longPress, LONG_PRESS_MS);
                     }
                     break;
@@ -10377,9 +10405,11 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 「关联应用」标题点开的说明卡片，样式与标签说明一致。 */
     private void showPairHintDialog(TextView titleView) {
-        showHintCard("启动主应用时会同时解冻副应用；\n"
-                + "冻结主应用时会同时冻结副应用；\n"
-                + "点击暂停则不执行这条动作。",
+        showHintCard("「关联应用」\n"
+                + "·启动主应用:后台解冻副应用；\n"
+                + "·冻结主应用:静默冻结副应用；\n"
+                + "·冻结副应用:仅作用于副应用；\n"
+                + "·暂停:关闭该条的联动。",
                 "pair", titleView, "关联应用");
     }
 
@@ -12132,6 +12162,9 @@ public class FreezeListActivity extends BaseActivity {
 
         quickPanelContent = new LinearLayout(this);
         quickPanelContent.setOrientation(LinearLayout.VERTICAL);
+        // 排序拖动时行会临时移出内容高度：不裁切，后面还有空位就完整显示
+        quickPanelContent.setClipChildren(false);
+        quickPanelContent.setClipToPadding(false);
 
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
         sv.setVerticalScrollBarEnabled(false);
@@ -12234,6 +12267,10 @@ public class FreezeListActivity extends BaseActivity {
 
         final Runnable exitSort = () -> {
             quickPanelSortMode = false;
+            // 退出排序恢复滚动区裁切：正常滚动时内容不会画到标题/底栏上
+            sv.setClipChildren(true);
+            sv.setClipToPadding(true);
+            sv.setTranslationZ(0f);
             addBtn.setVisibility(View.VISIBLE);
             removeBtn.setVisibility(View.VISIBLE);
             sortBtn.setVisibility(View.VISIBLE);
@@ -12256,6 +12293,11 @@ public class FreezeListActivity extends BaseActivity {
             quickPanelSortMode = true;
             quickPanelRemoveMode = false;
             quickPanelSortSnapshot = rawQuickPanelItems();
+            // 排序拖动时行可以移出滚动区：临时取消滚动区裁切并抬到标题/底栏之上，
+            // 保证拖到哪里都完整显示、不被截断
+            sv.setClipChildren(false);
+            sv.setClipToPadding(false);
+            sv.setTranslationZ(Ui.dp(this, 4));
             addBtn.setVisibility(View.GONE);
             removeBtn.setVisibility(View.GONE);
             sortBtn.setVisibility(View.GONE);
@@ -12526,6 +12568,8 @@ public class FreezeListActivity extends BaseActivity {
             final float[] downRawY = {0f};
             row.setOnLongClickListener(v -> {
                 dragging[0] = true;
+                // 拖起后置于其它行之上，向上拖也不会被后面的兄弟行盖住
+                wrap.setTranslationZ(Ui.dp(this, 6));
                 v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS,
                         android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                 return true;
@@ -12551,13 +12595,15 @@ public class FreezeListActivity extends BaseActivity {
                         dragging[0] = false;
                         float dy = e.getRawY() - downRawY[0];
                         wrap.setTranslationY(0f);
+                        wrap.setTranslationZ(0f);
                         int rowH = Math.max(1, wrap.getHeight());
                         int steps = Math.round(dy / rowH);
                         if (steps != 0) {
                             List<String> list = quickPanelItems();
                             int from = list.indexOf(id);
-                            int to = from + steps;
-                            if (from >= 0 && to >= 0 && to < list.size() && to != from) {
+                            // 拖过首/尾就吸到第一/最后一项，不因越界被丢掉
+                            int to = clampInt(from + steps, 0, Math.max(0, list.size() - 1));
+                            if (from >= 0 && to != from) {
                                 list.remove(from);
                                 list.add(to, id);
                                 saveQuickPanelItems(list);
