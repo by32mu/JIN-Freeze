@@ -3346,7 +3346,8 @@ public class FreezeListActivity extends BaseActivity {
             if (refresh != null) {
                 refresh.run();
             }
-        }, xOffset, settingsSurfaceAlpha());
+        }, xOffset, settingsSurfaceAlpha(),
+                panelMode ? openBottomLimitPx() : -1, statusBarHeightPx());
     }
 
     /** 长按标签页：改名、设默认、排序、隐藏标签列表。 */
@@ -4185,7 +4186,12 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         int side = Ui.dp(this, 16);
-        col.setPadding(side, Ui.dp(this, 2), side, Ui.dp(this, 2));
+        col.setPadding(side, Ui.dp(this, 6), side, Ui.dp(this, 2));
+
+        // 标题与「白名单列表」同一套：内容内左对齐，16sp 加粗，不再用系统标题的内缩
+        TextView heading = Ui.text(this, "冻结后是否保留桌面图标", 16, Ui.TEXT_PRIMARY, true);
+        col.addView(heading, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView yes = new TextView(this);
         yes.setText("保留，切换系统暂停");
@@ -4203,9 +4209,8 @@ public class FreezeListActivity extends BaseActivity {
         col.addView(no);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("冻结后是否保留桌面图标")
                 .setView(col)
-                .setNegativeButton("关闭", null)
+                .setNegativeButton("返回", null)
                 .create();
         yes.setOnClickListener(v -> {
             applyKeepLauncherIcon(true);
@@ -4225,7 +4230,12 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         int side = Ui.dp(this, 16);
-        col.setPadding(side, Ui.dp(this, 2), side, Ui.dp(this, 2));
+        col.setPadding(side, Ui.dp(this, 6), side, Ui.dp(this, 2));
+
+        // 标题与「白名单列表」同一套：内容内左对齐，16sp 加粗
+        TextView heading = Ui.text(this, "标识位置", 16, Ui.TEXT_PRIMARY, true);
+        col.addView(heading, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView left = new TextView(this);
         left.setText("左下角");
@@ -4243,9 +4253,8 @@ public class FreezeListActivity extends BaseActivity {
         col.addView(right);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("标识位置")
                 .setView(col)
-                .setNegativeButton("关闭", null)
+                .setNegativeButton("返回", null)
                 .create();
         left.setOnClickListener(v -> {
             applyWhiteBadgePos(false);
@@ -4306,7 +4315,7 @@ public class FreezeListActivity extends BaseActivity {
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("将壁纸同步长按选项框")
                 .setView(col)
-                .setNegativeButton("关闭", null)
+                .setNegativeButton("返回", null)
                 .create();
         sync.setOnClickListener(v -> {
             applyWpSheetSync(true);
@@ -4343,7 +4352,7 @@ public class FreezeListActivity extends BaseActivity {
         btnRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView never = hintButton("不再提醒", false);
         TextView confirm = hintButton("确认", true);
-        TextView cancel = hintButton("取消", false);
+        TextView cancel = hintButton("返回", false);
         btnRow.addView(never, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         btnRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
@@ -4527,8 +4536,8 @@ public class FreezeListActivity extends BaseActivity {
         showHintCard("「手势说明」\n"
                 + "·左右滑:切换标签；\n"
                 + "·上滑全屏 / 下滑半屏；\n"
-                + "·触发距离:dp越大，触发距离越长；\n"
-                + "·靠内触发: dp越大，可滑动区域越宽。",
+                + "·触发距离:dp越大:触发距离越长；\n"
+                + "·靠内触发:dp越大:可滑动区域越宽。",
                 "gesture", titleView, "手势调节");
     }
 
@@ -8071,7 +8080,13 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int padH = Ui.dp(this, 16);
-        root.setPadding(padH, Ui.dp(this, 2), padH, Ui.dp(this, 2));
+        root.setPadding(padH, Ui.dp(this, 6), padH, Ui.dp(this, 2));
+
+        // 标题与「白名单列表」同一套：内容内左对齐，16sp 加粗，不再用系统标题的内缩
+        TextView heading = Ui.text(this, forLock ? "锁屏冻结标签" : "按标签冻结",
+                16, Ui.TEXT_PRIMARY, true);
+        root.addView(heading, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView hint = new TextView(this);
         hint.setText(forLock
@@ -8137,11 +8152,10 @@ public class FreezeListActivity extends BaseActivity {
         slp.topMargin = Ui.dp(this, 5);
         root.addView(scroller, slp);
 
-        // 与「主副应用关联」同一套 AlertDialog：原生标题 + 关闭按钮，宽度和位置同算法
+        // 与「主副应用关联」同一套 AlertDialog：标题在内容内左对齐，底部返回按钮
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(forLock ? "锁屏冻结标签" : "按标签冻结")
                 .setView(root)
-                .setNegativeButton("关闭", null)
+                .setNegativeButton("返回", null)
                 .create();
         dialog.setOnDismissListener(d -> summary.setText(forLock
                 ? lockTagSummaryText() : tagSummaryText()));
@@ -9698,6 +9712,10 @@ public class FreezeListActivity extends BaseActivity {
                 & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
                 == android.content.res.Configuration.UI_MODE_NIGHT_YES;
         root.setElevation(Ui.dp(this, night ? 18 : 10));
+        // 只保留四周淡淡的环境阴影，去掉主要落在下方的点光源阴影
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            root.setOutlineSpotShadowColor(android.graphics.Color.TRANSPARENT);
+        }
         settingsSurfaceRoot = root;
 
         // 标题行：右侧加一个高度调节入口，不挤占「完成」与关闭位置
@@ -9829,32 +9847,19 @@ public class FreezeListActivity extends BaseActivity {
         dialog.setContentView(shell);
         dialogRef[0] = dialog;
         settingsDialog = dialog;
+        Ui.setSettingsHost(dialog);
         dialog.setOnDismissListener(d -> {
+            Ui.clearSettingsHost(dialog);
             if (settingsDialog == dialog) {
                 settingsDialog = null;
             }
         });
         done.setOnClickListener(v -> dialog.dismiss());
-        backupEntry.setOnClickListener(v -> {
-            dialog.dismiss();
-            showBackup();
-        });
-        restoreEntry.setOnClickListener(v -> {
-            dialog.dismiss();
-            showRestore();
-        });
-        donateEntry.setOnClickListener(v -> {
-            dialog.dismiss();
-            showDonateDialog();
-        });
-        aboutEntry.setOnClickListener(v -> {
-            dialog.dismiss();
-            showAboutDialog();
-        });
-        thanksEntry.setOnClickListener(v -> {
-            dialog.dismiss();
-            showThanksDialog();
-        });
+        backupEntry.setOnClickListener(v -> showBackup());
+        restoreEntry.setOnClickListener(v -> showRestore());
+        donateEntry.setOnClickListener(v -> showDonateDialog());
+        aboutEntry.setOnClickListener(v -> showAboutDialog());
+        thanksEntry.setOnClickListener(v -> showThanksDialog());
 
         // 未展开范围滑块：半屏固定显示「不侵入半屏」的最大值；全屏可手动调节并记忆
         final int[] openMaxDp = {openSliderMaxDp()};
@@ -10296,7 +10301,7 @@ public class FreezeListActivity extends BaseActivity {
                         holder[0].dismiss();
                     }
                 })
-                .setNegativeButton("取消", null)
+                .setNegativeButton("返回", null)
                 .create();
         holder[0] = d;
         d.show();
@@ -10614,7 +10619,7 @@ public class FreezeListActivity extends BaseActivity {
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(root)
                 .setNeutralButton("多选", null)
-                .setNegativeButton("关闭", null)
+                .setNegativeButton("返回", null)
                 .create();
         holder[0] = dialog;
         pairManagerDialog = dialog;
@@ -10632,7 +10637,12 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         renderList[0].run();
+        disableDialogWindowAnimation(dialog);
         dialog.show();
+        if (pairManagerFromQuickPanel) {
+            // 从快面板进来的：关闭时只回快面板，不去动设置页
+            Ui.skipAutoHide(dialog);
+        }
         Ui.roundAlertDialog(dialog);
         applySettingsAlignment(dialog);
 
@@ -12129,6 +12139,15 @@ public class FreezeListActivity extends BaseActivity {
         if (isFinishing() || quickPanelDialog != null) {
             return;
         }
+        // 全屏快面板是从列表调起的浮层：设置页还开着就先关掉，
+        // 否则快面板和「白名单/关联应用」来回切时，自动隐藏逻辑会把设置页重新弹出来
+        if (!panelMode) {
+            Ui.dismissSettingsHost();
+            if (settingsDialog != null) {
+                settingsDialog.dismiss();
+                settingsDialog = null;
+            }
+        }
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int side = Ui.dp(this, 16);
@@ -12138,6 +12157,10 @@ public class FreezeListActivity extends BaseActivity {
                 & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
                 == android.content.res.Configuration.UI_MODE_NIGHT_YES;
         root.setElevation(Ui.dp(this, qpNight ? 18 : 10));
+        // 只保留四周淡淡的环境阴影，去掉主要落在下方的点光源阴影
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            root.setOutlineSpotShadowColor(android.graphics.Color.TRANSPARENT);
+        }
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -12331,6 +12354,8 @@ public class FreezeListActivity extends BaseActivity {
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         dialog.setContentView(shell);
+        // 快面板不是设置页的二级弹窗：开关都不碰设置页
+        Ui.skipAutoHide(dialog);
         quickPanelDialog = dialog;
         qpHolder[0] = dialog;
         dialog.setOnDismissListener(d -> {
@@ -13190,7 +13215,7 @@ public class FreezeListActivity extends BaseActivity {
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(root)
                 .setNeutralButton("多选", null)
-                .setNegativeButton("关闭", (d, w) -> whitelistManagerFromQuickPanel = false)
+                .setNegativeButton("返回", (d, w) -> whitelistManagerFromQuickPanel = false)
                 .create();
         dlgHolder[0] = dialog;
         whitelistManagerDialog = dialog;
@@ -13208,7 +13233,12 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         renderList[0].run();
+        disableDialogWindowAnimation(dialog);
         dialog.show();
+        if (whitelistManagerFromQuickPanel) {
+            // 从快面板进来的：关闭时只回快面板，不去动设置页
+            Ui.skipAutoHide(dialog);
+        }
         Ui.roundAlertDialog(dialog);
         applySettingsAlignment(dialog);
         // 左下角按钮：普通态进入多选；多选态按勾选情况执行全选 / 全不选 / 反选
@@ -13405,7 +13435,7 @@ public class FreezeListActivity extends BaseActivity {
         card.addView(features);
 
         TextView close = new TextView(this);
-        close.setText("关闭");
+        close.setText("返回");
         close.setTextSize(14);
         close.setTypeface(null, android.graphics.Typeface.BOLD);
         close.setTextColor(getColor(R.color.blue));
@@ -13498,17 +13528,28 @@ public class FreezeListActivity extends BaseActivity {
         shell.addView(close, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 32)));
 
-        // 高度按可用区算：从状态栏下沿一直铺到冻结按钮那一条底栏的上沿，
-        // 内容超出时由内部 ScrollView 滚动（隐藏状态栏时窗口顶部就是屏顶）。
+        // 高度按可用区算：全屏铺到底栏上沿；半屏只占面板上沿以上，不压住下面的列表
         final int statusTop = statusBarHidden ? 0 : introStatusInsetPx();
-        int barTopWin = -1;
-        View barAnchor = findViewById(panelMode ? R.id.panel_bottom_bar : R.id.fab_group);
-        if (barAnchor != null && barAnchor.getHeight() > 0) {
-            int[] loc = new int[2];
-            barAnchor.getLocationInWindow(loc);
-            barTopWin = loc[1];
+        int availH;
+        if (panelMode) {
+            int panelTopWin = -1;
+            View panel = findViewById(R.id.panel);
+            if (panel != null && panel.getHeight() > 0) {
+                int[] loc = new int[2];
+                panel.getLocationInWindow(loc);
+                panelTopWin = loc[1];
+            }
+            availH = panelTopWin - statusTop - Ui.dp(this, 8);
+        } else {
+            int barTopWin = -1;
+            View barAnchor = findViewById(R.id.fab_group);
+            if (barAnchor != null && barAnchor.getHeight() > 0) {
+                int[] loc = new int[2];
+                barAnchor.getLocationInWindow(loc);
+                barTopWin = loc[1];
+            }
+            availH = barTopWin - statusTop;
         }
-        int availH = barTopWin - statusTop;
         if (availH <= Ui.dp(this, 200)) {
             // 取不到底栏位置时退回按内容量：超过屏幕 80% 才滚动
             card.measure(View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY),
@@ -13527,18 +13568,54 @@ public class FreezeListActivity extends BaseActivity {
         close.setOnClickListener(v -> d.dismiss());
         close.setFocusable(false);
         d.show();
+        // 打开期间隐藏设置页；关掉（最后一个二级弹窗）后设置页自动回来
+        Ui.autoHideSettings(d);
+        int shadowPad = applySettingsDialogShadow(d);
         applySettingsSurfaceAlpha(d);
         // 内容超高时默认可能被焦点带到尾部，这里强制回到顶部
         scroller.post(() -> scroller.scrollTo(0, 0));
         if (w != null) {
             android.view.WindowManager.LayoutParams lp = w.getAttributes();
-            lp.width = widthPx;
-            lp.height = availH;
+            lp.width = widthPx + shadowPad * 2;
+            lp.height = availH + shadowPad * 2;
             // 顶部贴状态栏下沿，底部正好停在底栏上沿
             lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            lp.y = 0;
+            lp.y = -shadowPad;
             w.setAttributes(lp);
+            // 每次布局后按真实位置校正：卡片最下沿绝不越过底栏最上沿（首帧高度还没落地也管用）
+            shell.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                int limit = bottomBarTopOnScreen();
+                if (limit <= 0) {
+                    return;
+                }
+                int[] loc = new int[2];
+                shell.getLocationOnScreen(loc);
+                // 底部那圈阴影也算进去：卡片下沿 + 12dp 阴影不能越过底栏
+                int overflow = loc[1] + shell.getHeight() + shadowPad - limit;
+                if (overflow > 0) {
+                    android.view.WindowManager.LayoutParams cur = w.getAttributes();
+                    int target = Math.max(Ui.dp(this, 200), cur.height - overflow);
+                    if (target < cur.height) {
+                        cur.height = target;
+                        w.setAttributes(cur);
+                    }
+                }
+            });
         }
+    }
+
+    /** 底栏最上沿的屏幕 y（全屏取悬浮冻结按钮顶边，半屏取面板顶边）；取不到返回 -1。 */
+    private int bottomBarTopOnScreen() {
+        View anchor = findViewById(panelMode ? R.id.panel : R.id.fab_group);
+        if (anchor == null || anchor.getHeight() <= 0) {
+            return -1;
+        }
+        int[] loc = new int[2];
+        anchor.getLocationOnScreen(loc);
+        return loc[1];
     }
 
     /** 致谢名单：与关于同款圆角卡片，高度随名单内容自适应，过高时内部滚动。 */
@@ -14384,7 +14461,7 @@ public class FreezeListActivity extends BaseActivity {
         actions.setPadding(0, Ui.dp(this, 4), 0, 0);
 
         TextView cancel = new TextView(this);
-        cancel.setText("取消");
+        cancel.setText("返回");
         cancel.setTextSize(14);
         cancel.setTextColor(getColor(R.color.text_primary));
         cancel.setGravity(Gravity.CENTER);
@@ -14420,6 +14497,8 @@ public class FreezeListActivity extends BaseActivity {
             d.dismiss();
         });
         d.show();
+        // 打开期间隐藏设置页；关闭后设置页自动回来
+        Ui.autoHideSettings(d);
         applySettingsSurfaceAlpha(d);
         if (w != null) {
             android.view.WindowManager.LayoutParams lp = w.getAttributes();
@@ -14587,18 +14666,53 @@ public class FreezeListActivity extends BaseActivity {
         });
     }
 
+    /** 与设置面板同款的弹窗阴影：外层壳留 12dp + 圆角卡片 elevation。 */
+    private int applySettingsDialogShadow(android.app.Dialog d) {
+        if (d == null || d == settingsDialog) {
+            return Ui.dp(this, 12);
+        }
+        return Ui.wrapShadow(d);
+    }
+
     /** 二级弹窗统一宽度（与设置面板一致），水平居中显示。 */
     private void applySettingsWidthCentered(android.app.Dialog d) {
         android.view.Window w = d == null ? null : d.getWindow();
         if (w == null) {
             return;
         }
-        w.setLayout(settingsDialogWidth(), ViewGroup.LayoutParams.WRAP_CONTENT);
+        int pad = applySettingsDialogShadow(d);
+        w.setLayout(settingsDialogWidth() + pad * 2, ViewGroup.LayoutParams.WRAP_CONTENT);
         android.view.WindowManager.LayoutParams lp = w.getAttributes();
         lp.x = 0;
         lp.gravity = Gravity.CENTER;
         w.setAttributes(lp);
         applySettingsSurfaceAlpha(d);
+        applyPanelBottomLimit(d);
+        Ui.autoHideSettings(d);
+        hideUntilPositioned(d);
+    }
+
+    /**
+     * 二级弹窗先整窗透明，等首帧定位（宽度、水平偏移、半屏上沿）都落定再显形，
+     * 避免先按默认居中位置画出来、再跳到正确位置的闪烁。
+     */
+    private void hideUntilPositioned(final android.app.Dialog d) {
+        final android.view.Window w = d == null ? null : d.getWindow();
+        if (w == null) {
+            return;
+        }
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        lp.alpha = 0f;
+        w.setAttributes(lp);
+        // 等窗口位置真正落到 Surface（几帧）再显形，否则可能先在旧位置显一帧再跳
+        w.getDecorView().postDelayed(() -> {
+            if (isFinishing() || isDestroyed()) {
+                return;
+            }
+            android.view.WindowManager.LayoutParams cur = w.getAttributes();
+            cur.alpha = 1f;
+            w.setAttributes(cur);
+        }, 80);
     }
 
     /** 二级弹窗统一宽度，并水平对齐设置面板（面板拖动过的偏移也一并跟随）。 */
@@ -14610,12 +14724,47 @@ public class FreezeListActivity extends BaseActivity {
         int width = settingsDialogWidth();
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int centeredLeft = (screenW - width) / 2;
-        w.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
+        int pad = applySettingsDialogShadow(d);
+        w.setLayout(width + pad * 2, ViewGroup.LayoutParams.WRAP_CONTENT);
         android.view.WindowManager.LayoutParams lp = w.getAttributes();
         int left = settingsPanelLeft >= 0 ? settingsPanelLeft : centeredLeft;
         lp.x = left - centeredLeft;
         w.setAttributes(lp);
         applySettingsSurfaceAlpha(d);
+        applyPanelBottomLimit(d);
+        Ui.autoHideSettings(d);
+        hideUntilPositioned(d);
+    }
+
+    /** 半屏形态：二级弹窗整体抬到半屏面板上沿之上，不压住下面的列表。 */
+    private void applyPanelBottomLimit(android.app.Dialog d) {
+        if (!panelMode || d == null) {
+            return;
+        }
+        android.view.Window w = d.getWindow();
+        int limit = openBottomLimitPx();
+        if (w == null || limit <= 0) {
+            return;
+        }
+        // 底边锚定：窗口底边直接停在面板上沿之外。
+        // 与「按弹窗高度算 y」不同，这个位置和高度无关，首帧就在外面，不需要事后再挪。
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int statusInset = statusBarHidden ? 0 : statusBarHeightPx();
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        lp.y = Math.max(0, screenH + statusInset - (limit - Ui.dp(this, 8)));
+        w.setAttributes(lp);
+    }
+
+    /**
+     * 关掉弹窗自带的进出场动画。动画期间系统把窗口挂在 leash 上，
+     * 改位置/透明度要等动画结束才真正生效，表现就是「先出现在半屏里，再跳到半屏外」。
+     */
+    private void disableDialogWindowAnimation(android.app.Dialog dialog) {
+        android.view.Window w = dialog == null ? null : dialog.getWindow();
+        if (w != null) {
+            w.setWindowAnimations(0);
+        }
     }
 
     /** 快面板透明度：0 = 不透明，100 = 全透明；与「设置页透明度」完全独立。 */
@@ -14946,7 +15095,7 @@ public class FreezeListActivity extends BaseActivity {
         w.getDecorView().getLocationOnScreen(loc);
         int contentTop = loc[1] + shadowPad;
         int contentH = Math.max(0, lp.height - shadowPad * 2);
-        int maxBottom = limitY - Ui.dp(this, 8);
+        int maxBottom = limitY - Ui.dp(this, 8) - shadowPad;
         if (contentTop + contentH <= maxBottom) {
             return;
         }
@@ -15244,7 +15393,7 @@ public class FreezeListActivity extends BaseActivity {
                 "冻结列表 " + listCount + " 个、设置 " + settingCount + " 项、桌面快捷方式 "
                         + shortcutCount + " 个、白名单 " + whiteCount + " 个、关联应用 "
                         + pairCount + " 组，会写进同一份备份",
-                content, new String[]{"取消"}, new Runnable[]{null});
+                content, new String[]{"返回"}, new Runnable[]{null});
     }
 
     /** 恢复入口：先选来源（文件 / 文本），再决定恢复哪一部分。 */
@@ -15268,7 +15417,7 @@ public class FreezeListActivity extends BaseActivity {
         content.addView(optText, topMargin(6));
         ref[0] = compactCard("恢复",
                 "先选备份来源，再决定恢复配置、冻结列表、白名单、关联应用还是桌面快捷方式",
-                content, new String[]{"取消"}, new Runnable[]{null});
+                content, new String[]{"返回"}, new Runnable[]{null});
     }
 
     /** 文本备份：压缩 + Base64 成尽量短的一串，进剪贴板并展示出来。 */
@@ -15413,7 +15562,7 @@ public class FreezeListActivity extends BaseActivity {
                 "Android 11 起，应用默认读不到 Download 里旧版本创建的文件，卸载重装后更明显。"
                         + "开启「所有文件访问」即可直接读取 /storage/emulated/0/Download/凚/备份；"
                         + "也可以点「导入文件」手动选备份。",
-                null, new String[]{"取消", "去授权", "导入文件"}, new Runnable[]{null, () -> {
+                null, new String[]{"返回", "去授权", "导入文件"}, new Runnable[]{null, () -> {
                     restoreAwaitAccess = true;
                     try {
                         startActivity(new Intent(
@@ -15436,7 +15585,7 @@ public class FreezeListActivity extends BaseActivity {
             compactCard("还没有备份文件",
                     "可以先做一次备份、用「粘贴备份文本」恢复备份串，或「导入文件」选手机里任意位置的备份",
                     null, "刷新", this::refreshRestoreFiles,
-                    new String[]{"取消", "导入文件"}, new Runnable[]{null,
+                    new String[]{"返回", "导入文件"}, new Runnable[]{null,
                             () -> backupImportPicker.launch(new String[]{"*/*"})});
             return;
         }
@@ -15461,7 +15610,7 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 260)));
         ref[0] = compactCard("选择备份文件", "共 " + files.size() + " 份，按时间从新到旧",
                 sv, "刷新", this::refreshRestoreFiles,
-                new String[]{"取消", "导入文件"}, new Runnable[]{null,
+                new String[]{"返回", "导入文件"}, new Runnable[]{null,
                         () -> {
                             dismiss(ref);
                             backupImportPicker.launch(new String[]{"*/*"});
@@ -15612,8 +15761,9 @@ public class FreezeListActivity extends BaseActivity {
                     }
                 }
             }
-            if (arr == null) {
-                // 应用无权列目录（分区存储）时用 root/Shizuku 列
+            if (arr == null || arr.length == 0) {
+                // 应用列不出内容：无权时可能是 null，也可能被分区存储过滤成空目录
+                // （目录看得见、里面的文件全不显示），两种都要走 root/Shizuku 再列一次
                 addRootListedFiles(files, seen, dir);
             }
         }
@@ -15775,7 +15925,7 @@ public class FreezeListActivity extends BaseActivity {
         sv.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 200)));
         compactCard("粘贴备份", "整串粘贴，内容不会被改动", sv,
-                new String[]{"取消", "解析"}, new Runnable[]{null, () -> {
+                new String[]{"返回", "解析"}, new Runnable[]{null, () -> {
                     String raw = input.getText().toString().trim();
                     if (raw.isEmpty()) {
                         toast("请先粘贴备份内容");
@@ -15894,7 +16044,7 @@ public class FreezeListActivity extends BaseActivity {
         });
         content.addView(all, topMargin(6));
         ref[0] = compactCard("选择恢复内容", desc, content,
-                new String[]{"取消"}, new Runnable[]{null});
+                new String[]{"返回"}, new Runnable[]{null});
     }
 
     /**
@@ -16017,11 +16167,24 @@ public class FreezeListActivity extends BaseActivity {
             if (pkg.isEmpty() || pinned.contains(pkg)) {
                 continue;
             }
-            try {
-                pm.getApplicationInfo(pkg,
-                        android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS);
-            } catch (Exception e) {
+            // 实例键（pkg@999）不能直接喂给 PackageManager，先取纯包名再查
+            String pure = packagePart(pkg);
+            if (pure.isEmpty()) {
                 continue;
+            }
+            int userId = userIdPart(pkg);
+            if (userId != 0) {
+                // 分身装在自己的用户空间里，PackageManager 查不到，按 user 判断；查不到也照常排队
+                if (Boolean.FALSE.equals(cloneInstalled(pure, userId))) {
+                    continue;
+                }
+            } else {
+                try {
+                    pm.getApplicationInfo(pure,
+                            android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS);
+                } catch (Exception e) {
+                    continue;
+                }
             }
             todo.add(pkg);
         }
@@ -16029,6 +16192,29 @@ public class FreezeListActivity extends BaseActivity {
             ShortcutPin.pinAll(this, todo, null);
         }
         return todo.size();
+    }
+
+    /**
+     * 分身用户下这个包是否存在：TRUE/FALSE 为确定结果，null 表示查询失败。
+     * 查询失败时调用方应「宁可直接写入」，不要因为查不到就丢备份数据。
+     */
+    private Boolean cloneInstalled(String pkg, int userId) {
+        if (pkg == null || pkg.isEmpty()) {
+            return Boolean.FALSE;
+        }
+        PrivShell.Result r = PrivShell.exec("pm list packages --user " + userId + " " + pkg, 20);
+        if (r == null || r.timeout || r.out == null) {
+            return null;
+        }
+        String out = r.out.trim();
+        if (out.contains("package:" + pkg)) {
+            return Boolean.TRUE;
+        }
+        String low = out.toLowerCase(Locale.ROOT);
+        if (low.contains("error") || low.contains("exception") || low.contains("permission")) {
+            return null;
+        }
+        return Boolean.FALSE;
     }
 
     /** 备份 JSON：与搞机助手同一套字段，freeze 段 + settings 段 + shortcuts 段。 */
@@ -16416,8 +16602,17 @@ public class FreezeListActivity extends BaseActivity {
                 if (p.isEmpty()) {
                     continue;
                 }
+                int userId = userIdPart(p);
+                if (userId != 0) {
+                    // 双开/分身：PackageManager 只认主用户包名，按对应 user 判断是否存在；
+                    // 查询不到时宁可直接写入，交给 reload() 的 packagePart 校验兜底
+                    if (!Boolean.FALSE.equals(cloneInstalled(packagePart(p), userId))) {
+                        next.add(p);
+                    }
+                    continue;
+                }
                 try {
-                    pm.getApplicationInfo(p, 0);
+                    pm.getApplicationInfo(packagePart(p), 0);
                     next.add(p);
                 } catch (Exception e) {
                     missing++;
@@ -16602,6 +16797,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
         }
+        disableDialogWindowAnimation(dialog);
         dialog.show();
         applySettingsSurfaceAlpha(dialog);
         android.view.Window w = dialog.getWindow();

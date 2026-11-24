@@ -196,7 +196,8 @@ final class LockFreezeHook {
     }
 
     private static void freezeAll(String reason) {
-        List<String> packages = JinHookConfig.freezablePackages();
+        // 名单里是实例键：按每条自己的 userId 冻结，锁屏（当前用户 0）不会误冻主应用
+        List<JinHookConfig.Instance> packages = JinHookConfig.freezablePackages();
         if (packages.isEmpty()) {
             return;
         }

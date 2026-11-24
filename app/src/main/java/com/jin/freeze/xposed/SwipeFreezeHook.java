@@ -94,7 +94,7 @@ final class SwipeFreezeHook {
                 String reason = removalReason();
                 Object result = proceed.run();
                 if (reason != null && !home && info != null) {
-                    if (JinHookConfig.shouldFreeze(info.pkg)) {
+                    if (JinHookConfig.shouldFreeze(info.pkg, info.userId)) {
                         JinFreeze.freeze(info.pkg, reason, info.userId);
                     }
                 }
@@ -109,7 +109,7 @@ final class SwipeFreezeHook {
             Object result = proceed.run();
             boolean success = !(result instanceof Boolean) || (Boolean) result;
             if (success && info != null) {
-                if (JinHookConfig.shouldFreeze(info.pkg)) {
+                if (JinHookConfig.shouldFreeze(info.pkg, info.userId)) {
                     JinFreeze.freeze(info.pkg, "swipe", info.userId);
                 }
             }
@@ -122,10 +122,10 @@ final class SwipeFreezeHook {
             // 删除后任务对象就查不到了，先快照
             List<JinRecents.TaskInfo> tasks = JinRecents.snapshotRecentTasks(thisObj);
             Object result = proceed.run();
-            List<String> listed = new ArrayList<>();
+            List<JinHookConfig.Instance> listed = new ArrayList<>();
             for (JinRecents.TaskInfo info : tasks) {
-                if (JinHookConfig.shouldFreeze(info.pkg)) {
-                    listed.add(info.pkg);
+                if (JinHookConfig.shouldFreeze(info.pkg, info.userId)) {
+                    listed.add(new JinHookConfig.Instance(info.pkg, info.userId));
                 }
             }
             if (!listed.isEmpty()) {

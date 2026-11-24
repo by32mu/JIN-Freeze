@@ -69,41 +69,102 @@ public final class JinHookConfig {
     private JinHookConfig() {
     }
 
-    public static boolean shouldFreeze(String pkg) {
+    /** 名单里的一条：包名 + 用户号（主用户 0，双开/分身是 999、10 等）。 */
+    public static final class Instance {
+        public final String pkg;
+        public final int userId;
+
+        public Instance(String pkg, int userId) {
+            this.pkg = pkg;
+            this.userId = userId;
+        }
+
+        /** 实例键：主用户是纯包名，分身带 @用户，与 App 侧名单键一致。 */
+        public String key() {
+            return instanceKey(pkg, userId);
+        }
+    }
+
+    /** 实例键：userId 0 用纯包名，其余追加「@用户」。 */
+    static String instanceKey(String pkg, int userId) {
+        return userId == 0 ? pkg : pkg + "@" + userId;
+    }
+
+    /** 从实例键取用户号：没有 @ 视为主用户 0。 */
+    static int userIdOf(String key) {
+        int at = key.lastIndexOf('@');
+        if (at <= 0) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(key.substring(at + 1).trim());
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    /** 从实例键取纯包名。 */
+    static String pkgOf(String key) {
+        int at = key.lastIndexOf('@');
+        return at > 0 ? key.substring(0, at) : key;
+    }
+
+    /** 解析实例键；格式不认识时按主用户处理，交给 setApplicationEnabledSetting 自然失败。 */
+    static Instance parseInstance(String key) {
+        if (key == null || key.isEmpty()) {
+            return null;
+        }
+        return new Instance(pkgOf(key), userIdOf(key));
+    }
+
+    public static boolean shouldFreeze(String pkg, int userId) {
         if (pkg == null || pkg.isEmpty()) {
             return false;
         }
         Snapshot snap = snapshot();
-        if (snap == null || !snap.enabled || !snap.packages.contains(pkg)) {
+        if (snap == null || !snap.enabled) {
             return false;
         }
-        return passesTags(snap, pkg, snap.selected);
+        String key = instanceKey(pkg, userId);
+        if (!snap.packages.contains(key)) {
+            // 兼容旧配置（只有纯包名）：退回按包名匹配
+            if (!snap.packages.contains(pkg)) {
+                return false;
+            }
+            key = pkg;
+        }
+        return passesTags(snap, key, snap.selected);
     }
 
     /**
      * 锁屏冻结用：只看名单 + 标签口径，与划卡冻结开关无关
      * （锁屏冻结是独立开关，关掉划卡不影响锁屏）。
      */
-    public static List<String> freezablePackages() {
-        List<String> packages = new ArrayList<>();
+    public static List<Instance> freezablePackages() {
+        List<Instance> instances = new ArrayList<>();
         Snapshot snap = snapshot();
         if (snap == null) {
-            return packages;
+            return instances;
         }
-        for (String pkg : snap.packages) {
-            if (passesTags(snap, pkg, snap.lockSelected)) {
-                packages.add(pkg);
+        for (String key : snap.packages) {
+            Instance instance = parseInstance(key);
+            if (instance != null && passesTags(snap, key, snap.lockSelected)) {
+                instances.add(instance);
             }
         }
-        return packages;
+        return instances;
     }
 
     /** 标签口径：一个都没勾不冻；包没有标签信息则不参与过滤（按名单冻结）。 */
-    private static boolean passesTags(Snapshot snap, String pkg, Set<String> selected) {
+    private static boolean passesTags(Snapshot snap, String key, Set<String> selected) {
         if (selected != null && selected.isEmpty()) {
             return false;
         }
-        Set<String> tags = snap.tags.get(pkg);
+        Set<String> tags = snap.tags.get(key);
+        if (tags == null) {
+            // 实例键查不到时退回纯包名（旧配置 / 旧标签数据）
+            tags = snap.tags.get(pkgOf(key));
+        }
         if (tags == null || tags.isEmpty()) {
             return true;
         }

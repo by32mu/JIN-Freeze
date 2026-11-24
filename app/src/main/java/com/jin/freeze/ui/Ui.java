@@ -1,11 +1,13 @@
 package com.jin.freeze.ui;
 
+import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -14,6 +16,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -237,6 +240,118 @@ public final class Ui {
         roundDialogWidth(dialog, root, width, heightPx);
     }
 
+    /** 设置页弹窗：二级弹窗打开时先隐藏它，二级弹窗关掉后再恢复显示。 */
+    private static Dialog settingsHost;
+    private static int settingsChildCount;
+    /** 已登记过自动隐藏的弹窗 decor，避免同一弹窗被重复圆角化时重复计数。 */
+    private static final java.util.WeakHashMap<View, Boolean> autoHideTracked =
+            new java.util.WeakHashMap<>();
+
+    /** 设置页弹窗创建后登记；之后所有经 Ui 圆角化的二级弹窗都会自动隐藏/恢复它。 */
+    public static void setSettingsHost(Dialog host) {
+        settingsHost = host;
+        settingsChildCount = 0;
+    }
+
+    /** 设置页弹窗关闭时取消登记。 */
+    public static void clearSettingsHost(Dialog host) {
+        if (settingsHost == host) {
+            settingsHost = null;
+            settingsChildCount = 0;
+        }
+    }
+
+    /** 直接关掉设置页并取消登记（全屏快面板这类从列表调起的浮层用）。 */
+    public static void dismissSettingsHost() {
+        Dialog host = settingsHost;
+        settingsHost = null;
+        settingsChildCount = 0;
+        if (host != null) {
+            try {
+                host.dismiss();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /**
+     * 标记这个弹窗不算设置页的二级弹窗：打开/关闭都不隐藏、不恢复设置页。
+     * 必须在圆角化（autoHideSettings）之前调用。
+     */
+    public static void skipAutoHide(Dialog dialog) {
+        Window w = dialog == null ? null : dialog.getWindow();
+        View decor = w == null ? null : w.getDecorView();
+        if (decor == null) {
+            return;
+        }
+        synchronized (autoHideTracked) {
+            autoHideTracked.put(decor, Boolean.TRUE);
+        }
+    }
+
+    /**
+     * 二级弹窗挂载时隐藏设置页，最后一个二级弹窗卸载时恢复设置页。
+     * 覆盖「完成 / 取消 / 手势返回」三种关闭方式；嵌套弹窗用计数处理。
+     */
+    public static void autoHideSettings(Dialog child) {
+        final Dialog host = settingsHost;
+        Window window = child.getWindow();
+        if (host == null || host == child || window == null) {
+            return;
+        }
+        final View decor = window.getDecorView();
+        if (decor == null) {
+            return;
+        }
+        synchronized (autoHideTracked) {
+            if (autoHideTracked.put(decor, Boolean.TRUE) != null) {
+                return;
+            }
+        }
+        final boolean[] counted = {false};
+        if (decor.isAttachedToWindow()) {
+            counted[0] = true;
+            settingsChildCount++;
+            if (host.isShowing()) {
+                host.hide();
+            }
+        }
+        decor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                if (settingsHost != host || counted[0]) {
+                    return;
+                }
+                counted[0] = true;
+                settingsChildCount++;
+                if (host.isShowing()) {
+                    host.hide();
+                }
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                v.removeOnAttachStateChangeListener(this);
+                if (!counted[0]) {
+                    return;
+                }
+                counted[0] = false;
+                settingsChildCount = Math.max(0, settingsChildCount - 1);
+                if (settingsHost != host || settingsChildCount > 0 || host.isShowing()) {
+                    return;
+                }
+                Context c = host.getContext();
+                if (c instanceof Activity) {
+                    Activity a = (Activity) c;
+                    if (a.isFinishing() || (Build.VERSION.SDK_INT >= 17 && a.isDestroyed())) {
+                        return;
+                    }
+                }
+                host.show();
+            }
+        });
+    }
+
     /** 直接指定宽度（px）的版本，给需要收窄的小弹窗用。 */
     public static void roundDialogWidth(Dialog dialog, View root, int widthPx, int heightPx) {
         Window w = dialog.getWindow();
@@ -254,6 +369,102 @@ public final class Ui {
         });
         root.setClipToOutline(true);
         w.setLayout(widthPx, heightPx);
+        autoHideSettings(dialog);
+    }
+
+    /** 弹窗卡片是否已套过阴影壳（避免重复 wrap）。 */
+    private static final int TAG_SHADOW_SHELL = 0x0A1B2C3F;
+
+    /**
+     * 与设置面板同款的弹窗阴影：把弹窗内容卡片包进带 12dp 留白的壳里（上下左右一致），
+     * 卡片本体按圆角画 elevation 阴影；窗口底改成透明，阴影才画得出来。
+     * 返回留白宽度（px），调用方按 width + pad * 2 设窗口宽度、height + pad * 2 设窗口高度。
+     */
+    public static int wrapShadow(Dialog dialog) {
+        Context c = dialog.getContext();
+        int pad = dp(c, 12);
+        Window w = dialog.getWindow();
+        if (w == null) {
+            return pad;
+        }
+        View decor = w.getDecorView();
+        if (decor == null) {
+            return pad;
+        }
+        View content = decor.findViewById(android.R.id.content);
+        View card = content;
+        if (content instanceof ViewGroup && ((ViewGroup) content).getChildCount() > 0) {
+            card = ((ViewGroup) content).getChildAt(0);
+        }
+        if (card == null || !(card.getParent() instanceof ViewGroup)) {
+            return pad;
+        }
+        if (card.getTag(TAG_SHADOW_SHELL) == null) {
+            ViewGroup parent = (ViewGroup) card.getParent();
+            ViewGroup.LayoutParams lp = card.getLayoutParams();
+            int childHeight = lp != null && lp.height == ViewGroup.LayoutParams.MATCH_PARENT
+                    ? ViewGroup.LayoutParams.MATCH_PARENT
+                    : ViewGroup.LayoutParams.WRAP_CONTENT;
+            parent.removeView(card);
+            FrameLayout shell = new FrameLayout(c);
+            shell.setClipChildren(false);
+            shell.setClipToPadding(false);
+            shell.setPadding(pad, pad, pad, pad);
+            shell.addView(card, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, childHeight));
+            if (lp != null) {
+                parent.addView(shell, lp);
+            } else {
+                parent.addView(shell, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+            card.setTag(TAG_SHADOW_SHELL, Boolean.TRUE);
+            // 窗口底透明，阴影才能画到窗口里
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        }
+        boolean night = (c.getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        card.setElevation(dp(c, night ? 18 : 10));
+        // 只要四周淡淡的环境阴影：点光源阴影（主要落在下方，底部会比顶部明显）不要
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            card.setOutlineSpotShadowColor(Color.TRANSPARENT);
+        }
+        return pad;
+    }
+
+    /**
+     * 半屏形态：把弹窗整体抬到面板上沿之上（limitY 为面板上沿的屏幕 y），
+     * 先等首帧量到真实高度再定位；上方空间不够时收高度，绝压住下面的半屏列表。
+     */
+    public static void keepAboveBottomLimit(Dialog dialog, int limitY,
+                                            int statusBarInset, int gapPx) {
+        if (dialog == null || limitY <= 0) {
+            return;
+        }
+        Window w = dialog.getWindow();
+        if (w == null) {
+            return;
+        }
+        View decor = w.getDecorView();
+        if (decor == null) {
+            return;
+        }
+        decor.post(() -> {
+            int h = decor.getHeight();
+            if (h <= 0) {
+                return;
+            }
+            int avail = limitY - gapPx - statusBarInset;
+            WindowManager.LayoutParams lp = w.getAttributes();
+            if (h > avail && avail > dp(decor.getContext(), 170)) {
+                lp.height = avail;
+                h = avail;
+            }
+            lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            lp.y = Math.max(0, avail - h);
+            w.setAttributes(lp);
+        });
     }
 
     /**
@@ -337,6 +548,7 @@ public final class Ui {
             }
         });
         panel.setClipToOutline(true);
+        autoHideSettings(dialog);
     }
 
     /**

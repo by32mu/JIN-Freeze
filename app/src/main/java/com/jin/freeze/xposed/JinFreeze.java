@@ -44,35 +44,36 @@ final class JinFreeze {
     private JinFreeze() {
     }
 
-    /** 批量冻结：整批只落一次盘（1 行汇总 + 失败明细），避免每个应用一次 I/O。 */
-    static void freezeAll(Collection<String> packages, String reason) {
-        if (packages == null || packages.isEmpty()) {
+    /** 批量冻结：每条按自己的用户号执行；整批只落一次盘（1 行汇总 + 失败明细）。 */
+    static void freezeAll(Collection<JinHookConfig.Instance> instances, String reason) {
+        if (instances == null || instances.isEmpty()) {
             return;
         }
-        final List<String> list = new ArrayList<>(packages);
-        final int userId = currentUserId();
+        final List<JinHookConfig.Instance> list = new ArrayList<>(instances);
         EXECUTOR.execute(() -> {
             int done = 0;
             List<String> failed = new ArrayList<>();
-            for (String pkg : list) {
-                if (pkg == null || pkg.isEmpty() || SELF_PKG.equals(pkg) || "android".equals(pkg)) {
+            for (JinHookConfig.Instance instance : list) {
+                if (instance == null || instance.pkg == null || instance.pkg.isEmpty()
+                        || SELF_PKG.equals(instance.pkg) || "android".equals(instance.pkg)) {
                     continue;
                 }
-                if (!IN_FLIGHT.add(pkg)) {
+                String key = instance.key();
+                if (!IN_FLIGHT.add(key)) {
                     continue;
                 }
                 boolean ok;
                 try {
-                    ok = setDisabledUser(pkg, userId);
+                    ok = setDisabledUser(instance.pkg, instance.userId);
                 } catch (Throwable t) {
                     ok = false;
                 } finally {
-                    IN_FLIGHT.remove(pkg);
+                    IN_FLIGHT.remove(key);
                 }
                 if (ok) {
                     done++;
                 } else {
-                    failed.add(pkg);
+                    failed.add(key);
                 }
             }
             appendOps(reason, list.size(), done, failed);
@@ -86,7 +87,8 @@ final class JinFreeze {
         if (SELF_PKG.equals(pkg) || "android".equals(pkg)) {
             return;
         }
-        if (!IN_FLIGHT.add(pkg)) {
+        final String key = userId == 0 ? pkg : pkg + "@" + userId;
+        if (!IN_FLIGHT.add(key)) {
             return;
         }
         EXECUTOR.execute(() -> {
@@ -96,9 +98,9 @@ final class JinFreeze {
             } catch (Throwable t) {
                 ok = false;
             } finally {
-                IN_FLIGHT.remove(pkg);
+                IN_FLIGHT.remove(key);
             }
-            appendOps(reason, 1, ok ? 1 : 0, ok ? null : Collections.singletonList(pkg));
+            appendOps(reason, 1, ok ? 1 : 0, ok ? null : Collections.singletonList(key));
         });
     }
 
@@ -227,15 +229,6 @@ final class JinFreeze {
             android.util.Log.w("JinSwipeFreeze", "setApplicationEnabledSetting(" + pkg + ") 失败: "
                     + cause.getClass().getName() + ": " + cause.getMessage());
             return false;
-        }
-    }
-
-    private static int currentUserId() {
-        try {
-            Class<?> am = Class.forName("android.app.ActivityManager");
-            return (Integer) am.getMethod("getCurrentUser").invoke(null);
-        } catch (Throwable ignored) {
-            return 0;
         }
     }
 }

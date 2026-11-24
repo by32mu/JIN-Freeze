@@ -233,7 +233,7 @@ public final class SwipeFreeze {
         return allTabs(context);
     }
 
-    /** 名单键可能带「@用户」后缀，交回 hook 的一律是纯包名。 */
+    /** 名单键可能带「@用户」后缀；只在取包名信息（图标/系统应用判断）时使用，写配置时保留原键。 */
     private static String packagePart(String key) {
         int at = key.lastIndexOf('@');
         return at > 0 ? key.substring(0, at) : key;
@@ -252,20 +252,22 @@ public final class SwipeFreeze {
 
     /** 按当前偏好生成配置文件内容；格式与 hook 侧 JinHookConfig 一一对应。 */
     public static String buildConfig(Context context) {
-        // 名单里可能带「包名@用户」的分身键；hook 侧只认包名，这里统一还原并去重
+        // 名单按实例键存储（主用户 com.xxx、分身 com.xxx@999），配置也原样写实例键：
+        // hook 侧按 @ 拆出 userId 按实例冻结，避免分身在名单里却把主用户同名应用冻掉
         Set<String> raw = prefs(context).getStringSet(KEY_PKGS, new HashSet<>());
         Map<String, Set<String>> mapping = appTabMap(context);
+        List<Tag> tabs = allTabs(context);
         Map<String, String> labels = new LinkedHashMap<>();
-        for (Tag tag : allTabs(context)) {
+        for (Tag tag : tabs) {
             labels.put(tag.id, tag.name);
         }
         Set<String> pkgs = new TreeSet<>();
         Map<String, Set<String>> tags = new LinkedHashMap<>();
         for (String key : new TreeSet<>(raw)) {
-            String pkg = packagePart(key);
-            if (!pkgs.add(pkg)) {
+            if (key.isEmpty() || !pkgs.add(key)) {
                 continue;
             }
+            String pkg = packagePart(key);
             Set<String> mapped = mapping.get(key);
             if (mapped == null) {
                 mapped = mapping.get(pkg);
@@ -274,7 +276,7 @@ public final class SwipeFreeze {
             Set<String> set = new HashSet<>();
             if (mapped != null) {
                 for (String tab : mapped) {
-                    if (containsTab(allTabs(context), tab)) {
+                    if (containsTab(tabs, tab)) {
                         set.add(tab);
                     }
                 }
@@ -282,25 +284,21 @@ public final class SwipeFreeze {
             if (set.isEmpty()) {
                 set.add(isSystemApp(context, pkg) ? TAB_SYSTEM : TAB_USER);
             }
-            tags.put(pkg, set);
+            tags.put(key, set);
         }
         Set<String> selected = selectedTags(context);
         Set<String> lockSelected = lockSelectedTags(context);
 
-        // 白名单里的应用任何冻结通道都不冻：直接从名单里剔除，划卡/锁屏共用这份名单
+        // 白名单里的实例任何冻结通道都不冻：按实例键精确剔除，主用户与分身互不牵连
         Set<String> white = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getStringSet("freeze_whitelist", null);
         if (white != null && !white.isEmpty()) {
-            Set<String> whitePkgs = new HashSet<>();
-            for (String key : white) {
-                whitePkgs.add(packagePart(key));
-            }
-            pkgs.removeAll(whitePkgs);
+            pkgs.removeAll(white);
         }
 
         JSONObject root = new JSONObject();
         try {
-            root.put("version", 1);
+            root.put("version", 2);
             root.put("enabled", enabled(context));
             // 锁屏冻结独立开关与延时（秒），hook 侧锁屏时读取
             root.put("lock_enabled", lockEnabled(context));

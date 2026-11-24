@@ -16,6 +16,7 @@ import com.jin.freeze.core.SuspendSupport;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -264,22 +265,35 @@ public class QuickLaunchActivity extends Activity {
     }
 
     /**
-     * 照搬 Hail AppManager.setListFrozen 的返回值语义：
-     * null = 一个都没成功（Hail 抛权限错误）；1 个 = 应用名；多个 = 数量字符串。
-     * 筛选照 Hail：只处理当前状态不是目标的；凚 额外跳过冻结白名单（原有功能）。
+     * 桌面快捷方式的一键冻结 / 一键解冻：整份名单全量执行。
+     * 不看白名单、不看标签页 / 搜索框；分身实例键（pkg@999 等）按各自 user 执行；
+     * 冻结方式跟随「冻结后是否保留桌面图标」：保留时优先 pm suspend，
+     * 否则 disable-user，被 ROM 拦住停用时再降级 suspend。
+     * 返回值语义照搬 Hail：null = 一个都没成功；1 个 = 应用名；多个 = 数量字符串。
      */
     private String setListFrozen(boolean freeze) {
         SharedPreferences sp = getSharedPreferences("freeze_list", MODE_PRIVATE);
         Set<String> pkgs = new HashSet<>(sp.getStringSet("pkgs", new HashSet<>()));
-        Set<String> whitelist = freeze ? sp.getStringSet("freeze_whitelist", null) : null;
+        boolean keepIcon = sp.getBoolean("keep_launcher_icon", false);
         PackageManager pm = getPackageManager();
-        // 暂停态对「冻结」来说等同于已到位；对「解冻」来说必须再撤一次暂停
-        Set<String> suspendedBefore = SuspendSupport.suspendedAmong(SuspendSupport.cached(this));
-        List<String> todo = new ArrayList<>();
-        for (String pkg : pkgs) {
-            if (whitelist != null && whitelist.contains(pkg)) {
+        List<String> mainPkgs = new ArrayList<>();
+        List<String> cloneTodo = new ArrayList<>(); // 分身实例键 pkg@N
+        for (String key : pkgs) {
+            String pkg = packagePart(key);
+            if (pkg == null || !pkg.matches("[A-Za-z0-9._]+")) {
                 continue;
             }
+            if (userIdPart(key) != 0) {
+                cloneTodo.add(key);
+            } else {
+                mainPkgs.add(pkg);
+            }
+        }
+        // 暂停态对「冻结」来说等同于已到位；对「解冻」来说必须再撤一次暂停。
+        // 这里查真值而不是读缓存：快捷方式可能在别的进程/版本里暂停过，缓存会漏。
+        Set<String> suspendedBefore = SuspendSupport.suspendedAmong(mainPkgs);
+        List<String> todo = new ArrayList<>();      // 主用户包名
+        for (String pkg : mainPkgs) {
             boolean suspended = suspendedBefore.contains(pkg);
             // 已经是目标状态的不再执行 pm：重复整批调用是原来耗时的主要来源之一
             Boolean enabled = enabledOf(pm, pkg);
@@ -287,28 +301,62 @@ public class QuickLaunchActivity extends Activity {
                     : (enabled != null && enabled && !suspended)) {
                 continue;
             }
-            if (pkg.matches("[A-Za-z0-9._]+")) {
-                todo.add(pkg);
-            }
+            todo.add(pkg);
         }
-        if (todo.isEmpty()) {
+        // 分身也按真值跳过已到位的；读不到状态时照常执行（pm 本身幂等）
+        Map<String, boolean[]> cloneBefore = cloneStates(cloneTodo);
+        List<String> cloneRun = new ArrayList<>();
+        for (String key : cloneTodo) {
+            boolean[] st = cloneBefore.get(key);
+            if (st != null) {
+                boolean installed = st[0];
+                boolean enabled = st[1];
+                boolean suspended = st[2];
+                if (!installed) {
+                    continue;
+                }
+                if (freeze ? (!enabled || suspended) : (enabled && !suspended)) {
+                    continue;
+                }
+            }
+            cloneRun.add(key);
+        }
+        if (todo.isEmpty() && cloneRun.isEmpty()) {
             // 与 Hail 同语义：没有需要处理的应用 → i=0 → 提示「已冻结：0」
             return "0";
         }
         // 一次 su + 限并发跑完整批：pm 每条都要拉起一个 app_process，
         // 串行几十条是秒级；并发 8 路能把整批压到一秒左右
         StringBuilder cmd = new StringBuilder();
-        cmd.append("i=0; for p in");
-        for (String p : todo) {
-            cmd.append(" '").append(p).append("'");
+        if (!todo.isEmpty()) {
+            cmd.append("i=0; for p in");
+            for (String p : todo) {
+                cmd.append(" '").append(p).append("'");
+            }
+            cmd.append("; do ")
+                    .append(freeze
+                            ? (keepIcon
+                            ? "pm suspend --user 0 \"$p\" >/dev/null 2>&1 & "
+                            : "pm disable-user --user 0 \"$p\" >/dev/null 2>&1 & ")
+                            : "pm unsuspend --user 0 \"$p\" >/dev/null 2>&1; "
+                            + "pm enable --user 0 \"$p\" >/dev/null 2>&1 & ")
+                    .append("i=$((i+1)); ")
+                    .append("[ $((i%8)) -eq 0 ] && wait; done; wait; ");
         }
-        cmd.append("; do ")
-                .append(freeze
-                        ? "pm disable-user --user 0 \"$p\" >/dev/null 2>&1 & "
-                        : "pm unsuspend --user 0 \"$p\" >/dev/null 2>&1; "
-                        + "pm enable --user 0 \"$p\" >/dev/null 2>&1 & ")
-                .append("i=$((i+1)); ")
-                .append("[ $((i%8)) -eq 0 ] && wait; done; wait");
+        // 分身：一律停用，不跟「保留桌面图标」走暂停通道。
+        // 部分 ROM（MIUI 双开）会拒绝给 user 999 暂停，批量里又没有弹框可确认，
+        // 于是主用户冻上、分身一个不少全漏掉；停用各版本都放行，且与列表里单冻分身一致。
+        for (String key : cloneRun) {
+            String pkg = packagePart(key);
+            int userId = userIdPart(key);
+            cmd.append(freeze
+                            ? "pm disable-user --user " + userId
+                            : "pm unsuspend --user " + userId + "; pm enable --user " + userId)
+                    .append(" ").append(pkg).append(" >/dev/null 2>&1 & ");
+        }
+        if (!cloneRun.isEmpty()) {
+            cmd.append("wait");
+        }
         PrivShell.Result result = PrivShell.exec(cmd.toString(), 120);
         // 执行完统一核对真实状态：既拿失败数，也不依赖 pm 的文本输出
         Set<String> suspendedAfter = SuspendSupport.suspendedAmong(todo);
@@ -330,9 +378,10 @@ public class QuickLaunchActivity extends Activity {
                 Set<String> again = SuspendSupport.suspendedAmong(retry);
                 if (!again.isEmpty()) {
                     suspendedAfter.addAll(again);
-                    SuspendSupport.remember(this, again);
                 }
             }
+            // 把真正进入暂停的包记进缓存，列表刷新与下次解冻都靠它
+            SuspendSupport.remember(this, suspendedAfter);
         } else {
             Set<String> next = SuspendSupport.cached(this);
             next.removeAll(todo);
@@ -357,10 +406,93 @@ public class QuickLaunchActivity extends Activity {
                 name = labelOf(pm, pkg);
             }
         }
+        if (!cloneRun.isEmpty()) {
+            Map<String, boolean[]> cloneAfter = cloneStates(cloneRun);
+            if (freeze) {
+                // 并发那一刀偶尔会被系统拒一次：还处于启用态的分身单独补冻一遍再核对，
+                // 否则主用户成功、分身漏冻也会被提示成「已全部冻结」
+                List<String> stuck = new ArrayList<>();
+                for (String key : cloneRun) {
+                    boolean[] st = cloneAfter.get(key);
+                    if (st != null && st[0] && st[1] && !st[2]) {
+                        stuck.add(key);
+                    }
+                }
+                if (!stuck.isEmpty()) {
+                    StringBuilder retry = new StringBuilder();
+                    for (String key : stuck) {
+                        retry.append("pm disable-user --user ").append(userIdPart(key))
+                                .append(" ").append(packagePart(key))
+                                .append(" >/dev/null 2>&1; ");
+                    }
+                    PrivShell.exec(retry.toString(), 60);
+                    cloneAfter = cloneStates(cloneRun);
+                }
+            }
+            for (String key : cloneRun) {
+                boolean[] st = cloneAfter.get(key);
+                boolean done;
+                if (st == null) {
+                    // 查不到状态时不误报失败：命令已经执行过，pm 本身幂等
+                    done = true;
+                } else {
+                    done = freeze ? (!st[1] || st[2]) : (st[1] && !st[2]);
+                }
+                if (done) {
+                    ok++;
+                    name = labelOf(pm, packagePart(key));
+                }
+            }
+        }
         if (ok == 0) {
             return null;
         }
         return ok == 1 ? name : String.valueOf(ok);
+    }
+
+    /**
+     * 批量读分身实例的真实状态：实例键 → {是否已安装, 是否启用, 是否暂停}。
+     * 读 dumpsys package 里对应「User N:」那一行；读不到的键不出现在返回值里。
+     */
+    private Map<String, boolean[]> cloneStates(List<String> keys) {
+        Map<String, boolean[]> out = new java.util.HashMap<>();
+        if (keys == null || keys.isEmpty()) {
+            return out;
+        }
+        StringBuilder cmd = new StringBuilder();
+        for (String key : keys) {
+            String pkg = packagePart(key);
+            int userId = userIdPart(key);
+            if (pkg == null) {
+                continue;
+            }
+            cmd.append("echo -n '").append(key).append(" '; ")
+                    .append("dumpsys package ").append(pkg)
+                    .append(" 2>/dev/null | grep -m1 'User ").append(userId).append(":' || true; ");
+        }
+        if (cmd.length() == 0) {
+            return out;
+        }
+        PrivShell.Result r = PrivShell.exec(cmd.toString(), 40);
+        if (r.out == null) {
+            return out;
+        }
+        for (String line : r.out.split("\n")) {
+            int sp = line.indexOf(' ');
+            if (sp <= 0) {
+                continue;
+            }
+            String key = line.substring(0, sp).trim();
+            if (!line.contains("User ")) {
+                continue;
+            }
+            boolean installed = line.contains("installed=true");
+            // PackageUserState.enabled：0=默认、1=启用；2/3/4 都是停用态
+            boolean enabled = line.contains("enabled=0") || line.contains("enabled=1");
+            boolean suspended = line.contains("suspended=true");
+            out.put(key, new boolean[]{installed, enabled, suspended});
+        }
+        return out;
     }
 
     private String labelOf(PackageManager pm, String pkg) {

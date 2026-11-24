@@ -43,7 +43,7 @@ public final class TabSortDialog {
     }
 
     public static void show(Context c, List<Tab> tabs, OnDone onDone, int xOffsetPx,
-                            int surfaceAlpha) {
+                            int surfaceAlpha, int panelTopY, int statusBarInset) {
         // 与其它弹窗统一：浮动窗口 + 圆角底板（窗口底仍是透明的，圆角由内容卡片负责）
         final Dialog dialog = new Dialog(c, com.jin.freeze.R.style.Theme_Jin_Alert);
         final List<Tab> order = new ArrayList<>(tabs);
@@ -52,13 +52,14 @@ public final class TabSortDialog {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(0, Ui.dp(c, 12), 0, Ui.dp(c, 4));
 
-        TextView title = Ui.text(c, "标签排序", 14, Ui.TEXT_PRIMARY, true);
-        title.setGravity(Gravity.CENTER);
+        // 标题与「白名单列表」同一套：内容内左对齐，16sp 加粗
+        TextView title = Ui.text(c, "标签排序", 16, Ui.TEXT_PRIMARY, true);
+        title.setPadding(Ui.dp(c, 16), 0, Ui.dp(c, 16), 0);
         root.addView(title, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView hint = Ui.text(c, "按住右侧把手上下拖动，点完成保存", 11, Ui.TEXT_SECONDARY, false);
-        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(Ui.dp(c, 16), 0, Ui.dp(c, 16), 0);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         hintLp.topMargin = Ui.dp(c, 2);
@@ -108,21 +109,46 @@ public final class TabSortDialog {
         });
         touch.attachToRecyclerView(rv);
 
+        // 右下角两个文字按钮：完成在左、取消在最右；取消只关闭，不回写顺序
+        final int btnPad = Ui.dp(c, 16);
         TextView done = Ui.text(c, "完成", 13, Ui.color(c, R.color.blue), true);
         done.setGravity(Gravity.CENTER);
-        done.setBackgroundResource(R.drawable.bg_menu_item);
+        done.setMinHeight(Ui.dp(c, 44));
+        done.setPadding(btnPad, 0, btnPad, 0);
+        TextView cancel = Ui.text(c, "取消", 13, Ui.color(c, R.color.blue), false);
+        cancel.setGravity(Gravity.CENTER);
+        cancel.setMinHeight(Ui.dp(c, 44));
+        cancel.setPadding(btnPad, 0, btnPad, 0);
+        android.util.TypedValue ripple = new android.util.TypedValue();
+        if (c.getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless,
+                ripple, true) && ripple.resourceId != 0) {
+            done.setBackgroundResource(ripple.resourceId);
+            cancel.setBackgroundResource(ripple.resourceId);
+        }
         done.setOnClickListener(v -> {
             dialog.dismiss();
             onDone.onDone(order);
         });
-        LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(c, 40));
-        doneLp.leftMargin = Ui.dp(c, 8);
-        doneLp.rightMargin = Ui.dp(c, 8);
-        doneLp.topMargin = Ui.dp(c, 4);
-        root.addView(done, doneLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout btnRow = new LinearLayout(c);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.CENTER_VERTICAL);
+        btnRow.addView(new View(c), new LinearLayout.LayoutParams(0, 1, 1f));
+        btnRow.addView(done, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        btnRow.addView(cancel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        btnLp.leftMargin = Ui.dp(c, 8);
+        btnLp.rightMargin = Ui.dp(c, 8);
+        btnLp.topMargin = Ui.dp(c, 4);
+        root.addView(btnRow, btnLp);
 
         dialog.setContentView(root);
+        // 与设置面板同款的阴影：壳留出 12dp，卡片本体按圆角画 elevation
+        final int shadowPad = Ui.wrapShadow(dialog);
         // 排序期间只接受拖动：点弹窗外不关闭，避免误触丢结果
         dialog.setCanceledOnTouchOutside(false);
         dialog.show();
@@ -136,16 +162,18 @@ public final class TabSortDialog {
         // 跟随设置页透明度：面板边框与内部按钮一起变
         applyAlpha(root, surfaceAlpha);
         if (dialog.getWindow() != null) {
-            // 与「设置」面板等宽：屏宽减 104dp、上限 304dp
+            // 与「设置」面板等宽：屏宽减 104dp、上限 304dp；窗口左右各留阴影空间
             int width = Math.min(c.getResources().getDisplayMetrics().widthPixels - Ui.dp(c, 104),
                     Ui.dp(c, 304));
-            dialog.getWindow().setLayout(Math.max(width, Ui.dp(c, 220)),
+            dialog.getWindow().setLayout(Math.max(width, Ui.dp(c, 220)) + shadowPad * 2,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
             // 跟随设置面板的拖动偏移，保证左边缘对齐
             android.view.WindowManager.LayoutParams lp = dialog.getWindow().getAttributes();
             lp.x = xOffsetPx;
             dialog.getWindow().setAttributes(lp);
         }
+        // 半屏形态：整体抬到半屏面板上沿之上，不压住下面的列表
+        Ui.keepAboveBottomLimit(dialog, panelTopY, statusBarInset, Ui.dp(c, 8));
     }
 
     /** 把透明度铺到整棵视图树；标签行是 RecyclerView 动态创建的，另外在行里单独刷。 */
