@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 个性设置：参照用户给的标志，八瓣柔和星形外框 + 中间一圈粗圆环 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 外框：八个圆润花瓣，谷半径 5.6、瓣尖约 8.8 -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M17.17,9.86 Q24,12 17.17,14.14 Q20.49,20.49 14.14,17.17 Q12,24 9.86,17.17 Q3.51,20.49 6.83,14.14 Q0,12 6.83,9.86 Q3.51,3.51 9.86,6.83 Q12,0 14.14,6.83 Q20.49,3.51 17.17,9.86 Z"
+        android:strokeColor="#000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <!-- 中间粗圆环：半径 4.2、描边 2.2，中间留空 -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M12,7.8 a4.2,4.2 0 1,0 0,8.4 a4.2,4.2 0 1,0 0,-8.4 Z"
+        android:strokeColor="#000000"
+        android:strokeWidth="2.2" />
+</vector>

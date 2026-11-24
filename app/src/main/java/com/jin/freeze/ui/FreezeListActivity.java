@@ -3556,18 +3556,11 @@ public class FreezeListActivity extends BaseActivity {
      * 标识沿用设置底部展开/收起那颗三角图标，紧贴在标题文字右边。
      * 标题整行也可点：点「（查看说明）」才弹说明，点左边标题文字就是折叠/展开；
      * 没有说明的小标题，整行点击都只负责折叠/展开。
+     * iconRes 为 0 时不加左侧图标；hint 为 null 表示标题没有「查看说明」。
      */
-    private LinearLayout collapsibleHead(TextView title, View body, String key) {
-        return collapsibleHead(title, body, key, null, null);
-    }
-
-    private LinearLayout collapsibleHead(TextView title, View body, String key,
-                                         final Runnable onExpand) {
-        return collapsibleHead(title, body, key, onExpand, null);
-    }
-
     private LinearLayout collapsibleHead(final TextView title, final View body, String key,
-                                         final Runnable onExpand, final Runnable hint) {
+                                         final Runnable onExpand, final Runnable hint,
+                                         int iconRes) {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
@@ -3582,6 +3575,21 @@ public class FreezeListActivity extends BaseActivity {
         int padBottom = title.getPaddingBottom();
         title.setPadding(title.getPaddingLeft(), 0, title.getPaddingRight(), 0);
         head.setPadding(0, padTop, 0, padBottom);
+        // 左侧小图标：与快面板条目同一档大小与色调，紧贴在标题文字左边
+        if (iconRes != 0) {
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(iconRes);
+            icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            icon.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+            int iconSize = Ui.dp(this, 16);
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(iconSize, iconSize);
+            ilp.rightMargin = Ui.dp(this, 6);
+            head.addView(icon, ilp);
+            // 组内小字与标题文字共用一条左边线：整块缩进「图标 + 间距」，
+            // 不跟着图标左沿对齐（否则下面的说明/滑块会比标题更靠左）
+            body.setPadding(body.getPaddingLeft() + iconSize + Ui.dp(this, 6),
+                    body.getPaddingTop(), body.getPaddingRight(), body.getPaddingBottom());
+        }
         head.addView(title, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         // 各栏目默认折叠：没动过的进来就收起，长按◎一键全展开、长按底栏一键全收起
@@ -8690,7 +8698,7 @@ public class FreezeListActivity extends BaseActivity {
             personalBody.addView(hideRecentsBox);
         }
         final LinearLayout personalHead = collapsibleHead(personalTitle, personalBody,
-                KEY_SETTINGS_PERSONAL_COLLAPSED);
+                KEY_SETTINGS_PERSONAL_COLLAPSED, null, null, R.drawable.ic_qp_personal);
         box.addView(personalHead);
         box.addView(personalBody);
         // 专属LSPosed：划卡冻结与锁屏冻结整体成块，稍后排到手势功能栏之后；
@@ -8703,7 +8711,8 @@ public class FreezeListActivity extends BaseActivity {
         lspTitle.setTextColor(getColor(R.color.text_primary));
         lspTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
         final LinearLayout lspHead = collapsibleHead(lspTitle, lspBody,
-                KEY_SETTINGS_LSP_COLLAPSED, null, () -> showLspHintDialog(lspTitle));
+                KEY_SETTINGS_LSP_COLLAPSED, null, () -> showLspHintDialog(lspTitle),
+                R.drawable.ic_qp_lsposed_official);
         addSwipeFreezeSection(lspBody);
         addLockFreezeSection(lspBody);
         // 消除启动白底：只针对 HyperOS 4 的预启动动画底板，别的 ROM 不显示
@@ -8716,7 +8725,8 @@ public class FreezeListActivity extends BaseActivity {
         tabBody.addView(tabList);
         tabBody.addView(newTab);
         final LinearLayout tabHead = collapsibleHead(tabTitle, tabBody,
-                KEY_SETTINGS_TAB_COLLAPSED, null, () -> showTabHintDialog(tabTitle));
+                KEY_SETTINGS_TAB_COLLAPSED, null, () -> showTabHintDialog(tabTitle),
+                R.drawable.ic_action_tag);
         box.addView(tabHead);
         box.addView(tabBody);
         // 按钮大小/偏移收进这一层，标题右侧箭头负责折叠
@@ -8729,7 +8739,7 @@ public class FreezeListActivity extends BaseActivity {
         fabBody.addView(yValue);
         fabBody.addView(yBar);
         final LinearLayout fabHead = collapsibleHead(fabTitle, fabBody,
-                KEY_SETTINGS_FAB_COLLAPSED);
+                KEY_SETTINGS_FAB_COLLAPSED, null, null, R.drawable.ic_sc_freeze);
         box.addView(fabHead);
         box.addView(fabBody);
 
@@ -8854,7 +8864,8 @@ public class FreezeListActivity extends BaseActivity {
         });
 
         gestureSec.addView(collapsibleHead(gestureTitle, gestureBody,
-                KEY_SETTINGS_GESTURE_COLLAPSED, null, () -> showGestureHintDialog(gestureTitle)));
+                KEY_SETTINGS_GESTURE_COLLAPSED, null,
+                () -> showGestureHintDialog(gestureTitle), R.drawable.ic_qp_hold_head));
         gestureSec.addView(gestureBody);
         gestureBody.addView(upLabel);
         gestureBody.addView(upBar);
@@ -9086,7 +9097,7 @@ public class FreezeListActivity extends BaseActivity {
         final LinearLayout iconBody = new LinearLayout(this);
         iconBody.setOrientation(LinearLayout.VERTICAL);
         ias.addView(collapsibleHead(iconAdjustTitle, iconBody,
-                KEY_SETTINGS_ICON_COLLAPSED));
+                KEY_SETTINGS_ICON_COLLAPSED, null, null, R.drawable.ic_qp_grid));
         ias.addView(iconBody);
         // 主题图标样式：点开选系统默认 / 当前主题图标，切换后立即重读图标
         final TextView themeIconEntry = new TextView(this);
@@ -9173,7 +9184,8 @@ public class FreezeListActivity extends BaseActivity {
         // 壁纸状态/操作/模糊/同步选项都收进这一层，标题右侧箭头可折叠
         final LinearLayout wpBody = new LinearLayout(this);
         wpBody.setOrientation(LinearLayout.VERTICAL);
-        wps.addView(collapsibleHead(wpTitle, wpBody, KEY_SETTINGS_WALLPAPER_COLLAPSED));
+        wps.addView(collapsibleHead(wpTitle, wpBody, KEY_SETTINGS_WALLPAPER_COLLAPSED,
+                null, null, R.drawable.ic_qp_wallpaper));
         wps.addView(wpBody);
         wpBody.addView(wpState);
         // 长按应用的选项框是否也换成壁纸底：与「标识位置」同一套入口行 + 二选一弹窗，
@@ -9245,7 +9257,8 @@ public class FreezeListActivity extends BaseActivity {
         pairBody.setOrientation(LinearLayout.VERTICAL);
         pairBody.addView(layoutPairEntry);
         final LinearLayout pairHead = collapsibleHead(pairTitle, pairBody,
-                KEY_SETTINGS_PAIR_COLLAPSED, null, () -> showPairHintDialog(pairTitle));
+                KEY_SETTINGS_PAIR_COLLAPSED, null, () -> showPairHintDialog(pairTitle),
+                R.drawable.ic_qp_link);
         int pairIdx = Math.max(0, box.indexOfChild(ias));
         box.addView(pairHead, pairIdx);
         box.addView(pairBody, pairIdx + 1);
@@ -9274,7 +9287,8 @@ public class FreezeListActivity extends BaseActivity {
         wlBody.addView(layoutWhitePosEntry);
         wlBody.addView(layoutWhitelistEntry);
         final LinearLayout wlHead = collapsibleHead(wlTitle, wlBody,
-                KEY_SETTINGS_WL_COLLAPSED, null, () -> showWhitelistHintDialog(wlTitle));
+                KEY_SETTINGS_WL_COLLAPSED, null, () -> showWhitelistHintDialog(wlTitle),
+                R.drawable.ic_action_whitelist);
         int wlIdx = Math.max(0, box.indexOfChild(pairBody) + 1);
         box.addView(wlHead, wlIdx);
         box.addView(wlBody, wlIdx + 1);
@@ -9296,7 +9310,8 @@ public class FreezeListActivity extends BaseActivity {
         spBody.setOrientation(LinearLayout.VERTICAL);
         spBody.addView(layoutKeepIconEntry);
         final LinearLayout spHead = collapsibleHead(spTitle, spBody,
-                KEY_SETTINGS_SP_COLLAPSED, null, () -> showSpecialModeHintDialog(spTitle));
+                KEY_SETTINGS_SP_COLLAPSED, null, () -> showSpecialModeHintDialog(spTitle),
+                R.drawable.ic_action_home);
         int spIdx = Math.max(0, box.indexOfChild(wlBody) + 1);
         box.addView(spHead, spIdx);
         box.addView(spBody, spIdx + 1);
@@ -9323,7 +9338,7 @@ public class FreezeListActivity extends BaseActivity {
         final LinearLayout itsBody = new LinearLayout(this);
         itsBody.setOrientation(LinearLayout.VERTICAL);
         its.addView(collapsibleHead(uiOpacityTitle, itsBody,
-                KEY_SETTINGS_OPACITY_COLLAPSED));
+                KEY_SETTINGS_OPACITY_COLLAPSED, null, null, R.drawable.ic_qp_opacity));
         its.addView(itsBody);
 
         // 设置页透明度：面板本身和它的所有二级弹窗一起变，半屏/全屏各记一份
@@ -9700,7 +9715,7 @@ public class FreezeListActivity extends BaseActivity {
             otherGroup.addView(child);
         }
         box.addView(collapsibleHead(backupTitle, otherGroup,
-                KEY_SETTINGS_OTHER_COLLAPSED));
+                KEY_SETTINGS_OTHER_COLLAPSED, null, null, R.drawable.ic_qp_info));
         box.addView(otherGroup);
 
         // 自定义底板：宽度收窄、固定高度内滚动、真圆角裁切（全屏与半屏共用同一套尺寸）

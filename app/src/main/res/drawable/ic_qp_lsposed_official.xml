@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 专属LSPosed：按 LSPosed 官方标志重绘。
+     两条同尺寸粗圆角斜条交叉成 X：一条实心（中间挖四颗圆点），一条只有描边（空心）。
+     实心条画在空心条之上，交叉处把空心条的长边盖住，与官方一致。
+     四点在屏幕上呈菱形（上/下/左/右），故在斜条自身坐标系里是 2×2 网格。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- 空心条：左上 → 右下，只有描边 -->
+    <group
+        android:pivotX="12"
+        android:pivotY="12"
+        android:rotation="45">
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M3.1,9 H20.9 A1.5,1.5 0 0 1 22.4,10.5 V13.5 A1.5,1.5 0 0 1 20.9,15 H3.1 A1.5,1.5 0 0 1 1.6,13.5 V10.5 A1.5,1.5 0 0 1 3.1,9 Z"
+            android:strokeColor="#000000"
+            android:strokeWidth="1.0"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+
+    <!-- 实心条：左下 → 右上，中心四颗圆点挖空（evenOdd） -->
+    <group
+        android:pivotX="12"
+        android:pivotY="12"
+        android:rotation="-45">
+        <path
+            android:fillColor="#000000"
+            android:fillType="evenOdd"
+            android:pathData="M3.1,9 H20.9 A1.5,1.5 0 0 1 22.4,10.5 V13.5 A1.5,1.5 0 0 1 20.9,15 H3.1 A1.5,1.5 0 0 1 1.6,13.5 V10.5 A1.5,1.5 0 0 1 3.1,9 Z M9.8,10.7 a0.9,0.9 0 1,0 1.8,0 a0.9,0.9 0 1,0 -1.8,0 Z M12.4,10.7 a0.9,0.9 0 1,0 1.8,0 a0.9,0.9 0 1,0 -1.8,0 Z M9.8,13.3 a0.9,0.9 0 1,0 1.8,0 a0.9,0.9 0 1,0 -1.8,0 Z M12.4,13.3 a0.9,0.9 0 1,0 1.8,0 a0.9,0.9 0 1,0 -1.8,0 Z" />
+    </group>
+</vector>
