@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.widget.Toast;
 
+import com.jin.freeze.core.DhizukuGate;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.SuspendSupport;
@@ -110,6 +111,15 @@ public class QuickLaunchActivity extends Activity {
         return 0;
     }
 
+    /** 解冻主用户的一个包：有 shell 走 pm，Dhizuku-only 走取消暂停（做不到 enable）。 */
+    private void thawMain(String pkg) {
+        if (DhizukuGate.only(this)) {
+            SuspendSupport.unsuspend(pkg);
+        } else {
+            PrivShell.exec("pm unsuspend --user 0 " + pkg + "; pm enable --user 0 " + pkg, 30);
+        }
+    }
+
     /** 照搬 Hail 的 launchApp：冻结先解冻，再用系统启动入口拉起；分身按自己的用户启动。 */
     private void launchApp(String key) {
         final String pkg = packagePart(key);
@@ -125,12 +135,12 @@ public class QuickLaunchActivity extends Activity {
         }
         new Thread(() -> {
             if (!LaunchTarget.enabled(this, pkg)) {
-                PrivShell.exec("pm unsuspend --user 0 " + pkg + "; pm enable --user 0 " + pkg, 30);
+                thawMain(pkg);
                 for (int i = 0; i < 15 && !LaunchTarget.enabled(this, pkg); i++) {
                     SystemClock.sleep(120);
                 }
             } else if (LaunchTarget.blocked(this, pkg)) {
-                PrivShell.exec("pm unsuspend --user 0 " + pkg, 30);
+                thawMain(pkg);
             }
             runOnUiThread(() -> {
                 Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
@@ -212,7 +222,7 @@ public class QuickLaunchActivity extends Activity {
             return;
         }
         new Thread(() -> {
-            PrivShell.exec("pm unsuspend --user 0 " + t.pkg + "; pm enable --user 0 " + t.pkg, 30);
+            thawMain(t.pkg);
             boolean ready = false;
             for (int i = 0; i < 15; i++) {
                 if (LaunchTarget.enabled(this, t.pkg)) {
@@ -321,6 +331,11 @@ public class QuickLaunchActivity extends Activity {
             }
             cloneRun.add(key);
         }
+        // Dhizuku 只作用 user 0：分身实例跳过，主用户逐包走暂停/取消暂停
+        final boolean dhizuku = DhizukuGate.only(this);
+        if (dhizuku) {
+            cloneRun.clear();
+        }
         if (todo.isEmpty() && cloneRun.isEmpty()) {
             // 与 Hail 同语义：没有需要处理的应用 → i=0 → 提示「已冻结：0」
             return "0";
@@ -328,7 +343,7 @@ public class QuickLaunchActivity extends Activity {
         // 一次 su + 限并发跑完整批：pm 每条都要拉起一个 app_process，
         // 串行几十条是秒级；并发 8 路能把整批压到一秒左右
         StringBuilder cmd = new StringBuilder();
-        if (!todo.isEmpty()) {
+        if (!todo.isEmpty() && !dhizuku) {
             cmd.append("i=0; for p in");
             for (String p : todo) {
                 cmd.append(" '").append(p).append("'");
@@ -357,7 +372,17 @@ public class QuickLaunchActivity extends Activity {
         if (!cloneRun.isEmpty()) {
             cmd.append("wait");
         }
-        PrivShell.Result result = PrivShell.exec(cmd.toString(), 120);
+        PrivShell.Result result = cmd.length() == 0 ? null : PrivShell.exec(cmd.toString(), 120);
+        if (dhizuku) {
+            // 没有 shell：主用户逐包走 Dhizuku 暂停/取消暂停
+            for (String p : todo) {
+                if (freeze) {
+                    SuspendSupport.suspend(this, p, labelOf(pm, p));
+                } else {
+                    SuspendSupport.unsuspend(p);
+                }
+            }
+        }
         // 执行完统一核对真实状态：既拿失败数，也不依赖 pm 的文本输出
         Set<String> suspendedAfter = SuspendSupport.suspendedAmong(todo);
         if (freeze) {
@@ -388,7 +413,7 @@ public class QuickLaunchActivity extends Activity {
             next.addAll(suspendedAfter);
             SuspendSupport.replace(this, next);
         }
-        String out = result.out == null ? "" : result.out.trim();
+        String out = result == null || result.out == null ? "" : result.out.trim();
         if (!out.isEmpty()) {
             android.util.Log.w("JinPm", "shortcut batch " + (freeze ? "freeze" : "unfreeze")
                     + " raw output:\n" + out);

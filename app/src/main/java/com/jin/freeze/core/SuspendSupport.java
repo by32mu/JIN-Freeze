@@ -26,7 +26,14 @@ public final class SuspendSupport {
     /** 本机通过降级通道暂停过的包，仅用于后续查真值与展示。 */
     private static final String KEY_SUSPENDED = "suspended_pkgs";
 
+    private static Context appCtx;
+
     private SuspendSupport() {
+    }
+
+    /** 无 shell（root/Shizuku 都不可用）且已授权 Dhizuku 时，走 DPM 暂停通道。 */
+    private static boolean dhizukuOnly() {
+        return DhizukuGate.only(appCtx);
     }
 
     /** pm disable-user 的返回是否属于这两类 ROM 拦截。 */
@@ -44,6 +51,9 @@ public final class SuspendSupport {
      * 此时标题和按钮是系统固定文案，正文仍是凚的。
      */
     public static PrivShell.Result suspend(Context c, String pkg, String label) {
+        if (DhizukuGate.only(c)) {
+            return DhizukuGate.suspend(c, pkg, label);
+        }
         if (SuspendDialog.suspend(c, pkg, label)) {
             // binder 转发没有 shell 输出，成败由调用方按 dumpsys 真值复核
             return new PrivShell.Result(0, "", false);
@@ -71,6 +81,9 @@ public final class SuspendSupport {
     }
 
     public static PrivShell.Result unsuspend(String pkg) {
+        if (dhizukuOnly()) {
+            return DhizukuGate.unsuspend(appCtx, pkg);
+        }
         return PrivShell.exec("pm unsuspend --user 0 " + pkg, 20);
     }
 
@@ -111,6 +124,9 @@ public final class SuspendSupport {
         if (pkg == null || !pkg.matches("[A-Za-z0-9._]+")) {
             return null;
         }
+        if (dhizukuOnly()) {
+            return DhizukuGate.isSuspended(appCtx, pkg);
+        }
         PrivShell.Result r = PrivShell.exec("dumpsys package " + pkg
                 + " 2>/dev/null | grep -m1 -o 'suspended=[a-z]*'", 20);
         if (r.timeout || r.out == null) {
@@ -133,6 +149,9 @@ public final class SuspendSupport {
         Set<String> result = new HashSet<>();
         if (pkgs == null || pkgs.isEmpty()) {
             return result;
+        }
+        if (dhizukuOnly()) {
+            return DhizukuGate.suspendedAmong(appCtx, pkgs);
         }
         StringBuilder cmd = new StringBuilder();
         for (String p : pkgs) {
@@ -164,6 +183,9 @@ public final class SuspendSupport {
     }
 
     private static SharedPreferences prefs(Context c) {
+        if (c != null && appCtx == null) {
+            appCtx = c.getApplicationContext();
+        }
         return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 }

@@ -14,6 +14,8 @@ public final class ShizukuGate {
     private static final int REQUEST_CODE = 0x5A17;
     private static final String PREFS = "shizuku_gate";
     private static final String KEY_GRANTED = "authorized";
+    /** 用户点过一次「拒绝」后不再自动弹 Shizuku 授权，等用户自己去 Shizuku 应用里授权。 */
+    private static final String KEY_DECLINED = "declined";
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private static Shizuku.OnRequestPermissionResultListener listener;
@@ -44,7 +46,23 @@ public final class ShizukuGate {
     private static void setAuthorized(boolean granted) {
         if (appCtx != null) {
             appCtx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .edit().putBoolean(KEY_GRANTED, granted).apply();
+                    .edit().putBoolean(KEY_GRANTED, granted)
+                    .putBoolean(KEY_DECLINED, granted ? false : declined())
+                    .apply();
+        }
+    }
+
+    /** 是否被用户拒绝过（拒绝后不再自动弹 Shizuku 授权）。 */
+    public static boolean declined() {
+        return appCtx != null
+                && appCtx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean(KEY_DECLINED, false);
+    }
+
+    private static void markDeclined() {
+        if (appCtx != null) {
+            appCtx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_DECLINED, true).apply();
         }
     }
 
@@ -84,7 +102,12 @@ public final class ShizukuGate {
             }
             pending = onDone;
             listener = (requestCode, grantResult) -> MAIN.post(() -> {
-                setAuthorized(grantResult == PackageManager.PERMISSION_GRANTED);
+                boolean granted = grantResult == PackageManager.PERMISSION_GRANTED;
+                setAuthorized(granted);
+                if (!granted) {
+                    // 用户明确点过拒绝：记下来，之后不再自动弹 Shizuku 授权
+                    markDeclined();
+                }
                 Runnable cb = pending;
                 pending = null;
                 PrivShell.reset();

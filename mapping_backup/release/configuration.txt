@@ -224,6 +224,12 @@
 # HiddenApiBypass 内部靠反射访问 Helper 的字段，成员名不能裁
 -keepclassmembers class org.lsposed.hiddenapibypass.Helper$* { *; }
 
+# ---------- Dhizuku-API（本地 jar，规则与原 AAR 的 proguard.txt 一致）----------
+# 该库按隐藏平台 stub 编译，消费方 android.jar 里没有这些类，忽略缺失告警
+-dontwarn android.app.ActivityThread
+# AIDL 接口跨进程交换，接口描述符与事务码依赖类名和成员名
+-keep class com.rosan.dhizuku.aidl.** { *; }
+
 # ---------- 清单里声明的组件（系统按类名反射实例化）----------
 -keep class com.jin.freeze.JinApp { *; }
 -keep class com.jin.freeze.ui.LaunchActivity { *; }

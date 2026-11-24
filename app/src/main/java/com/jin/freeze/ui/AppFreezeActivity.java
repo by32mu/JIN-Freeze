@@ -27,6 +27,7 @@ import android.widget.Toast;
 
 import com.jin.freeze.R;
 import com.jin.freeze.core.AppIconCache;
+import com.jin.freeze.core.DhizukuGate;
 import com.jin.freeze.core.Pinyin;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.SuspendSupport;
@@ -150,6 +151,20 @@ public class AppFreezeActivity extends BaseActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_app_freeze);
+
+        // 「同步全局」打开时，选择应用页也用同一套壁纸底，列表文字跟着壁纸明暗切换
+        View pageContent = findViewById(android.R.id.content);
+        if (pageContent instanceof ViewGroup && ((ViewGroup) pageContent).getChildCount() > 0) {
+            pageContent = ((ViewGroup) pageContent).getChildAt(0);
+        }
+        android.graphics.drawable.Drawable wpBg = Ui.globalWallpaperBg(this);
+        if (wpBg != null && pageContent != null) {
+            pageContent.setBackground(wpBg);
+            final View gridView = findViewById(R.id.grid);
+            if (gridView != null) {
+                gridView.post(() -> Ui.tintPage(gridView));
+            }
+        }
 
         pickMode = getIntent().getBooleanExtra(EXTRA_PICK, false);
         ((TextView) findViewById(R.id.title)).setText(pickMode ? "选择应用" : "应用冻结");
@@ -637,13 +652,15 @@ public class AppFreezeActivity extends BaseActivity {
         IO.execute(() -> {
             ShellSnapshot snap = loadShellSnapshot();
             final boolean hasPriv = snap.root;
+            // 无 root/Shizuku 但有 Dhizuku 时也能冻结（暂停语义），照常展示列表
+            final boolean dhizuku = DhizukuGate.only(this);
 
             // pm list packages -d 是系统侧的冻结状态，比 PackageInfo 的 enabled 更准
             Set<String> disabled = hasPriv ? snap.disabled.get(0) : null;
             if (disabled == null) {
                 disabled = new HashSet<>();
             }
-            Set<String> suspended = hasPriv
+            Set<String> suspended = hasPriv || dhizuku
                     ? SuspendSupport.suspendedAmong(SuspendSupport.cached(this))
                     : new HashSet<>();
 
@@ -728,14 +745,16 @@ public class AppFreezeActivity extends BaseActivity {
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
-                root = hasPriv;
+                root = hasPriv || dhizuku;
                 // 说明文字统一左对齐
                 rootState.setGravity(android.view.Gravity.START);
                 rootState.setText(pickMode
                         ? "点击应用后右上角确定"
                         : hasPriv
                         ? "已通过 " + PrivShell.label() + " 执行：点击图标打开应用，长按冻结/解冻"
-                        : "未获得 root 或 Shizuku 权限：冻结/解冻不可用，请在半屏布局设置里授权");
+                        : dhizuku
+                        ? "已通过 Dhizuku 执行（仅暂停）：点击图标打开应用，长按冻结/解冻"
+                        : "未获得 root、Shizuku 或 Dhizuku 权限：冻结/解冻不可用，请在半屏布局设置里授权");
                 applyPickHintVisibility();
                 all.clear();
                 all.addAll(shownApps);
@@ -1479,7 +1498,12 @@ public class AppFreezeActivity extends BaseActivity {
         }
         refreshing = true;
         IO.execute(() -> {
-            Set<String> disabled = disabledPackages();
+            Set<String> disabledRaw = disabledPackages();
+            // Dhizuku-only 读不到 pm 停用列表：按「没有停用项」处理，冻结态看暂停真值
+            if (disabledRaw == null && DhizukuGate.only(this)) {
+                disabledRaw = new HashSet<>();
+            }
+            final Set<String> disabled = disabledRaw;
             boolean ok = disabled != null;
             // 暂停态同样算冻结：只对缓存里本机暂停过的包批量查一次
             Set<String> suspended = SuspendSupport.suspendedAmong(SuspendSupport.cached(this));
@@ -1544,7 +1568,7 @@ public class AppFreezeActivity extends BaseActivity {
 
     private void toggle(App a) {
         if (!root) {
-            Toast.makeText(this, "需要 root 或 Shizuku 权限才能冻结/解冻", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "需要 root、Shizuku 或 Dhizuku 权限才能冻结/解冻", Toast.LENGTH_SHORT).show();
             return;
         }
         if (working) {
@@ -1592,14 +1616,18 @@ public class AppFreezeActivity extends BaseActivity {
         IO.execute(() -> {
             PrivShell.Result r = execPm(a.pkg, a.userId, toFreeze);
             boolean ok = applied(a, toFreeze, r);
-            // 系统应用被 ROM 拦住停用时，自动降级为 pm suspend（只覆盖主用户）
-            boolean blocked = toFreeze && a.userId == 0 && !ok && SuspendSupport.romBlocked(r.out);
+            // 系统应用被 ROM 拦住停用时，自动降级为 pm suspend（只覆盖主用户）；
+            // Dhizuku-only 没有 shell，冻结直接走暂停通道
+            boolean blocked = toFreeze && a.userId == 0 && !ok
+                    && (SuspendSupport.romBlocked(r.out) || DhizukuGate.only(this));
+            PrivShell.Result failShow = r;
             if (blocked) {
                 PrivShell.Result s = SuspendSupport.suspend(this, a.pkg, a.label);
                 if (suspendApplied(a.pkg, s)) {
                     ok = true;
                     SuspendSupport.remember(this, Collections.singleton(a.pkg));
                 } else {
+                    failShow = s;
                     android.util.Log.w("JinPm", "suspend fallback failed: code=" + s.code
                             + " timeout=" + s.timeout + "\n"
                             + (s.out == null ? "" : s.out.trim()));
@@ -1607,6 +1635,7 @@ public class AppFreezeActivity extends BaseActivity {
             }
             final boolean done = ok;
             final boolean suspendedNow = blocked && ok;
+            final PrivShell.Result failR = failShow;
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) {
@@ -1614,8 +1643,8 @@ public class AppFreezeActivity extends BaseActivity {
                 }
                 if (!done) {
                     Ui.smallDialog(this, toFreeze ? "冻结失败" : "解冻失败",
-                            a.label + "：" + (blocked
-                                    ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(r, toFreeze)), "知道了");
+                            a.label + "：" + (blocked && !DhizukuGate.only(this)
+                                    ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(failR, toFreeze)), "知道了");
                     return;
                 }
                 a.frozen = toFreeze;
@@ -1635,7 +1664,7 @@ public class AppFreezeActivity extends BaseActivity {
      */
     private void unfreezeAndOpen(App a) {
         if (!root) {
-            Toast.makeText(this, "需要 root 或 Shizuku 权限才能解冻并打开", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "需要 root、Shizuku 或 Dhizuku 权限才能解冻并打开", Toast.LENGTH_SHORT).show();
             return;
         }
         if (working) {
@@ -1697,6 +1726,7 @@ public class AppFreezeActivity extends BaseActivity {
         freezeBtn.setText(freeze ? "冻结中…" : "一键冻结");
         unfreezeBtn.setText(freeze ? "一键解冻" : "解冻中…");
         IO.execute(() -> {
+            final boolean dhizuku = DhizukuGate.only(this);
             Map<String, PrivShell.Result> results = new HashMap<>();
             Set<String> degraded = new HashSet<>();
             for (App app : targetApps) {
@@ -1704,7 +1734,9 @@ public class AppFreezeActivity extends BaseActivity {
                 PrivShell.Result r = execPm(pkg, app.userId, freeze);
                 results.put(instanceKey(pkg, app.userId), r);
                 // 分身实例使用带用户 ID 的 pm 命令；暂停降级暂只保留主用户路径。
-                if (freeze && app.userId == 0 && SuspendSupport.romBlocked(r.out)) {
+                // Dhizuku-only 没有 shell，冻结直接走暂停通道。
+                if (freeze && app.userId == 0
+                        && (SuspendSupport.romBlocked(r.out) || dhizuku)) {
                     degraded.add(pkg);
                     results.put(instanceKey(pkg, app.userId),
                             SuspendSupport.suspend(this, pkg, app.label));
@@ -1744,8 +1776,8 @@ public class AppFreezeActivity extends BaseActivity {
                 boolean ok;
                 if (app.userId != 0) {
                     ok = isPmOk(r);
-                } else if (truth != null) {
-                    boolean dis = truth.contains(pkg);
+                } else if (truth != null || dhizuku) {
+                    boolean dis = truth != null && truth.contains(pkg);
                     ok = freeze ? (dis || suspendedTruth.contains(pkg))
                             : (!dis && !suspendedTruth.contains(pkg));
                 } else {
@@ -1754,7 +1786,7 @@ public class AppFreezeActivity extends BaseActivity {
                 if (ok) {
                     okCount++;
                 } else {
-                    fails.add(app.label + "：" + (degraded.contains(pkg)
+                    fails.add(app.label + "：" + (degraded.contains(pkg) && !dhizuku
                             ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(r, freeze)));
                 }
             }
@@ -1792,6 +1824,10 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     private PrivShell.Result execPm(String pkg, int userId, boolean freeze) {
+        // Dhizuku-only 没有 shell：解冻走取消暂停通道（冻结走 runToggle/runBatch 的降级暂停）
+        if (!freeze && userId == 0 && DhizukuGate.only(this)) {
+            return SuspendSupport.unsuspend(pkg);
+        }
         String cmd = freeze
                 ? "pm disable-user --user " + userId + " " + pkg
                 : "pm unsuspend --user " + userId + " " + pkg
@@ -1847,6 +1883,11 @@ public class AppFreezeActivity extends BaseActivity {
     private boolean applied(String pkg, boolean freeze, PrivShell.Result r) {
         Set<String> truth = disabledPackages();
         if (truth == null) {
+            // Dhizuku-only 读不到停用列表：按暂停真值判，读不到才看命令结果
+            if (DhizukuGate.only(this)) {
+                Boolean s = SuspendSupport.suspendedOne(pkg);
+                return s == null ? isPmOk(r) : (freeze ? s : !s);
+            }
             return isPmOk(r);
         }
         if (freeze) {

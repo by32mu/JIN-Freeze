@@ -25,4 +25,6 @@
     <!-- 全屏标签页选中态：深色下同样降饱和，浅蓝字保证可读 -->
     <color name="tab_selected_bg">#2E3E5C</color>
     <color name="tab_selected_text">#A9C2F5</color>
+    <!-- 标签设定里的默认星标：深色下提亮，保证在 #1C1F24 卡片上看得清 -->
+    <color name="star_default">#FFCA28</color>
 </resources>

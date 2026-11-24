@@ -32,4 +32,6 @@
     <!-- 全屏标签页选中态：低饱和浅蓝底 + 深蓝字，替代原来扎眼的高饱和蓝胶囊 -->
     <color name="tab_selected_bg">#DEE8FB</color>
     <color name="tab_selected_text">#2F5AD8</color>
+    <!-- 标签设定里的默认星标：浅色用琥珀金 -->
+    <color name="star_default">#FFB300</color>
 </resources>

@@ -10,8 +10,8 @@ android {
         applicationId "com.jin.freeze"
         minSdk 24
         targetSdk 34
-        versionCode 189
-        versionName "2.10.19"
+        versionCode 190
+        versionName "2.10.20"
     }
 
     buildTypes {
@@ -36,6 +36,12 @@ dependencies {
     // 无 root 时通过 Shizuku 执行 pm 冻结/解冻（12.2.0 仍公开 newProcess）
     implementation 'dev.rikka.shizuku:api:12.2.0'
     implementation 'dev.rikka.shizuku:provider:12.2.0'
+    // 无 root/Shizuku 时通过 Dhizuku（Device Owner 代理）暂停/恢复应用。
+    // 原库 Dhizuku-API 由 Java 21 编译（class 头 65.0），javac 17 读不了，
+    // 故用 class 头降级副本（libs/dhizuku-api-2.5.4-cp.jar，只改版本号不动字节码）；
+    // 原 AAR 的 manifest 片段（API 权限 + queries）已并入 AndroidManifest.xml，
+    // AAR 的 proguard 规则已并入 proguard-rules.pro
+    implementation files('libs/dhizuku-api-2.5.4-cp.jar')
     // 隐藏 API 豁免：SuspendDialogInfo 的 binder 通道要用 $Stub.TRANSACTION_* 常量（非 SDK 字段）
     implementation fileTree(dir: 'libs', include: ['hiddenapibypass-6.1.jar'])
     // LSPosed 模块接口：只在 LSPosed 注入的 system_server 里加载，应用自身不引用（compileOnly 不打包）

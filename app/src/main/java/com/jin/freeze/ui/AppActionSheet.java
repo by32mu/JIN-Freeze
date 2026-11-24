@@ -140,13 +140,13 @@ public final class AppActionSheet {
         final BottomSheetDialog sheet = new BottomSheetDialog(c, R.style.Theme_Jin_Sheet);
         // 勾了「同步长按选项框」时用本形态那张壁纸做底（含它自己的模糊度），上面压一层深色 scrim 保证字和图可读
         final android.graphics.Bitmap wallpaper =
-                c.getSharedPreferences(WallpaperSource.PREF, Context.MODE_PRIVATE)
-                        .getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)
+                WallpaperSource.sheetBgOn(c)
                         ? WallpaperSource.sheetBitmap(c, wallpaperMode) : null;
         final boolean onWallpaper = wallpaper != null;
-        final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
-        final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);
-        final int lineColor = onWallpaper ? 0x33FFFFFF : Ui.color(c, R.color.divider);
+        final int wpDim = WallpaperSource.brightnessPct(c, wallpaperMode);
+        final int fg = onWallpaper ? Ui.wallpaperFg(wallpaper, wpDim) : Ui.TEXT_PRIMARY;
+        final int iconFg = onWallpaper ? Ui.wallpaperFg(wallpaper, wpDim) : Ui.primary(c);
+        final int lineColor = onWallpaper ? Ui.wallpaperDivider(wallpaper, wpDim) : Ui.color(c, R.color.divider);
         // 外层留边、内层圆角：左右 26dp；底部贴着半屏面板底边，
         // 卡片下沿略低于底部冻结按钮区域，视觉上从面板底部掀起
         android.widget.FrameLayout outer = new android.widget.FrameLayout(c);
@@ -158,9 +158,7 @@ public final class AppActionSheet {
         content.setOrientation(LinearLayout.VERTICAL);
         Drawable cardBg;
         if (onWallpaper) {
-            cardBg = new android.graphics.drawable.LayerDrawable(new Drawable[]{
-                    new WallpaperDrawable(wallpaper, 0),
-                    new android.graphics.drawable.ColorDrawable(0x66000000)});
+            cardBg = Ui.wallpaperWithScrim(wallpaper, wpDim);
         } else {
             cardBg = androidx.core.content.ContextCompat.getDrawable(c, R.drawable.bg_dialog).mutate();
         }
@@ -339,15 +337,15 @@ public final class AppActionSheet {
                                     int bgAlphaPct, java.util.List<TextItem> items) {
         final BottomSheetDialog sheet = new BottomSheetDialog(c, R.style.Theme_Jin_Sheet);
         final android.graphics.Bitmap wallpaper =
-                c.getSharedPreferences(WallpaperSource.PREF, Context.MODE_PRIVATE)
-                        .getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)
+                WallpaperSource.sheetBgOn(c)
                         ? WallpaperSource.sheetBitmap(c, wallpaperMode) : null;
         final boolean onWallpaper = wallpaper != null;
-        final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
-        final int trailFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);
-        final int trailOffFg = onWallpaper ? 0xCCFFFFFF : Ui.TEXT_SECONDARY;
-        final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(c);
-        final int lineColor = onWallpaper ? 0x33FFFFFF : Ui.color(c, R.color.divider);
+        final int wpDim = WallpaperSource.brightnessPct(c, wallpaperMode);
+        final int fg = onWallpaper ? Ui.wallpaperFg(wallpaper, wpDim) : Ui.TEXT_PRIMARY;
+        final int trailFg = onWallpaper ? Ui.wallpaperFg(wallpaper, wpDim) : Ui.primary(c);
+        final int trailOffFg = onWallpaper ? Ui.wallpaperFgSecondary(wallpaper, wpDim) : Ui.TEXT_SECONDARY;
+        final int iconFg = onWallpaper ? Ui.wallpaperFg(wallpaper, wpDim) : Ui.primary(c);
+        final int lineColor = onWallpaper ? Ui.wallpaperDivider(wallpaper, wpDim) : Ui.color(c, R.color.divider);
 
         android.widget.FrameLayout outer = new android.widget.FrameLayout(c);
         outer.setPadding(Ui.dp(c, 26), 0, Ui.dp(c, 26), Ui.dp(c, 2));
@@ -357,9 +355,7 @@ public final class AppActionSheet {
         content.setOrientation(LinearLayout.VERTICAL);
         Drawable cardBg;
         if (onWallpaper) {
-            cardBg = new android.graphics.drawable.LayerDrawable(new Drawable[]{
-                    new WallpaperDrawable(wallpaper, 0),
-                    new android.graphics.drawable.ColorDrawable(0x66000000)});
+            cardBg = Ui.wallpaperWithScrim(wallpaper, wpDim);
         } else {
             cardBg = androidx.core.content.ContextCompat.getDrawable(c, R.drawable.bg_dialog).mutate();
         }

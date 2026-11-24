@@ -244,6 +244,10 @@ public final class LaunchTarget {
         if (!enabled(c, pkg)) {
             return true;
         }
+        // Dhizuku-only 直接查暂停真值：不看本机缓存，谁暂停的都先解了再打开
+        if (DhizukuGate.only(c)) {
+            return Boolean.TRUE.equals(SuspendSupport.suspendedOne(pkg));
+        }
         return SuspendSupport.cached(c).contains(pkg)
                 && Boolean.TRUE.equals(SuspendSupport.suspendedOne(pkg));
     }

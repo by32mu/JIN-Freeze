@@ -18,6 +18,8 @@ final class WallpaperSource {
     static final String PREF = "freeze_list";
     /** 长按选项框是否跟随自定义壁纸做底。 */
     static final String KEY_SHEET_WALLPAPER = "sheet_wallpaper_bg";
+    /** 「同步全局」：壁纸铺满全部界面（设置页、长按选项框、快面板、关于、更新日志、各种弹窗/打字框）。 */
+    static final String KEY_WALLPAPER_GLOBAL = "wallpaper_sync_global";
 
     /** 半屏与全屏各自一套壁纸/模糊缓存，互不顶替、互不串用。 */
     static final int MODE_PANEL = 0;
@@ -27,6 +29,13 @@ final class WallpaperSource {
     /** 对应形态的壁纸配置键（全屏的键没有 panel_ 前缀）。 */
     private static final String[] KEY_URI = {"panel_wallpaper_uri", "wallpaper_uri"};
     private static final String[] KEY_BLUR = {"panel_wallpaper_blur", "wallpaper_blur"};
+    /**
+     * 自定义壁纸弹窗明暗度：只作用于壁纸做底的弹窗。
+     * 0 = 全黑，100 = 原图，100–200 = 在原图上叠白色提亮（200 全白）。
+     */
+    private static final String[] KEY_DIM = {"panel_wallpaper_dim", "wallpaper_dim"};
+    /** 出厂 100：原图亮度，与 2.10.19 之前不带 scrim 的观感一致。 */
+    static final int BRIGHT_DEFAULT = 100;
 
     /** 快速模糊的降采样上限（像素）：首帧先挂这张，几十毫秒内算完，绝不露清晰原图。 */
     private static final int QUICK_MAX = 420;
@@ -107,6 +116,43 @@ final class WallpaperSource {
         }
         return blurred(c, uri, src,
                 Math.max(0, Math.min(100, sp.getInt(KEY_BLUR[m], 0))), m);
+    }
+
+    /** 「同步全局」开关。 */
+    static boolean globalOn(Context c) {
+        return c.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY_WALLPAPER_GLOBAL, false);
+    }
+
+    /** 长按选项框底图是否跟随壁纸：设置里只保留「同步全局」，老的单独开关不再生效。 */
+    static boolean sheetBgOn(Context c) {
+        return globalOn(c);
+    }
+
+    /** 当前形态壁纸的弹窗明暗度（0–200），默认 100（原图）。 */
+    static int brightnessPct(Context c, int mode) {
+        int m = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
+        return Math.max(0, Math.min(200, c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .getInt(KEY_DIM[m], BRIGHT_DEFAULT)));
+    }
+
+    /** 「同步全局」界面用的明暗度：与当前形态的壁纸同一档。 */
+    static int globalBrightness(Context c) {
+        return brightnessPct(c, uiMode);
+    }
+
+    /** 当前形态槽位（半屏/全屏）：FreezeListActivity 切换/刷新壁纸时更新，供各弹窗取对应壁纸。 */
+    private static int uiMode = MODE_PANEL;
+
+    static void setUiMode(int mode) {
+        uiMode = mode == MODE_FULL ? MODE_FULL : MODE_PANEL;
+    }
+
+    /**
+     * 同步全局要用的底图：与长按选项框同一套缓存（当前形态 + 对应模糊档位）。
+     * 没开同步全局或没设壁纸时返回 null，调用方回落默认底色。
+     */
+    static Bitmap globalBitmap(Context c) {
+        return globalOn(c) ? sheetBitmap(c, uiMode) : null;
     }
 
     /**

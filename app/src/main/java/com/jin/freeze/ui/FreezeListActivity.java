@@ -34,11 +34,13 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -54,6 +56,7 @@ import androidx.core.view.WindowInsetsControllerCompat;
 import com.jin.freeze.R;
 import com.jin.freeze.JinApp;
 import com.jin.freeze.core.AppIconCache;
+import com.jin.freeze.core.DhizukuGate;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.Pinyin;
 import com.jin.freeze.core.PrivShell;
@@ -303,7 +306,7 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_PANEL_HIDE_RECENTS = "hide_recents";
     /** 「冻结后保留桌面图标」：勾选后冻结改走 pm suspend，桌面图标不消失；两种形态共用。 */
     private static final String KEY_KEEP_LAUNCHER_ICON = "keep_launcher_icon";
-    /** 「仅冻结/解冻当前标签」：勾选后底部一键冻结与长按解冻只处理当前标签页的应用。 */
+    /** 「底部按钮仅冻/解当前列表」：勾选后底部一键冻结与长按解冻只处理当前列表的应用。 */
     private static final String KEY_BATCH_CURRENT_TAB_ONLY = "batch_current_tab_only";
 
     /** 「半屏打开时隐藏状态栏」：只作用于半屏面板，不影响全屏页。 */
@@ -319,6 +322,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_WALLPAPER_DY = "wallpaper_dy";
     /** 壁纸自己的模糊度：0 完全清晰，独立于背景透明度/模糊档位。 */
     private static final String KEY_WALLPAPER_BLUR = "wallpaper_blur";
+    /** 自定义壁纸弹窗明暗度（0–200，100 = 原图），只作用于壁纸做底的弹窗。 */
+    private static final String KEY_WALLPAPER_DIM = "wallpaper_dim";
+    /** 明暗度语义从「压暗值」改成「明暗度」的一次性换算标记。 */
+    private static final String KEY_WALLPAPER_BRIGHT_SEED = "wallpaper_bright_seed";
     /** 冻结成功后是否弹「已冻结」提示；两种形态共用同一个开关。 */
     private static final String KEY_SHOW_FROZEN_TIP = "show_frozen_toast";
     /** 「去掉 toast 提示」：勾选后凚 内所有 toast / 自绘短提示都不再显示。 */
@@ -607,7 +614,7 @@ public class FreezeListActivity extends BaseActivity {
     protected boolean panelHideRecents;
     /** 「冻结后保留桌面图标」开关：勾选后冻结走 suspend 通道，图标保留并置灰。 */
     private boolean keepLauncherIcon;
-    /** 「仅冻结/解冻当前标签」开关：勾选后一键冻结/解冻只作用于当前标签页。 */
+    /** 「底部按钮仅冻/解当前列表」开关：勾选后底部一键冻结/长按解冻只作用于当前列表。 */
     private boolean batchCurrentTabOnly;
     /** 半屏打开时是否隐藏状态栏（布局设置开关，默认不隐藏）。 */
     private boolean panelHideStatusBar;
@@ -622,6 +629,8 @@ public class FreezeListActivity extends BaseActivity {
     private Bitmap wallpaperBitmap;
     /** 壁纸自己的模糊度（0 = 完全清晰），与透明度滑块分开记忆。 */
     private int wallpaperBlur;
+    /** 自定义壁纸弹窗明暗度：0 全黑、100 原图、100–200 叠白提亮，出厂 100。 */
+    private int wallpaperBright;
     /** 布局设置里壁纸状态那一行，选图/清除后就地刷新。 */
     private TextView layoutWpState;
     /** 设置面板里「主副应用关联」这一行，增删/暂停后即时刷新摘要。 */
@@ -630,8 +639,8 @@ public class FreezeListActivity extends BaseActivity {
     private TextView layoutWhitelistEntry;
     /** 设置面板里「标识位置」这一行，选完即时刷新。 */
     private TextView layoutWhitePosEntry;
-    /** 设置面板里「将壁纸同步长按选项框」这一行，选完即时刷新。 */
-    private TextView layoutWpSheetEntry;
+    /** 设置面板里「同步全局」这一行，选完即时刷新。 */
+    private TextView layoutWpGlobalEntry;
     /** 设置面板里「桌面图标模式 → 冻结后是否保留桌面图标」这一行，选完即时刷新。 */
     private TextView layoutKeepIconEntry;
     /** 设置面板里「隐藏半屏/全屏的标签文字」：全局美化打开后文案变成「隐藏标签文字」。 */
@@ -709,6 +718,8 @@ public class FreezeListActivity extends BaseActivity {
     };
     /** 快面板（常用面板）：长按底栏空白 / 全屏底部预留带弹出的对话框与内容列。 */
     private android.app.Dialog quickPanelDialog;
+    /** 快面板的底板根视图（挂 bg_dialog / 全局壁纸底的那层）：换底刷新时要用。 */
+    private View quickPanelRootView;
     private LinearLayout quickPanelContent;
     /** － 移除模式 / 排序模式：互斥，再点一次退出。 */
     private boolean quickPanelRemoveMode;
@@ -751,6 +762,7 @@ public class FreezeListActivity extends BaseActivity {
     private android.app.Dialog privDialog;
     /** 本次进程是否已自动向 Shizuku 申请过授权，避免每次进页面重复弹窗。 */
     private static boolean shizukuAutoAsked;
+    private static boolean dhizukuAutoAsked;
     /** 布局设置标题里「冻结权限：X」的刷新入口，授权状态变化时直接重绘。 */
     private Runnable privTitleRefresh;
     private final Runnable introReveal = this::startIntroReveal;
@@ -1212,14 +1224,14 @@ public class FreezeListActivity extends BaseActivity {
             if (working) {
                 return;
             }
-            List<Item> targets = allTargets();
+            List<Item> targets = batchTargets();
             if (targets.isEmpty() && !pkgs().isEmpty()) {
                 // 冷启动 / 刚切标签时内存列表可能还没装载，第一次点击会被当成「没有目标」：
                 // 先用 PackageInfo 快速补一份再取一次，避免用户要点两次
                 Set<String> wanted = pkgs();
                 items.clear();
                 items.addAll(quickItems(wanted, savedOrder(), customOrder()));
-                targets = allTargets();
+                targets = batchTargets();
             }
             if (targets.isEmpty()) {
                 FrozenTip.show(this, "冻结名单为空");
@@ -1398,6 +1410,18 @@ public class FreezeListActivity extends BaseActivity {
                     .apply();
         }
         wallpaperBlur = Math.max(0, Math.min(100, prefs().getInt(lk(KEY_WALLPAPER_BLUR), 0)));
+        // 老版本存的是「压暗值」（40 = 明亮度 60%），一次性换算成新的明暗度（100 = 原图）
+        if (!prefs().getBoolean(KEY_WALLPAPER_BRIGHT_SEED, false)) {
+            SharedPreferences.Editor se = prefs().edit();
+            for (String k : new String[]{"panel_wallpaper_dim", "wallpaper_dim"}) {
+                if (prefs().contains(k)) {
+                    se.putInt(k, Math.max(0, 100 - prefs().getInt(k, 40)));
+                }
+            }
+            se.putBoolean(KEY_WALLPAPER_BRIGHT_SEED, true).apply();
+        }
+        wallpaperBright = Math.max(0, Math.min(200,
+                prefs().getInt(lk(KEY_WALLPAPER_DIM), WallpaperSource.BRIGHT_DEFAULT)));
         if (wallpaperUri == null || wallpaperUri.isEmpty()) {
             return;
         }
@@ -1477,6 +1501,10 @@ public class FreezeListActivity extends BaseActivity {
      * 透明度仍由原来的背景滑块控制（全屏改窗口底板的 alpha，半屏改面板 drawable 的 alpha）。
      */
     private void applyWallpaperBackground() {
+        // 「同步全局」的弹窗底图跟随当前形态：形态/壁纸一变，开着的设置页、快面板一起换底
+        WallpaperSource.setUiMode(srcMode());
+        refreshGlobalSurfaceBg();
+        applyPageWallpaperTextColors();
         if (panelMode) {
             View panel = findViewById(R.id.panel);
             if (panel == null) {
@@ -1498,6 +1526,57 @@ public class FreezeListActivity extends BaseActivity {
             root.setBackground(null);
             applyFullscreenSurface();
         }
+    }
+
+    /** 页面有壁纸背景时的主文字色：没有壁纸回落主题色。 */
+    private int wpPageFg(int fallback) {
+        return wallpaperBitmap == null ? fallback : Ui.wallpaperFg(wallpaperBitmap, 100);
+    }
+
+    /** 页面有壁纸背景时的次要文字色。 */
+    private int wpPageFgSecondary(int fallback) {
+        return wallpaperBitmap == null ? fallback : Ui.wallpaperFgSecondary(wallpaperBitmap, 100);
+    }
+
+    private boolean pageOnWallpaper() {
+        return wallpaperBitmap != null;
+    }
+
+    /**
+     * 主列表/面板上的文字与壁纸同步：应用名、标签、半屏底部搜索框。
+     * 全屏横幅有自己的横幅条（底板），文字保持原来的深色，不跟随壁纸。
+     */
+    private void applyPageWallpaperTextColors() {
+        if (panelMode) {
+            // 半屏左下角「添加应用」、右下角「布局设置」两枚图标，以及顶部小白条，
+            // 一起跟着壁纸明暗切换
+            int fg2 = pageOnWallpaper()
+                    ? wpPageFgSecondary(getColor(R.color.text_secondary))
+                    : getColor(R.color.text_secondary);
+            for (int id : new int[]{R.id.panel_search, R.id.layout}) {
+                View v = findViewById(id);
+                if (v instanceof ImageView) {
+                    ((ImageView) v).setImageTintList(ColorStateList.valueOf(fg2));
+                }
+            }
+            View handle = findViewById(R.id.panel_handle);
+            if (handle != null && handle.getBackground() != null) {
+                handle.getBackground().mutate().setTint(fg2);
+            }
+            if (search != null) {
+                search.setTextColor(pageOnWallpaper()
+                        ? wpPageFg(getColor(R.color.text_primary))
+                        : getColor(R.color.text_primary));
+                search.setHintTextColor(pageOnWallpaper()
+                        ? wpPageFgSecondary(getColor(R.color.text_secondary))
+                        : getColor(R.color.text_secondary));
+            }
+        }
+        // 应用名/标签的颜色在重绑时生效：壁纸变更后重刷一遍
+        if (gridAdapter != null) {
+            gridAdapter.notifyDataSetChanged();
+        }
+        renderTabBar();
     }
 
     /** 当前「全屏背景」档位：0 = 整页透明，100 = 实心。半屏不参与。 */
@@ -1659,13 +1738,14 @@ public class FreezeListActivity extends BaseActivity {
         applyWallpaperBackground();
     }
 
-    /** 设了自定义壁纸时，底栏的搜索/设置按钮改成深色（黑）图标，换任何图都不会糊在背景上看不清。 */
+    /** 底栏的搜索/设置按钮跟着壁纸明暗走：暗壁纸白、亮壁纸黑；没壁纸用主题次要色。 */
     private void applyPanelBottomIconTone() {
         if (!panelMode) {
             return;
         }
-        int tint = getColor(wallpaperDrawable != null
-                ? R.color.header_icon_black : R.color.text_secondary);
+        int tint = wallpaperBitmap != null
+                ? Ui.wallpaperFgSecondary(wallpaperBitmap, 100)
+                : getColor(R.color.text_secondary);
         tintHeaderIcon(R.id.panel_search, tint);
         tintHeaderIcon(R.id.layout, tint);
     }
@@ -3811,8 +3891,13 @@ public class FreezeListActivity extends BaseActivity {
             label.setSingleLine(true);
             label.setGravity(Gravity.CENTER);
             label.setPadding(Ui.dp(this, 2), Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8));
-            label.setTextColor(on ? getColor(R.color.text_primary)
-                    : getColor(R.color.text_secondary));
+            // 有自定义壁纸时，标签文字跟着壁纸自动白/黑（全屏/半屏同一套）
+            boolean tabOnWp = pageOnWallpaper();
+            label.setTextColor(on
+                    ? (tabOnWp ? wpPageFg(getColor(R.color.text_primary))
+                    : getColor(R.color.text_primary))
+                    : (tabOnWp ? wpPageFgSecondary(getColor(R.color.text_secondary))
+                    : getColor(R.color.text_secondary)));
             label.setTypeface(null, on ? android.graphics.Typeface.BOLD
                     : android.graphics.Typeface.NORMAL);
             item.addView(label, new LinearLayout.LayoutParams(
@@ -4034,7 +4119,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         android.text.SpannableString s =
                 new android.text.SpannableString(title + "（查看说明）");
-        s.setSpan(new android.text.style.ForegroundColorSpan(getColor(R.color.text_secondary)),
+        s.setSpan(new android.text.style.ForegroundColorSpan(Ui.wpSecondary(this)),
                 title.length(), s.length(),
                 android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         s.setSpan(new android.text.style.RelativeSizeSpan(0.8f),
@@ -4088,7 +4173,7 @@ public class FreezeListActivity extends BaseActivity {
         if (start >= 0 && end > start) {
             s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
                     start, end + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            s.setSpan(new android.text.style.ForegroundColorSpan(getColor(R.color.text_primary)),
+            s.setSpan(new android.text.style.ForegroundColorSpan(Ui.wpPrimary(this)),
                     start, end + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         return s;
@@ -4159,7 +4244,7 @@ public class FreezeListActivity extends BaseActivity {
         showHintCard("「标签设定」\n"
                 + "·勾选显示列表；\n"
                 + "·取消则隐藏；\n"
-                + "·设为默认，启动优先打开。",
+                + "·点亮星标，启动优先打开。",
                 "tab", titleView, "标签设定");
     }
 
@@ -4292,14 +4377,13 @@ public class FreezeListActivity extends BaseActivity {
         rebindCells();
     }
 
-    /** 自定义壁纸：长按选项框是否同步壁纸的入口文案（默认不同步）。 */
-    private String wpSheetEntryText() {
-        boolean sync = prefs().getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false);
-        return "· 将壁纸同步长按选项框：" + (sync ? "同步" : "不同步");
+    /** 自定义壁纸：「同步全局」的入口文案（默认不同步）。 */
+    private String wpGlobalEntryText() {
+        return "· 同步全局：" + (WallpaperSource.globalOn(this) ? "同步" : "不同步");
     }
 
-    /** 与「标识位置」同一套弹窗：同步 / 不同步 二选一。 */
-    private void showWpSheetDialog() {
+    /** 与「将壁纸同步长按选项框」同一套弹窗：同步 / 不同步 二选一。 */
+    private void showWpGlobalDialog() {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         int side = Ui.dp(this, 16);
@@ -4320,22 +4404,51 @@ public class FreezeListActivity extends BaseActivity {
         col.addView(sync);
         col.addView(noSync);
 
+        TextView tip = new TextView(this);
+        tip.setText("选「同步」后，自定义壁纸会同步到所有界面：设置页、长按图标选择框、快面板、关于凚、更新日志、各种弹窗、各种弹出打字框等。");
+        tip.setTextSize(11);
+        tip.setTextColor(getColor(R.color.text_secondary));
+        tip.setLineSpacing(Ui.dp(this, 2), 1f);
+        tip.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 6));
+        col.addView(tip);
+
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("将壁纸同步长按选项框")
+                .setTitle("同步全局")
                 .setView(col)
                 .setNegativeButton("返回", null)
                 .create();
         sync.setOnClickListener(v -> {
-            applyWpSheetSync(true);
+            applyWpGlobalSync(true);
             dialog.dismiss();
         });
         noSync.setOnClickListener(v -> {
-            applyWpSheetSync(false);
+            applyWpGlobalSync(false);
             dialog.dismiss();
         });
         dialog.show();
         Ui.roundAlertDialog(dialog);
         applySettingsAlignment(dialog);
+    }
+
+    /** 「同步全局」开关落地：只存偏好并刷新开着的设置页/快面板底板，之后打开的弹窗自动生效。 */
+    private void applyWpGlobalSync(boolean on) {
+        prefs().edit().putBoolean(WallpaperSource.KEY_WALLPAPER_GLOBAL, on).apply();
+        if (layoutWpGlobalEntry != null) {
+            layoutWpGlobalEntry.setText(wpGlobalEntryText());
+        }
+        refreshGlobalSurfaceBg();
+    }
+
+    /** 「同步全局」壁纸/开关变更后，把已经开着的设置页、快面板底板换成同款壁纸（或换回默认底色）。 */
+    private void refreshGlobalSurfaceBg() {
+        if (settingsSurfaceRoot != null) {
+            Ui.applyDialogBg(settingsSurfaceRoot);
+            applySettingsSurfaceAlpha(settingsSurfaceRoot);
+        }
+        if (quickPanelRootView != null) {
+            Ui.applyDialogBg(quickPanelRootView);
+            applyQuickPanelSurfaceAlpha(quickPanelRootView);
+        }
     }
 
     /** 勾选全局美化同步时的说明卡片：确认才打开，取消保持未勾选；「不再提醒」以后直接点复选框生效。 */
@@ -4454,6 +4567,8 @@ public class FreezeListActivity extends BaseActivity {
             e.putString(otherKey(KEY_WALLPAPER_URI), wpUri);
         }
         e.putInt(otherKey(KEY_WALLPAPER_BLUR), prefs().getInt(lk(KEY_WALLPAPER_BLUR), 0))
+                .putInt(otherKey(KEY_WALLPAPER_DIM),
+                        prefs().getInt(lk(KEY_WALLPAPER_DIM), WallpaperSource.BRIGHT_DEFAULT))
                 .putBoolean(otherKey(KEY_HIDE_TAB_ROW),
                         prefs().getBoolean(lk(KEY_HIDE_TAB_ROW), false))
                 .putBoolean(otherKey(KEY_SHOW_NAME),
@@ -4506,16 +4621,10 @@ public class FreezeListActivity extends BaseActivity {
             e.putString(otherKey(KEY_WALLPAPER_URI), uri);
         }
         e.putInt(otherKey(KEY_WALLPAPER_BLUR), prefs().getInt(lk(KEY_WALLPAPER_BLUR), 0));
+        e.putInt(otherKey(KEY_WALLPAPER_DIM),
+                prefs().getInt(lk(KEY_WALLPAPER_DIM), WallpaperSource.BRIGHT_DEFAULT));
         e.apply();
         WallpaperSource.drop(panelMode ? WallpaperSource.MODE_FULL : WallpaperSource.MODE_PANEL);
-    }
-
-    /** 同步开关落地：只存偏好，下次打开长按选项框时生效。 */
-    private void applyWpSheetSync(boolean on) {
-        prefs().edit().putBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, on).apply();
-        if (layoutWpSheetEntry != null) {
-            layoutWpSheetEntry.setText(wpSheetEntryText());
-        }
     }
 
     /** 桌面图标模式入口文案：先显示「当前：」，再跟当前选项。 */
@@ -4834,8 +4943,9 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 if (userId == 0) {
                     it.suspended = suspended.contains(pkg);
+                    // 兜底口径：暂停包 enabled 仍为 true，必须把暂停缓存一并算进冻结态
                     it.frozen = truthOk ? (disabled.contains(pkg) || it.suspended)
-                            : (ai != null && !ai.enabled);
+                            : ((ai != null && !ai.enabled) || it.suspended);
                 } else {
                     Set<String> cloneTruth = cloneDisabled.get(userId);
                     it.frozen = cloneTruth != null ? cloneTruth.contains(pkg)
@@ -5081,23 +5191,9 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 一键冻结 / 长按解冻的处理范围：
-     * 这两个按钮始终处理整份名单（只保留搜索过滤），不受「仅冻结/解冻当前标签」影响。
-     */
-    private List<Item> allTargets() {
-        String q = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
-        List<Item> shown = new ArrayList<>();
-        for (Item it : items) {
-            if (!q.isEmpty() && !matchesQuery(it, q)) {
-                continue;
-            }
-            shown.add(it);
-        }
-        return shown;
-    }
-
-    /**
-     * 其余批量入口（多选等）仍按「仅冻结/解冻当前标签」取范围。
+     * 批量处理范围（底部一键冻结 / 长按解冻 / 多选等共用）：
+     * 勾了「底部按钮仅冻/解当前列表」时只取当前标签，否则取整份名单；
+     * 两种情况都保留搜索过滤。
      */
     private List<Item> batchTargets() {
         if (batchCurrentTabOnly) {
@@ -5676,6 +5772,8 @@ public class FreezeListActivity extends BaseActivity {
             cell.icon.setImageResource(android.R.drawable.sym_def_app_icon);
         }
         cell.name.setText(it.label);
+        // 应用名直接落在壁纸上：有壁纸就按壁纸明暗自动白/黑
+        cell.name.setTextColor(wpPageFg(getColor(R.color.text_primary)));
         cell.root.setContentDescription(it.label);
         // 编辑模式（全屏减号）或半屏勾选「快捷移除图标」时常驻红标；移动模式下让位给选中/拖动
         boolean showBadge = editMode || (panelMode && quickRemove && !moveMode);
@@ -6247,13 +6345,13 @@ public class FreezeListActivity extends BaseActivity {
         final int n = batchTargets.size();
 
         final android.graphics.Bitmap wallpaper =
-                getSharedPreferences(WallpaperSource.PREF, MODE_PRIVATE)
-                        .getBoolean(WallpaperSource.KEY_SHEET_WALLPAPER, false)
+                WallpaperSource.sheetBgOn(this)
                         ? WallpaperSource.sheetBitmap(this, srcMode()) : null;
         final boolean onWallpaper = wallpaper != null;
-        final int fg = onWallpaper ? android.graphics.Color.WHITE : Ui.TEXT_PRIMARY;
-        final int iconFg = onWallpaper ? android.graphics.Color.WHITE : Ui.primary(this);
-        final int lineColor = onWallpaper ? 0x33FFFFFF : Ui.color(this, R.color.divider);
+        final int wpDim = WallpaperSource.brightnessPct(this, srcMode());
+        final int fg = onWallpaper ? Ui.wallpaperFg(wallpaper, wpDim) : Ui.TEXT_PRIMARY;
+        final int iconFg = onWallpaper ? Ui.wallpaperFg(wallpaper, wpDim) : Ui.primary(this);
+        final int lineColor = onWallpaper ? Ui.wallpaperDivider(wallpaper, wpDim) : Ui.color(this, R.color.divider);
 
         final com.google.android.material.bottomsheet.BottomSheetDialog sheet =
                 new com.google.android.material.bottomsheet.BottomSheetDialog(this, R.style.Theme_Jin_Sheet);
@@ -6265,9 +6363,7 @@ public class FreezeListActivity extends BaseActivity {
         content.setOrientation(LinearLayout.VERTICAL);
         Drawable cardBg;
         if (onWallpaper) {
-            cardBg = new android.graphics.drawable.LayerDrawable(new Drawable[]{
-                    new WallpaperDrawable(wallpaper, 0),
-                    new android.graphics.drawable.ColorDrawable(0x66000000)});
+            cardBg = Ui.wallpaperWithScrim(wallpaper, wpDim);
         } else {
             cardBg = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_dialog).mutate();
         }
@@ -6445,7 +6541,7 @@ public class FreezeListActivity extends BaseActivity {
                     PrivShell.Result r = execPm(it.pkg, it.userId, true);
                     ok = applied(it.pkg, true, r);
                     // 停用被 ROM 拦住时，和单个冻结一样自动降级为暂停
-                    if (!ok && SuspendSupport.romBlocked(r.out)) {
+                    if (!ok && (SuspendSupport.romBlocked(r.out) || DhizukuGate.only(this))) {
                         ok = it.userId == 0
                             && suspendApplied(it.pkg, SuspendSupport.suspend(this, packagePart(it.pkg), it.label));
                         if (ok) SuspendSupport.remember(this, Collections.singleton(packagePart(it.pkg)));
@@ -6488,17 +6584,31 @@ public class FreezeListActivity extends BaseActivity {
         IO.execute(() -> {
             StringBuilder script = new StringBuilder();
             Set<String> suspended = new HashSet<>();
+            boolean dhizuku = DhizukuGate.only(this);
+            int dhizukuCount = 0;
             for (Item it : frozen) {
                 String name = packagePart(it.pkg);
                 if (it.suspended && it.userId == 0) {
                     suspended.add(name);
+                }
+                if (dhizuku && it.userId == 0) {
+                    // Dhizuku-only：逐包走 DPM 恢复暂停（DO 只作用 user 0）
+                    SuspendSupport.unsuspend(name);
+                    dhizukuCount++;
+                    continue;
                 }
                 script.append("pm unsuspend --user ").append(it.userId).append(' ')
                         .append(name).append(" >/dev/null 2>&1; ");
                 script.append("pm enable --user ").append(it.userId).append(' ')
                         .append(name).append(" >/dev/null 2>&1; ");
             }
-            execPmScript(script.toString(), Math.max(30, 10 + frozen.size() * 5));
+            if (dhizukuCount > 0) {
+                recordDiagOp("dhizuku:setPackagesSuspended",
+                        "setPackagesSuspended(*, false) × " + dhizukuCount, null);
+            }
+            if (script.length() > 0) {
+                execPmScript(script.toString(), Math.max(30, 10 + frozen.size() * 5));
+            }
             Set<String> truth = SuspendSupport.suspendedAmong(suspended);
             SuspendSupport.remember(this, truth);
             main.post(() -> {
@@ -6639,14 +6749,28 @@ public class FreezeListActivity extends BaseActivity {
         if (!toUnfreeze.isEmpty()) {
             IO.execute(() -> {
                 StringBuilder script = new StringBuilder();
+                boolean dhizuku = DhizukuGate.only(this);
+                int dhizukuCount = 0;
                 for (Item item : toUnfreeze) {
                     String name = packagePart(item.pkg);
+                    if (dhizuku && item.userId == 0) {
+                        // Dhizuku-only：逐包走 DPM 恢复暂停（DO 只作用 user 0）
+                        SuspendSupport.unsuspend(name);
+                        dhizukuCount++;
+                        continue;
+                    }
                     script.append("pm unsuspend --user ").append(item.userId).append(' ')
                             .append(name).append(" >/dev/null 2>&1; ");
                     script.append("pm enable --user ").append(item.userId).append(' ')
                             .append(name).append(" >/dev/null 2>&1; ");
                 }
-                execPmScript(script.toString(), Math.max(30, 10 + toUnfreeze.size() * 5));
+                if (dhizukuCount > 0) {
+                    recordDiagOp("dhizuku:setPackagesSuspended",
+                            "setPackagesSuspended(*, false) × " + dhizukuCount, null);
+                }
+                if (script.length() > 0) {
+                    execPmScript(script.toString(), Math.max(30, 10 + toUnfreeze.size() * 5));
+                }
                 Set<String> truth = SuspendSupport.suspendedAmong(suspended);
                 SuspendSupport.remember(this, truth);
             });
@@ -6928,7 +7052,7 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         int uid = userIdPart(key);
-        if (keepLauncherIcon && uid == 0) {
+        if ((keepLauncherIcon || DhizukuGate.only(this)) && uid == 0) {
             SuspendSupport.suspend(this, packagePart(key), key);
         } else {
             execPm(key, uid, true);
@@ -6980,7 +7104,7 @@ public class FreezeListActivity extends BaseActivity {
             if (keep) {
                 r = SuspendSupport.suspend(this, packagePart(it.pkg), it.label);
                 ok = suspendApplied(it.pkg, r);
-                recordDiagOp("单次暂停",
+                recordDiagOp(suspendDiagChannel("单次暂停"),
                         SuspendSupport.suspendCommand(packagePart(it.pkg), it.label), r);
                 if (ok) {
                     suspendedNow = true;
@@ -6996,10 +7120,11 @@ public class FreezeListActivity extends BaseActivity {
                 r = execPm(it.pkg, it.userId, true);
                 ok = applied(it.pkg, true, r);
                 // 系统应用被 ROM 拦住停用（两类固定文案）时，自动降级为 pm suspend 暂停（仅主用户）
-                blocked = it.userId == 0 && !ok && SuspendSupport.romBlocked(r.out);
+                blocked = it.userId == 0 && !ok
+                        && (SuspendSupport.romBlocked(r.out) || DhizukuGate.only(this));
                 if (blocked) {
                     PrivShell.Result s = SuspendSupport.suspend(this, packagePart(it.pkg), it.label);
-                    recordDiagOp("降级暂停",
+                    recordDiagOp(suspendDiagChannel("降级暂停"),
                             SuspendSupport.suspendCommand(packagePart(it.pkg), it.label), s);
                     if (suspendApplied(it.pkg, s)) {
                         ok = true;
@@ -7619,8 +7744,8 @@ public class FreezeListActivity extends BaseActivity {
         unfreezeFab.setOnClickListener(v -> {
             collapseUnfreezeFab();
             if (!working) {
-                // 长按解冻同样作用于整份名单
-                List<Item> targets = allTargets();
+                // 与底部一键冻结同一范围：勾了「底部按钮仅冻/解当前列表」就只处理当前标签
+                List<Item> targets = batchTargets();
                 if (targets.isEmpty()) {
                     FrozenTip.show(this, "冻结名单为空");
                     return;
@@ -8310,10 +8435,10 @@ public class FreezeListActivity extends BaseActivity {
             prefs().edit().putBoolean(KEY_HIDE_TOASTS, on).apply();
         });
 
-        // 仅冻结/解冻当前标签：标签栏可见时长按标签就能切换，设置里不显示；
+        // 底部按钮仅冻/解当前列表：标签栏可见时长按标签就能切换，设置里不显示；
         // 勾选「隐藏标签页文字」收起标签行、或没有可见标签时才露出，并随勾选实时变化
         CheckBox tabOnlyBox = new CheckBox(this);
-        tabOnlyBox.setText("仅冻结/解冻当前标签");
+        tabOnlyBox.setText("底部按钮仅冻/解当前列表");
         tabOnlyBox.setTextSize(11);
         tabOnlyBox.setTextColor(getColor(R.color.text_secondary));
         tabOnlyBox.setMinimumHeight(Ui.dp(this, 32));
@@ -8555,7 +8680,10 @@ public class FreezeListActivity extends BaseActivity {
                 CheckBox cb = new CheckBox(this);
                 cb.setText(t.name);
                 cb.setTextSize(12);
-                cb.setMinimumHeight(Ui.dp(FreezeListActivity.this, 32));
+                // 显式用主题主色，同步全局时才会跟着壁纸自动切白/黑
+                cb.setTextColor(getColor(R.color.text_primary));
+                cb.setGravity(Gravity.CENTER_VERTICAL);
+                cb.setMinimumHeight(Ui.dp(FreezeListActivity.this, 24));
                 styleSettingCheckBox(cb);
                 cb.setChecked(t.visible);
                 cb.setOnCheckedChangeListener((b, on) -> {
@@ -8585,17 +8713,22 @@ public class FreezeListActivity extends BaseActivity {
                 // 默认标签只在入口按钮上体现状态，标签条本身不加任何标记；
                 // 与长按标签菜单一致：只认显式设过的默认，不拿回落值判断
                 final boolean isDefault = t.id.equals(prefs().getString(KEY_DEFAULT_TAB, null));
-                TextView def = new TextView(this);
-                def.setText(isDefault ? "当前默认" : "设为默认");
-                def.setTextSize(11);
-                def.setTextColor(getColor(isDefault ? R.color.blue : R.color.text_secondary));
-                def.setTypeface(null, isDefault ? android.graphics.Typeface.BOLD
-                        : android.graphics.Typeface.NORMAL);
-                def.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
+                // 删除（红色垃圾桶）放在星标左边，只有自定义标签有
+                if (t.custom) {
+                    ImageButton del = settingsRowIconBtn(R.drawable.ic_action_delete, "删除标签");
+                    del.setImageTintList(ColorStateList.valueOf(0xFFE5484D));
+                    del.setOnClickListener(v -> confirmDeleteTab(t, refreshTabSettings[0]));
+                    row.addView(del);
+                }
+                // 默认星标：实心=当前默认，空心=未设默认；点一下切换默认
+                ImageButton def = settingsRowIconBtn(
+                        isDefault ? R.drawable.ic_star_filled : R.drawable.ic_star_outline,
+                        isDefault ? "取消默认标签" : "设为默认标签");
+                def.setImageTintList(ColorStateList.valueOf(
+                        getColor(isDefault ? R.color.star_default : R.color.text_secondary)));
                 if (!t.visible) {
                     // 隐藏的标签不能当默认，入口保持可读但不可点
                     def.setAlpha(0.4f);
-                    row.addView(def);
                 } else {
                     def.setOnClickListener(v -> {
                         // 与长按标签菜单同一判断：只认显式设过的默认
@@ -8608,33 +8741,88 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         refreshTabSettings[0].run();
                     });
-                    row.addView(def);
                 }
-                // 排序：放在「默认」右侧、「改名」左侧；点开后只允许拖动调整标签顺序
-                TextView sortBtn = new TextView(this);
-                sortBtn.setText("排序");
-                sortBtn.setTextSize(11);
-                sortBtn.setTextColor(getColor(R.color.blue));
-                sortBtn.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
-                sortBtn.setOnClickListener(v -> showTabSortDialog(refreshTabSettings[0]));
-                row.addView(sortBtn);
+                row.addView(def);
+                // 顺序按「默认星标、重命名、排序」：重命名放在星标右侧、排序左侧；
                 // 内置标签也能改名（只改显示名，不影响它承载用户/系统应用的性质）；删除仍只限自定义标签
-                TextView rename = new TextView(this);
-                rename.setText("重命名");
-                rename.setTextSize(11);
-                rename.setTextColor(getColor(R.color.blue));
-                rename.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 6));
+                ImageButton rename = settingsRowIconBtn(R.drawable.ic_action_edit, "重命名标签");
                 rename.setOnClickListener(v -> showTabNameDialog(t, refreshTabSettings[0]));
                 row.addView(rename);
-                if (t.custom) {
-                    TextView del = new TextView(this);
-                    del.setText("删除");
-                    del.setTextSize(11);
-                    del.setTextColor(0xFFE5484D);
-                    del.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), 0, Ui.dp(this, 6));
-                    del.setOnClickListener(v -> confirmDeleteTab(t, refreshTabSettings[0]));
-                    row.addView(del);
-                }
+                // 排序：长按后直接在当前页面上下拖动，松手即生效，不弹窗口
+                ImageButton sortBtn = settingsRowIconBtn(R.drawable.ic_drag_handle, "标签排序");
+                // 视觉仍是 16dp、间距不变，只把按住的触摸区四周放大 10dp，方便长按起拖
+                row.post(() -> {
+                    Rect touch = new Rect(
+                            sortBtn.getLeft() - Ui.dp(this, 10),
+                            sortBtn.getTop() - Ui.dp(this, 10),
+                            sortBtn.getRight() + Ui.dp(this, 10),
+                            sortBtn.getBottom() + Ui.dp(this, 10));
+                    row.setTouchDelegate(new android.view.TouchDelegate(touch, sortBtn));
+                });
+                final float[] downRaw = new float[2];
+                final long[] downAt = new long[2];
+                final boolean[] dragging = new boolean[2];
+                sortBtn.setOnTouchListener((v, ev) -> {
+                    switch (ev.getActionMasked()) {
+                        case android.view.MotionEvent.ACTION_DOWN:
+                            downRaw[0] = ev.getRawY();
+                            downAt[0] = ev.getEventTime();
+                            dragging[0] = false;
+                            // 按住排序手柄时别再让外层 ScrollView 抢走滑动，否则拖动会变成滚页面
+                            ViewParent vpSort = v.getParent();
+                            if (vpSort != null) {
+                                vpSort.requestDisallowInterceptTouchEvent(true);
+                            }
+                            return true;
+                        case android.view.MotionEvent.ACTION_MOVE: {
+                            if (!dragging[0]
+                                    && (ev.getEventTime() - downAt[0] > 220
+                                    || Math.abs(ev.getRawY() - downRaw[0]) > Ui.dp(this, 6))) {
+                                dragging[0] = true;
+                                row.setAlpha(0.85f);
+                            }
+                            if (dragging[0]) {
+                                row.setTranslationY(ev.getRawY() - downRaw[0]);
+                            }
+                            return true;
+                        }
+                        case android.view.MotionEvent.ACTION_UP:
+                        case android.view.MotionEvent.ACTION_CANCEL: {
+                            row.setTranslationY(0);
+                            row.setAlpha(1f);
+                            ViewParent vpUp = v.getParent();
+                            if (vpUp != null) {
+                                vpUp.requestDisallowInterceptTouchEvent(false);
+                            }
+                            if (dragging[0]) {
+                                float dy = ev.getRawY() - downRaw[0];
+                                int rowH = row.getHeight() > 0
+                                        ? row.getHeight() : Ui.dp(this, 32);
+                                int shift = Math.round(dy / rowH);
+                                final int from = tabs.indexOf(t);
+                                final int to = Math.max(0,
+                                        Math.min(tabs.size() - 1, from + shift));
+                                // 手势结束后再改数据和重建行：不能在触摸回调里直接移除
+                                // 当前正被按住的这一行，否则会在下次绘制时闪退
+                                sortBtn.post(() -> {
+                                    if (to != from) {
+                                        tabs.add(to, tabs.remove(from));
+                                        saveTabs();
+                                        renderTabBar();
+                                    }
+                                    refreshTabSettings[0].run();
+                                });
+                            } else if (ev.getActionMasked()
+                                    == android.view.MotionEvent.ACTION_UP) {
+                                toast("长按排序图标可上下拖动排序");
+                            }
+                            return true;
+                        }
+                        default:
+                            return false;
+                    }
+                });
+                row.addView(sortBtn);
                 tabList.addView(row);
             }
         };
@@ -9165,14 +9353,14 @@ public class FreezeListActivity extends BaseActivity {
         wpPick.setText("选择图片");
         wpPick.setTextSize(12);
         wpPick.setTextColor(getColor(R.color.blue));
-        wpPick.setPadding(0, Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 8));
+        wpPick.setPadding(0, Ui.dp(this, 4), Ui.dp(this, 20), Ui.dp(this, 8));
         wpPick.setOnClickListener(v -> wallpaperPicker.launch(new String[]{"image/*"}));
 
         final TextView wpClear = new TextView(this);
         wpClear.setText("清除");
         wpClear.setTextSize(12);
         wpClear.setTextColor(0xFFE5484D);
-        wpClear.setPadding(0, Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 8));
+        wpClear.setPadding(0, Ui.dp(this, 4), Ui.dp(this, 20), Ui.dp(this, 8));
         wpClear.setOnClickListener(v -> {
             clearCustomWallpaper();
             wpState.setText("· 当前：未设置");
@@ -9188,16 +9376,54 @@ public class FreezeListActivity extends BaseActivity {
                 null, null, R.drawable.ic_qp_wallpaper));
         wps.addView(wpBody);
         wpBody.addView(wpState);
-        // 长按应用的选项框是否也换成壁纸底：与「标识位置」同一套入口行 + 二选一弹窗，
-        // 紧跟在「当前：未设置 / 已设置」下面；半屏/全屏共用这一个开关
-        layoutWpSheetEntry = new TextView(this);
-        layoutWpSheetEntry.setText(wpSheetEntryText());
-        layoutWpSheetEntry.setTextSize(11);
-        layoutWpSheetEntry.setTextColor(getColor(R.color.text_secondary));
-        layoutWpSheetEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
-        layoutWpSheetEntry.setOnClickListener(v -> showWpSheetDialog());
-        wpBody.addView(layoutWpSheetEntry);
+        // 「同步全局」：壁纸铺满全部界面（设置页、长按图标选择框、快面板、关于凚、
+        // 更新日志、各种弹窗、各种弹出打字框等都同步），紧跟「当前」下面，
+        // 行距与「将壁纸同步长按选项框」和「当前」之间一致
+        layoutWpGlobalEntry = new TextView(this);
+        layoutWpGlobalEntry.setText(wpGlobalEntryText());
+        layoutWpGlobalEntry.setTextSize(11);
+        layoutWpGlobalEntry.setTextColor(getColor(R.color.text_secondary));
+        layoutWpGlobalEntry.setPadding(0, Ui.dp(this, 4), 0, 0);
+        layoutWpGlobalEntry.setOnClickListener(v -> showWpGlobalDialog());
+        wpBody.addView(layoutWpGlobalEntry);
         wpBody.addView(wpRow);
+
+        // 自定义壁纸弹窗明暗度：0 = 全黑，100 = 原图，100–200 叠白提亮；出厂 100。
+        // 放在模糊度上面，改完立刻刷新开着的设置页/快面板
+        final TextView wpDimLabel = new TextView(this);
+        wpDimLabel.setTextSize(11);
+        wpDimLabel.setTextColor(getColor(R.color.text_secondary));
+        wpDimLabel.setText("自定义壁纸弹窗明暗度：" + wallpaperBright + "%");
+        SeekBar wpDimBar = new SeekBar(this);
+        wpDimBar.setMax(200);
+        wpDimBar.setProgress(wallpaperBright);
+        wpDimBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                wpDimLabel.setText("自定义壁纸弹窗明暗度：" + p + "%");
+                wallpaperBright = Math.max(0, Math.min(200, p));
+                refreshGlobalSurfaceBg();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+                wallpaperBright = Math.max(0, Math.min(200, sb.getProgress()));
+                prefs().edit().putInt(lk(KEY_WALLPAPER_DIM), wallpaperBright).apply();
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
+                    prefs().edit().putInt(otherKey(KEY_WALLPAPER_DIM), wallpaperBright).apply();
+                }
+                refreshGlobalSurfaceBg();
+            }
+        });
+        wpBody.addView(wpDimLabel);
+        wpBody.addView(wpDimBar);
 
         // 壁纸自己的模糊度：0 完全清晰（默认），只影响这张壁纸，不动透明度/背景模糊那几条
         final TextView wpBlurLabel = new TextView(this);
@@ -9454,7 +9680,7 @@ public class FreezeListActivity extends BaseActivity {
             int innerStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
             innerBar.setProgress(innerStart);
-            innerLabel.setText("半屏面板：" + innerStart + "%");
+            innerLabel.setText("半屏列表背景：" + innerStart + "%");
             innerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -9466,7 +9692,7 @@ public class FreezeListActivity extends BaseActivity {
                     if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                         prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                     }
-                    innerLabel.setText("半屏面板：" + p + "%");
+                    innerLabel.setText("半屏列表背景：" + p + "%");
                     applyPanelSurface();
                 }
 
@@ -9489,7 +9715,7 @@ public class FreezeListActivity extends BaseActivity {
             int bgStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
             bgBar.setProgress(bgStart);
-            bgLabel.setText("全屏背景：" + bgStart + "%");
+            bgLabel.setText("全屏列表背景：" + bgStart + "%");
             bgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -9501,7 +9727,7 @@ public class FreezeListActivity extends BaseActivity {
                     if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                         prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
                     }
-                    bgLabel.setText("全屏背景：" + p + "%");
+                    bgLabel.setText("全屏列表背景：" + p + "%");
                     // 真正改窗口底板 alpha 与模糊的是 applyFullscreenSurface（整页背景唯一出口）
                     applyFullscreenSurface();
                 }
@@ -10950,7 +11176,7 @@ public class FreezeListActivity extends BaseActivity {
             case "hide_tab_row":
                 return hideTabRowLabel();
             case "batch_tab_only":
-                return "仅冻结/解冻当前标签";
+                return "底部按钮仅冻/解当前列表";
             case "panel_handle":
                 return "半屏高度小白条调节";
             case "hide_status_bar":
@@ -10989,6 +11215,8 @@ public class FreezeListActivity extends BaseActivity {
                 return "屏幕左边缘靠内触发手势距离";
             case "edge_right":
                 return "屏幕右边缘靠内触发手势距离";
+            case "wp_dim":
+                return "自定义壁纸弹窗明暗度";
             case "wp_blur":
                 return "壁纸模糊度";
             case "icon_group":
@@ -11018,8 +11246,6 @@ public class FreezeListActivity extends BaseActivity {
                 return keepIconEntryText();
             case "white_pos":
                 return whiteBadgePosText();
-            case "wp_sheet":
-                return wpSheetEntryText();
             case "backup":
                 return "备份";
             case "restore":
@@ -11580,6 +11806,41 @@ public class FreezeListActivity extends BaseActivity {
                 body.addView(edgeRightBar);
                 return body;
             }
+            case "wp_dim": {
+                final TextView wpDimLabel = new TextView(this);
+                wpDimLabel.setTextSize(11);
+                wpDimLabel.setTextColor(getColor(R.color.text_secondary));
+                wpDimLabel.setText("自定义壁纸弹窗明暗度：" + wallpaperBright + "%");
+                SeekBar wpDimBar = new SeekBar(this);
+                wpDimBar.setMax(200);
+                wpDimBar.setProgress(wallpaperBright);
+                wpDimBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                        if (!fromUser) {
+                            return;
+                        }
+                        wpDimLabel.setText("自定义壁纸弹窗明暗度：" + p + "%");
+                        wallpaperBright = Math.max(0, Math.min(200, p));
+                        refreshGlobalSurfaceBg();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                        wallpaperBright = Math.max(0, Math.min(200, sb.getProgress()));
+                        prefs().edit().putInt(lk(KEY_WALLPAPER_DIM), wallpaperBright).apply();
+                        mirrorWallpaperToOtherIfGlobal();
+                        refreshGlobalSurfaceBg();
+                    }
+                });
+                body.addView(wpDimLabel);
+                body.addView(wpDimBar);
+                return body;
+            }
             case "wp_blur": {
                 final TextView wpBlurLabel = new TextView(this);
                 wpBlurLabel.setTextSize(11);
@@ -11738,7 +11999,7 @@ public class FreezeListActivity extends BaseActivity {
                 int innerStart = 100 - Math.max(0, Math.min(100,
                         prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
                 innerBar.setProgress(innerStart);
-                innerLabel.setText("半屏面板：" + innerStart + "%");
+                innerLabel.setText("半屏列表背景：" + innerStart + "%");
                 innerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -11750,7 +12011,7 @@ public class FreezeListActivity extends BaseActivity {
                         if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                         }
-                        innerLabel.setText("半屏面板：" + p + "%");
+                        innerLabel.setText("半屏列表背景：" + p + "%");
                         applyPanelSurface();
                     }
 
@@ -11775,7 +12036,7 @@ public class FreezeListActivity extends BaseActivity {
                 int bgStart = 100 - Math.max(0, Math.min(100,
                         prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
                 bgBar.setProgress(bgStart);
-                bgLabel.setText("全屏背景：" + bgStart + "%");
+                bgLabel.setText("全屏列表背景：" + bgStart + "%");
                 bgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -11787,7 +12048,7 @@ public class FreezeListActivity extends BaseActivity {
                         if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
                         }
-                        bgLabel.setText("全屏背景：" + p + "%");
+                        bgLabel.setText("全屏列表背景：" + p + "%");
                         // 真正改窗口底板 alpha 与模糊的是 applyFullscreenSurface（整页背景唯一出口）
                         applyFullscreenSurface();
                     }
@@ -11959,8 +12220,8 @@ public class FreezeListActivity extends BaseActivity {
                 LinearLayout body = new LinearLayout(this);
                 body.setOrientation(LinearLayout.VERTICAL);
                 body.addView(quickPanelWallpaperActions());
+                body.addView(quickPanelSliderBody("wp_dim"));
                 body.addView(quickPanelSliderBody("wp_blur"));
-                body.addView(quickPanelEntryRow("wp_sheet"));
                 return body;
             }
             case "ui_opacity":
@@ -12067,15 +12328,39 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
+    /** 设置页「标签设定」每行右侧的小图标按钮：默认星标 / 重命名 / 排序共用同一套尺寸与配色。 */
+    private ImageButton settingsRowIconBtn(int drawable, String desc) {
+        ImageButton btn = new ImageButton(this);
+        btn.setImageResource(drawable);
+        btn.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+        btn.setBackground(null);
+        btn.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        // 标签设定这一排图标与左侧「用户应用」的 12sp 文字同高（16dp）、间距贴紧
+        btn.setPadding(0, 0, 0, 0);
+        btn.setContentDescription(desc);
+        LinearLayout.LayoutParams lp =
+                new LinearLayout.LayoutParams(Ui.dp(this, 16), Ui.dp(this, 16));
+        // 四个图标之间留一点间距，离左边的标签文字也留 10dp
+        // 间距别太大，但要保证长按排序手柄时不容易误触到重命名
+        lp.setMarginStart(Ui.dp(this, 10));
+        // 与左边的标签文字同一水平中线对齐
+        lp.gravity = Gravity.CENTER_VERTICAL;
+        btn.setLayoutParams(lp);
+        return btn;
+    }
+
     private android.widget.ImageButton quickPanelIconBtn(int drawable, String desc) {
         android.widget.ImageButton btn = new android.widget.ImageButton(this);
         btn.setImageResource(drawable);
         btn.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
         btn.setBackground(null);
         btn.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        btn.setPadding(Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6));
+        // 右上角这一排再收小一档、间距几乎贴紧，跟左侧标题更协调
+        btn.setPadding(Ui.dp(this, 2), Ui.dp(this, 2), Ui.dp(this, 2), Ui.dp(this, 2));
         btn.setContentDescription(desc);
-        btn.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(this, 32), Ui.dp(this, 32)));
+        LinearLayout.LayoutParams lp =
+                new LinearLayout.LayoutParams(Ui.dp(this, 22), Ui.dp(this, 22));
+        btn.setLayoutParams(lp);
         return btn;
     }
 
@@ -12101,8 +12386,6 @@ public class FreezeListActivity extends BaseActivity {
                 return R.drawable.ic_chevron_up;
             case "hide_recents":
                 return R.drawable.ic_qp_recents_off;
-            case "wp_sheet":
-                return R.drawable.ic_sc_open_list;
             case "gesture_enabled":
                 return R.drawable.ic_qp_hold;
             case "quick_panel_enabled":
@@ -12372,10 +12655,12 @@ public class FreezeListActivity extends BaseActivity {
         // 快面板不是设置页的二级弹窗：开关都不碰设置页
         Ui.skipAutoHide(dialog);
         quickPanelDialog = dialog;
+        quickPanelRootView = root;
         qpHolder[0] = dialog;
         dialog.setOnDismissListener(d -> {
             if (quickPanelDialog == dialog) {
                 quickPanelDialog = null;
+                quickPanelRootView = null;
                 quickPanelContent = null;
                 quickPanelRemoveMode = false;
                 quickPanelSortMode = false;
@@ -12882,9 +13167,6 @@ public class FreezeListActivity extends BaseActivity {
                 break;
             case "white_pos":
                 showWhiteBadgePosDialog();
-                break;
-            case "wp_sheet":
-                showWpSheetDialog();
                 break;
             case "backup":
                 showBackup();
@@ -13420,7 +13702,7 @@ public class FreezeListActivity extends BaseActivity {
                 + "· 关联应用：打开主可静默解冻副，冻结主也冻结副；\n"
                 + "· 一键冻结：底部按钮默认冻住全部列表；\n"
                 + "· 一键解冻：长按底部冻结按钮，可触发解冻选项；\n"
-                + "· 仅冻结/解冻当前标签：长按标签页或设置开启，一键冻结与长按解冻只处理当前标签页；\n"
+                + "· 底部按钮仅冻/解当前列表：开启后一键冻结与长按解冻只处理当前列表，其他列表不受影响；\n"
                 + "· 两种形态：半屏浮层随手打开，全屏列表适合慢慢整理；\n"
                 + "· 长按列表空白处手势：左右滑快速翻标签，上滑半屏进全屏、下滑回半屏，可自行开启；\n"
                 + "· 长按底栏空白处手势：快面板，可添加快捷设置，一目了然看完当前状态；\n"
@@ -13434,7 +13716,7 @@ public class FreezeListActivity extends BaseActivity {
                 + "· 备份恢复：可单独恢复添加的桌面图标、白名单、关联应用、列表、配置。";
         // 每条开头的功能名用主色加粗，后面的说明文字用次要色，两者明显区分
         android.text.SpannableString feats = new android.text.SpannableString(featureText);
-        int nameColor = Ui.primary(this);
+        int nameColor = Ui.wpPrimary(this);
         java.util.regex.Matcher fm = java.util.regex.Pattern
                 .compile("· ([^：\\n]+)：").matcher(featureText);
         while (fm.find()) {
@@ -13494,7 +13776,7 @@ public class FreezeListActivity extends BaseActivity {
         while (versions.find()) {
             log.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
                     versions.start(), versions.end(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            log.setSpan(new android.text.style.ForegroundColorSpan(Ui.primary(this)),
+            log.setSpan(new android.text.style.ForegroundColorSpan(Ui.wpPrimary(this)),
                     versions.start(), versions.end(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             log.setSpan(new android.text.style.RelativeSizeSpan(1.12f),
                     versions.start(), versions.end(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -13525,7 +13807,7 @@ public class FreezeListActivity extends BaseActivity {
         final int radiusPx = Ui.dp(this, 24);
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.VERTICAL);
-        shell.setBackgroundResource(R.drawable.bg_dialog);
+        Ui.applyDialogBg(shell);
         shell.setClipToOutline(true);
         shell.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override
@@ -13543,28 +13825,28 @@ public class FreezeListActivity extends BaseActivity {
         shell.addView(close, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 32)));
 
-        // 高度按可用区算：全屏铺到底栏上沿；半屏只占面板上沿以上，不压住下面的列表
+        // 高度按可用区算：底部统一到「底栏最上沿」。
+        // 半屏跟随设置页的展开状态：设置页展开时对话框也展开、未展开时也贴合设置页高度；
+        // 全屏则从状态栏下沿铺到顶栏上沿（与原来一致）。
         final int statusTop = statusBarHidden ? 0 : introStatusInsetPx();
-        int availH;
-        if (panelMode) {
-            int panelTopWin = -1;
-            View panel = findViewById(R.id.panel);
-            if (panel != null && panel.getHeight() > 0) {
-                int[] loc = new int[2];
-                panel.getLocationInWindow(loc);
-                panelTopWin = loc[1];
-            }
-            availH = panelTopWin - statusTop - Ui.dp(this, 8);
-        } else {
-            int barTopWin = -1;
-            View barAnchor = findViewById(R.id.fab_group);
-            if (barAnchor != null && barAnchor.getHeight() > 0) {
-                int[] loc = new int[2];
-                barAnchor.getLocationInWindow(loc);
-                barTopWin = loc[1];
-            }
-            availH = barTopWin - statusTop;
+        int barTopWin = -1;
+        View barAnchor = findViewById(panelMode ? R.id.panel_bottom_bar : R.id.fab_group);
+        if (barAnchor != null && barAnchor.getHeight() > 0) {
+            int[] loc = new int[2];
+            barAnchor.getLocationInWindow(loc);
+            barTopWin = loc[1];
         }
+        int settingsTopWin = -1;
+        if (panelMode && settingsSurfaceRoot != null
+                && settingsSurfaceRoot.getHeight() > 0
+                && settingsSurfaceRoot.getVisibility() == View.VISIBLE) {
+            int[] loc = new int[2];
+            settingsSurfaceRoot.getLocationInWindow(loc);
+            settingsTopWin = loc[1];
+        }
+        int topLimit = settingsTopWin > 0 ? settingsTopWin : statusTop;
+        int availH = barTopWin - topLimit;
+        final int dialogTopY = topLimit;
         if (availH <= Ui.dp(this, 200)) {
             // 取不到底栏位置时退回按内容量：超过屏幕 80% 才滚动
             card.measure(View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY),
@@ -13593,9 +13875,9 @@ public class FreezeListActivity extends BaseActivity {
             android.view.WindowManager.LayoutParams lp = w.getAttributes();
             lp.width = widthPx + shadowPad * 2;
             lp.height = availH + shadowPad * 2;
-            // 顶部贴状态栏下沿，底部正好停在底栏上沿
+            // 顶部与设置页顶对齐（全屏即状态栏下沿），底部正好停在底栏上沿
             lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            lp.y = -shadowPad;
+            lp.y = dialogTopY - shadowPad;
             w.setAttributes(lp);
             // 每次布局后按真实位置校正：卡片最下沿绝不越过底栏最上沿（首帧高度还没落地也管用）
             shell.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
@@ -13622,9 +13904,9 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 底栏最上沿的屏幕 y（全屏取悬浮冻结按钮顶边，半屏取面板顶边）；取不到返回 -1。 */
+    /** 底栏最上沿的屏幕 y（全屏取悬浮冻结按钮顶边，半屏取底部状态条顶边）；取不到返回 -1。 */
     private int bottomBarTopOnScreen() {
-        View anchor = findViewById(panelMode ? R.id.panel : R.id.fab_group);
+        View anchor = findViewById(panelMode ? R.id.panel_bottom_bar : R.id.fab_group);
         if (anchor == null || anchor.getHeight() <= 0) {
             return -1;
         }
@@ -13670,7 +13952,7 @@ public class FreezeListActivity extends BaseActivity {
         final int radiusPx = Ui.dp(this, 24);
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.VERTICAL);
-        shell.setBackgroundResource(R.drawable.bg_dialog);
+        Ui.applyDialogBg(shell);
         shell.setClipToOutline(true);
         shell.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override
@@ -14453,7 +14735,7 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(cardPad, cardPad, cardPad, Ui.dp(this, 4));
-        card.setBackgroundResource(R.drawable.bg_dialog);
+        Ui.applyDialogBg(card);
 
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.FIT_XY);
@@ -16762,7 +17044,7 @@ public class FreezeListActivity extends BaseActivity {
             String leftLabel, Runnable leftAction, String[] labels, final Runnable[] actions) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackgroundResource(R.drawable.bg_dialog);
+        Ui.applyDialogBg(card);
         int pad = Ui.dp(this, 16);
         card.setPadding(pad, Ui.dp(this, 14), pad, Ui.dp(this, 8));
         card.addView(Ui.text(this, title, 15, Ui.TEXT_PRIMARY, true));
@@ -16932,6 +17214,9 @@ public class FreezeListActivity extends BaseActivity {
         if (mode == PrivShell.Mode.SHIZUKU) {
             return "Shizuku";
         }
+        if (DhizukuGate.installed(this) && DhizukuGate.authorized(this)) {
+            return "Dhizuku";
+        }
         return "未激活";
     }
 
@@ -16945,7 +17230,21 @@ public class FreezeListActivity extends BaseActivity {
             toast("已通过 Shizuku 执行");
             return;
         }
+        if (DhizukuGate.installed(this) && DhizukuGate.authorized(this)) {
+            toast("已通过 Dhizuku 执行（仅暂停）");
+            return;
+        }
         if (!ShizukuGate.installed(this)) {
+            if (DhizukuGate.installed(this)) {
+                DhizukuGate.requestAnyway(() -> {
+                    PrivShell.reset();
+                    IO.execute(() -> {
+                        PrivShell.mode();
+                        main.post(refresh);
+                    });
+                });
+                return;
+            }
             showPrivilegeMissingDialog();
             return;
         }
@@ -16991,7 +17290,7 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView message = new TextView(this);
-        message.setText("请在Shizuku或root授权凚后，强制停止凚，再打开凚，即可激活，如未激活成功，请再次检查授权状态。"
+        message.setText("请在Shizuku、Dhizuku或root授权凚后，强制停止凚，再打开凚，即可激活，如未激活成功，请再次检查授权状态。"
                 + (extra == null ? "" : "\n" + extra));
         message.setTextSize(11);
         message.setLineSpacing(Ui.dp(this, 2), 1f);
@@ -17028,9 +17327,11 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
             // Shizuku 装着且在运行时，先补一次授权请求（弹「要允许凚使用 Shizuku 吗？」），
-            // 否则光重测永远不会通过
+            // 否则光重测永远不会通过；Shizuku 不可用时改试 Dhizuku
             if (ShizukuGate.available(this)) {
                 ShizukuGate.requestAnyway(recheck);
+            } else if (DhizukuGate.available(this)) {
+                DhizukuGate.requestAnyway(recheck);
             } else {
                 recheck.run();
             }
@@ -17078,28 +17379,51 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 启动检查：有 root 直接静默通过。
-     * 没有 root 时，只要 Shizuku 装着且在运行，就主动请求一次授权：
-     * Shizuku 的「应用管理」只收录请求过权限的应用，不请求就永远不在列表里；
-     * 未授权时这次请求会弹出「要允许凚使用 Shizuku 吗？」，
-     * 已授权时直接回调、不弹窗。用户允许后直接可用，拒绝或没装才弹未授权提示。
+     * 启动检查，通道顺序：root → Shizuku → Dhizuku。
+     * 1. 有 root 直接静默通过；
+     * 2. 没有 root 时优先 Shizuku：Shizuku 已激活就主动请求一次授权
+     *    （已在 Shizuku 应用里授权过的直接回调、不弹窗）；
+     * 3. Shizuku 拿不到（未激活、或之前拒绝过且 Dhizuku 已授权）才走 Dhizuku；
+     *    用户拒绝过 Shizuku、但 Dhizuku 还没授权时，下次启动仍可继续弹 Shizuku 授权；
+     * 4. 都拿不到才弹未授权提示。
      * attempt 用于 Shizuku 刚开机还没连上 binder 时再等一轮。
      */
     private void checkPrivilegeOnStart(int attempt) {
         IO.execute(() -> {
             PrivShell.Mode mode = PrivShell.mode();
-            if (mode == PrivShell.Mode.ROOT) {
+            if (mode == PrivShell.Mode.ROOT || mode == PrivShell.Mode.SHIZUKU) {
                 return;
             }
-            if (ShizukuGate.available(this)) {
-                if (shizukuAutoAsked) {
-                    if (mode == PrivShell.Mode.NONE) {
-                        main.post(this::showPrivilegeMissingDialog);
-                    }
+            boolean dhizukuAuthorized = DhizukuGate.authorized(this);
+            // 拒绝过 Shizuku 且 Dhizuku 已经授权：不再弹 Shizuku 授权
+            boolean shizukuBlocked = dhizukuAuthorized && ShizukuGate.declined();
+            if (!shizukuBlocked && !shizukuAutoAsked) {
+                // Shizuku 被冻结（暂停）时先解冻，否则请求授权会把 Shizuku 拉起来，
+                // 被系统的暂停策略拦成「已被工作政策禁用」
+                if (SuspendSupport.cached(this).contains(ShizukuGate.PKG)
+                        || Boolean.TRUE.equals(SuspendSupport.suspendedOne(ShizukuGate.PKG))) {
+                    SuspendSupport.unsuspend(ShizukuGate.PKG);
+                }
+                if (ShizukuGate.available(this)) {
+                    shizukuAutoAsked = true;
+                    main.post(() -> ShizukuGate.requestAnyway(() -> {
+                        if (ShizukuGate.authorized()) {
+                            recheckPrivilegeAsync(true, false, this::showPrivilegeMissingDialog);
+                        } else {
+                            // 拒绝了 Shizuku：按顺序转 Dhizuku
+                            checkPrivilegeOnStart(attempt);
+                        }
+                    }));
                     return;
                 }
-                shizukuAutoAsked = true;
-                main.post(() -> ShizukuGate.requestAnyway(() ->
+            }
+            // Shizuku 没拿到：到 Dhizuku
+            if (dhizukuAuthorized) {
+                return;
+            }
+            if (DhizukuGate.available(this) && !dhizukuAutoAsked) {
+                dhizukuAutoAsked = true;
+                main.post(() -> DhizukuGate.requestAnyway(() ->
                         recheckPrivilegeAsync(true, false, this::showPrivilegeMissingDialog)));
                 return;
             }
@@ -17121,8 +17445,10 @@ public class FreezeListActivity extends BaseActivity {
                                        Runnable onStillNone) {
         IO.execute(() -> {
             PrivShell.Mode mode = PrivShell.mode(force);
+            // Dhizuku 不提供 shell，mode 仍是 NONE，但授权后照样可用
+            boolean dhizuku = mode == PrivShell.Mode.NONE && DhizukuGate.only(this);
             main.post(() -> {
-                if (mode != PrivShell.Mode.NONE) {
+                if (mode != PrivShell.Mode.NONE || dhizuku) {
                     if (dismissWhenGranted && privDialog != null && privDialog.isShowing()) {
                         privDialog.dismiss();
                     }
@@ -17214,6 +17540,7 @@ public class FreezeListActivity extends BaseActivity {
             count.setText((freeze ? "正在冻结 " : "正在解冻 ") + targets.size() + " 个应用…");
         }
         IO.execute(() -> {
+            final boolean dhizuku = DhizukuGate.only(this);
             // 只开一次 su、一条脚本跑完全部包；处理完统一回读一次状态
             long startedAt = System.currentTimeMillis();
             Map<String, String> outputs = new HashMap<>();
@@ -17224,15 +17551,23 @@ public class FreezeListActivity extends BaseActivity {
                 if (it.userId == 0) zeroKeys.add(it.pkg);
             }
             if (!zeroKeys.isEmpty()) {
-                if (freeze && keepLauncherIcon) {
-                    // 勾选「留桌面图标」：整批改走暂停通道，不执行 pm disable-user，图标才不会被摘掉
+                if (freeze && (keepLauncherIcon || dhizuku)) {
+                    // 勾选「留桌面图标」或 Dhizuku-only：整批改走暂停通道，不执行 pm disable-user，图标才不会被摘掉
                     outputs.putAll(execSuspendBatch(zeroKeys));
+                } else if (!freeze && dhizuku) {
+                    // Dhizuku-only 解冻：逐包走 DPM 恢复暂停（DO 只作用 user 0）
+                    for (String key : zeroKeys) {
+                        PrivShell.Result u = SuspendSupport.unsuspend(key);
+                        outputs.put(key, u == null || u.out == null ? "" : u.out);
+                    }
+                    recordDiagOp("dhizuku:setPackagesSuspended",
+                            "setPackagesSuspended(*, false) × " + zeroKeys.size(), null);
                 } else {
                     outputs.putAll(execPmBatch(zeroKeys, freeze));
                     if (freeze) {
                         // 只对被 ROM 拦住停用的包（两类固定文案）降级暂停，其余包行为不变
                         for (String key : zeroKeys) {
-                            if (SuspendSupport.romBlocked(outputs.get(key))) {
+                            if (SuspendSupport.romBlocked(outputs.get(key)) || dhizuku) {
                                 blocked.add(key);
                             }
                         }
@@ -17300,9 +17635,9 @@ public class FreezeListActivity extends BaseActivity {
                 if (it.userId != 0) {
                     // 分身没有主用户禁用列表可用，按该条命令的输出判定
                     ok = isPmOkText(out);
-                } else if (truth != null) {
+                } else if (truth != null || dhizuku) {
                     String name = packagePart(key);
-                    boolean dis = truth.contains(name);
+                    boolean dis = truth != null && truth.contains(name);
                     // 暂停态与停用态等价：冻结命中任一即成功，解冻必须两者都退出
                     ok = freeze ? (dis || suspendedTruth.contains(name))
                             : (!dis && !suspendedTruth.contains(name));
@@ -17377,6 +17712,16 @@ public class FreezeListActivity extends BaseActivity {
      */
     private Map<String, String> execSuspendBatch(List<String> pkgs) {
         Map<String, String> result = new HashMap<>();
+        if (DhizukuGate.only(this)) {
+            // Dhizuku-only：逐包走 DPM 暂停（DO 只作用 user 0），无 shell 输出，成败按真值复核
+            for (String pkg : pkgs) {
+                PrivShell.Result r = SuspendSupport.suspend(this, packagePart(pkg), labelOf(pkg));
+                result.put(pkg, r == null || r.out == null ? "" : r.out);
+            }
+            recordDiagOp("dhizuku:setPackagesSuspended",
+                    "setPackagesSuspended(*, true) × " + pkgs.size(), null);
+            return result;
+        }
         List<String> pending = new ArrayList<>();
         for (String pkg : pkgs) {
             String name = packagePart(pkg);
@@ -17568,12 +17913,24 @@ public class FreezeListActivity extends BaseActivity {
         return null;
     }
 
+    /** 诊断通道名：实际走 Dhizuku 暂停通道时记 "dhizuku:setPackagesSuspended"。 */
+    private String suspendDiagChannel(String normal) {
+        return DhizukuGate.only(this) ? "dhizuku:setPackagesSuspended" : normal;
+    }
+
     /** 执行 pm，返回完整结果（含退出码与是否超时），成败不在这里判。 */
     private PrivShell.Result execPm(String pkg, boolean freeze) {
         return execPm(pkg, 0, freeze);
     }
 
     private PrivShell.Result execPm(String pkg, int userId, boolean freeze) {
+        // Dhizuku-only 解冻：走 DPM 恢复暂停（DO 只作用 user 0）；冻结走降级暂停链路，不进这里
+        if (!freeze && userId == 0 && DhizukuGate.only(this)) {
+            PrivShell.Result r = SuspendSupport.unsuspend(pkg);
+            recordDiagOp("dhizuku:setPackagesSuspended",
+                    "setPackagesSuspended(" + packagePart(pkg) + ", false)", r);
+            return r;
+        }
         // 主用户与分身各自独立：冻结主应用不会连带分身，双开仍可单独打开/冻结
         String cmd = pmCommand(pkg, userId, freeze);
         PrivShell.Result r = PrivShell.exec(cmd, 30);
@@ -17668,6 +18025,11 @@ public class FreezeListActivity extends BaseActivity {
         String pkg = packagePart(pkgOrKey);
         Set<String> truth = disabledPackages();
         if (truth == null) {
+            if (DhizukuGate.only(this)) {
+                // Dhizuku-only：冻结语义是暂停，真值看 FLAG_SUSPENDED
+                Boolean s = SuspendSupport.suspendedOne(pkg);
+                return s == null ? isPmOk(r) : (freeze ? s : !s);
+            }
             return isPmOk(r);
         }
         if (freeze) {

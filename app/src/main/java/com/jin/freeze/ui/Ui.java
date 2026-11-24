@@ -359,7 +359,7 @@ public final class Ui {
             return;
         }
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        root.setBackgroundResource(R.drawable.bg_dialog);
+        applyDialogBg(root);
         final int radius = promptRadius(root.getContext());
         root.setOutlineProvider(new ViewOutlineProvider() {
             @Override
@@ -370,6 +370,218 @@ public final class Ui {
         root.setClipToOutline(true);
         w.setLayout(widthPx, heightPx);
         autoHideSettings(dialog);
+    }
+
+    /**
+     * 「同步全局」壁纸底：没开同步全局或没设壁纸时返回 null，调用方回落默认 bg_dialog。
+     */
+    public static android.graphics.drawable.Drawable globalWallpaperBg(Context c) {
+        android.graphics.Bitmap bmp = WallpaperSource.globalBitmap(c);
+        if (bmp == null) {
+            return null;
+        }
+        return wallpaperWithScrim(bmp, WallpaperSource.globalBrightness(c));
+    }
+
+    /**
+     * 全应用统一的一套壁纸底：明暗度 0–100 叠黑（100 = 原图），
+     * 100–200 叠白提亮（200 = 全白）；出厂 100 就是原图亮度。
+     */
+    public static android.graphics.drawable.Drawable wallpaperWithScrim(android.graphics.Bitmap bmp, int brightPct) {
+        int b = Math.max(0, Math.min(200, brightPct));
+        int overlay;
+        if (b <= 100) {
+            overlay = Math.round(255f * (100 - b) / 100f) << 24;
+        } else {
+            overlay = (Math.round(255f * (b - 100) / 100f) << 24) | 0x00FFFFFF;
+        }
+        return new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{
+                new WallpaperDrawable(bmp, 0),
+                new ColorDrawable(overlay)});
+    }
+
+    /**
+     * 壁纸底上的正文色：按「壁纸调过明暗度后的实际亮度」自动选白字或黑字，
+     * 亮壁纸用黑字、暗壁纸用白字，避免高亮壁纸上白字看不见。
+     */
+    public static int wallpaperFg(android.graphics.Bitmap bmp, int brightPct) {
+        return wallpaperDark(bmp, brightPct) ? Color.WHITE : 0xFF1A1A1A;
+    }
+
+    /** 壁纸底上的次要文字色：与正文同一套明暗判断，透明度略低。 */
+    public static int wallpaperFgSecondary(android.graphics.Bitmap bmp, int brightPct) {
+        return wallpaperDark(bmp, brightPct) ? 0xCCFFFFFF : 0x991A1A1A;
+    }
+
+    /** 壁纸底上的分割线色：跟着正文色一起切换。 */
+    public static int wallpaperDivider(android.graphics.Bitmap bmp, int brightPct) {
+        return wallpaperDark(bmp, brightPct) ? 0x33FFFFFF : 0x1F000000;
+    }
+
+    /**
+     * 壁纸调过明暗度后是否偏暗：12×12 网格采样取平均相对亮度，
+     * 低于 0.30 视为暗底用白字，否则用黑字。
+     */
+    public static boolean wallpaperDark(android.graphics.Bitmap bmp, int brightPct) {
+        if (bmp == null || bmp.isRecycled()) {
+            return true;
+        }
+        int w = bmp.getWidth();
+        int h = bmp.getHeight();
+        int stepX = Math.max(1, w / 12);
+        int stepY = Math.max(1, h / 12);
+        double sum = 0;
+        int n = 0;
+        for (int y = stepY / 2; y < h; y += stepY) {
+            for (int x = stepX / 2; x < w; x += stepX) {
+                int p = bmp.getPixel(x, y);
+                sum += 0.2126 * linear(((p >> 16) & 0xff) / 255.0)
+                        + 0.7152 * linear(((p >> 8) & 0xff) / 255.0)
+                        + 0.0722 * linear((p & 0xff) / 255.0);
+                n++;
+            }
+        }
+        if (n == 0) {
+            return true;
+        }
+        // 0–100 压黑只剩 b% 亮度；100–200 往白色方向提亮
+        int b = Math.max(0, Math.min(200, brightPct));
+        double l = sum / n;
+        if (b <= 100) {
+            l = l * b / 100.0;
+        } else {
+            l = l + (1 - l) * (b - 100) / 100.0;
+        }
+        return l < 0.30;
+    }
+
+    /** sRGB 分量转线性亮度（相对亮度公式用）。 */
+    private static double linear(double v) {
+        return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+
+    /**
+     * 弹窗/面板底板：开了「同步全局」就用壁纸做底，否则默认 bg_dialog。
+     * 壁纸底不是圆角 drawable，按 bg_dialog 同款圆角裁切，换底后保持原有圆角。
+     */
+    public static void applyDialogBg(View v) {
+        android.graphics.drawable.Drawable wp = globalWallpaperBg(v.getContext());
+        if (wp != null) {
+            v.setBackground(wp);
+            final int radius = promptRadius(v.getContext());
+            v.setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View view, Outline outline) {
+                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
+                }
+            });
+            v.setClipToOutline(true);
+        } else {
+            v.setBackgroundResource(R.drawable.bg_dialog);
+        }
+        // 分组展开、动态重建都在布局之后发生：每次布局完都校一遍字色（幂等，只在颜色变化时动）
+        if (v.getTag(TAG_TINT_HOOKED) == null) {
+            v.setTag(TAG_TINT_HOOKED, Boolean.TRUE);
+            v.getViewTreeObserver().addOnGlobalLayoutListener(() -> tintTree(v));
+        }
+        v.post(() -> tintTree(v));
+    }
+
+    /** 记录 TextView 原始文字色，壁纸关掉时按原样还原。 */
+    private static final int TAG_ORIG_TEXT_COLOR = 0x0A1B2C40;
+    /** 布局监听只挂一次。 */
+    private static final int TAG_TINT_HOOKED = 0x0A1B2C42;
+    /** 图标原始 tint，壁纸关掉时还原。 */
+    private static final int TAG_ORIG_TINT = 0x0A1B2C43;
+
+    /** 普通页面（选择应用等）：开了同步全局时按壁纸明暗统一文字/图标色。 */
+    public static void tintPage(View root) {
+        tintTree(root);
+    }
+
+    /** 一次取好壁纸与明暗度，整棵树共用。 */
+    private static void tintTree(View root) {
+        Context c = root.getContext();
+        android.graphics.Bitmap bmp = WallpaperSource.globalBitmap(c);
+        tintForWallpaper(root, c, bmp, WallpaperSource.globalBrightness(c));
+    }
+
+    /**
+     * 按壁纸明暗统一切换正文/次要文字色（只换主题主/次文字色，蓝色等的强调色保持原样）；
+     * 没有壁纸底时还原成原始色。
+     */
+    private static void tintForWallpaper(View v, Context c, android.graphics.Bitmap bmp, int dim) {
+        if (v instanceof TextView) {
+            TextView tv = (TextView) v;
+            Object saved = tv.getTag(TAG_ORIG_TEXT_COLOR);
+            if (!(saved instanceof Integer)) {
+                saved = tv.getCurrentTextColor();
+                tv.setTag(TAG_ORIG_TEXT_COLOR, saved);
+            }
+            int orig = (Integer) saved;
+            int target = orig;
+            if (bmp != null) {
+                if (orig == color(c, R.color.text_primary)) {
+                    target = wallpaperFg(bmp, dim);
+                } else if (orig == color(c, R.color.text_secondary)) {
+                    target = wallpaperFgSecondary(bmp, dim);
+                }
+            }
+            if (tv.getCurrentTextColor() != target) {
+                tv.setTextColor(target);
+            }
+        } else if (v instanceof ImageView) {
+            // 左侧小图标这类用 tint 上色的图标，也一起跟随壁纸
+            ImageView iv = (ImageView) v;
+            android.content.res.ColorStateList tint = iv.getImageTintList();
+            if (tint != null) {
+                int cur = tint.getDefaultColor();
+                Object savedTint = iv.getTag(TAG_ORIG_TINT);
+                if (!(savedTint instanceof Integer)
+                        && (cur == color(c, R.color.text_primary)
+                        || cur == color(c, R.color.text_secondary))) {
+                    iv.setTag(TAG_ORIG_TINT, cur);
+                    savedTint = cur;
+                }
+                if (savedTint instanceof Integer) {
+                    int orig = (Integer) savedTint;
+                    int target = orig;
+                    if (bmp != null) {
+                        if (orig == color(c, R.color.text_primary)) {
+                            target = wallpaperFg(bmp, dim);
+                        } else if (orig == color(c, R.color.text_secondary)) {
+                            target = wallpaperFgSecondary(bmp, dim);
+                        }
+                    }
+                    if (cur != target) {
+                        iv.setImageTintList(android.content.res.ColorStateList.valueOf(target));
+                    }
+                }
+            }
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                tintForWallpaper(g.getChildAt(i), c, bmp, dim);
+            }
+        }
+    }
+
+    /**
+     * 富文本（加粗标题、更新日志版本号等）在壁纸底上的主色：
+     * 开了同步全局就按壁纸明暗自动取白/黑，否则用主题主色；构建富文本时直接用它。
+     */
+    public static int wpPrimary(Context c) {
+        android.graphics.Bitmap bmp = WallpaperSource.globalBitmap(c);
+        return bmp == null ? color(c, R.color.text_primary)
+                : wallpaperFg(bmp, WallpaperSource.globalBrightness(c));
+    }
+
+    /** 富文本在壁纸底上的次要色：与主色同一套明暗判断。 */
+    public static int wpSecondary(Context c) {
+        android.graphics.Bitmap bmp = WallpaperSource.globalBitmap(c);
+        return bmp == null ? color(c, R.color.text_secondary)
+                : wallpaperFgSecondary(bmp, WallpaperSource.globalBrightness(c));
     }
 
     /** 弹窗卡片是否已套过阴影壳（避免重复 wrap）。 */
@@ -475,7 +687,7 @@ public final class Ui {
                                                       CharSequence message, String button) {
         LinearLayout card = new LinearLayout(c);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackgroundResource(R.drawable.bg_dialog);
+        applyDialogBg(card);
         int pad = dp(c, 16);
         card.setPadding(pad, dp(c, 14), pad, dp(c, 6));
         card.addView(text(c, title, 14, TEXT_PRIMARY, true));
@@ -539,7 +751,7 @@ public final class Ui {
         if (panel == null) {
             return;
         }
-        panel.setBackgroundResource(R.drawable.bg_dialog);
+        applyDialogBg(panel);
         final int radius = promptRadius(panel.getContext());
         panel.setOutlineProvider(new ViewOutlineProvider() {
             @Override

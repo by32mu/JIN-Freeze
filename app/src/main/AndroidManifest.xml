@@ -2,6 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Dhizuku 客户端接口：API 权限与包可见性（原 Dhizuku-API AAR manifest 的并入内容） -->
+    <uses-permission android:name="com.rosan.dhizuku.permission.API" />
+    <queries>
+        <package android:name="com.rosan.dhizuku" />
+        <provider android:authorities="com.rosan.dhizuku.server.provider" />
+        <intent>
+            <action android:name="com.rosan.dhizuku.server.provider" />
+        </intent>
+        <intent>
+            <action android:name="com.rosan.dhizuku.action.request.permission" />
+        </intent>
+    </queries>
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.REORDER_TASKS" />
     <!-- 26+ 走 ShortcutManager 固定快捷方式；旧版桌面才需要这个广播权限（与 Hail 一致） -->
