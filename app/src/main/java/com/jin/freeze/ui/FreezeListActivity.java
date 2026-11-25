@@ -59,8 +59,10 @@ import com.jin.freeze.core.AppIconCache;
 import com.jin.freeze.core.DhizukuGate;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.Pinyin;
+import com.jin.freeze.core.PrivRequest;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.ShizukuGate;
+import com.jin.freeze.core.ShizukuLite;
 import com.jin.freeze.core.SuspendDialog;
 import com.jin.freeze.core.SuspendSupport;
 import com.jin.freeze.core.SwipeFreeze;
@@ -229,6 +231,12 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_SETTINGS_TAB_COLLAPSED = "settings_tab_collapsed";
     private static final String KEY_SETTINGS_PERSONAL_COLLAPSED = "settings_personal_collapsed";
     private static final String KEY_SETTINGS_LSP_COLLAPSED = "settings_lsp_collapsed";
+    /** 「Shizuku 专区」这一组的折叠状态。 */
+    private static final String KEY_SETTINGS_SZ_COLLAPSED = "settings_sz_collapsed";
+    /** 设备是否装有 LSPosed 框架（只在检测到时显示「专属LSPosed」这一组）。 */
+    private static final String KEY_LSP_FRAMEWORK = "lsp_framework_present";
+    /** 本次开机的 LSPosed 检测结果；null = 还没检测完，回退到偏好里的值。 */
+    private volatile Boolean lspDetected;
     private static final String KEY_SETTINGS_PAIR_COLLAPSED = "settings_pair_collapsed";
     private static final String KEY_SETTINGS_WL_COLLAPSED = "settings_wl_collapsed";
     private static final String KEY_SETTINGS_SP_COLLAPSED = "settings_sp_collapsed";
@@ -926,6 +934,14 @@ public class FreezeListActivity extends BaseActivity {
                 && !prefs().getBoolean(KEY_PRESTARTUP_FIXED, false);
         // 先让 ShizukuGate 拿到 Context：权限探测要用它读「用户点过允许」的记录
         ShizukuGate.installed(this);
+        // 后台检测是否装有 LSPosed 框架：只有检测到，设置页才显示「专属LSPosed」这一组
+        IO.execute(() -> {
+            boolean detected = detectLspFramework();
+            lspDetected = detected;
+            prefs().edit().putBoolean(KEY_LSP_FRAMEWORK, detected).apply();
+        });
+        // Shizuku 专区的划卡/锁屏冻结：开关开着就自动把 shell 服务拉起来
+        ShizukuLite.autoStart(this);
         // 列表选中项不再有高亮框，清掉历史遗留的档位键
         prefs().edit().remove("accent_surface").remove("panel_accent_surface").apply();
         // 名单类数据都在应用内部目录（SharedPreferences），升级安装不会丢，不再做外部自动备份/恢复
@@ -4254,6 +4270,8 @@ public class FreezeListActivity extends BaseActivity {
                 + "·激活后重启，无需常驻后台；\n"
                 + "·划卡冻结:滑动最近任务卡片冻结；\n"
                 + "·锁屏定时冻结:锁屏计时，亮屏重计；\n"
+                + "·置灰图标后台即停:保桌面图标模式下，进入后台立马暂停，可以直接打开置灰图标；\n"
+                + "·静默打开置灰图标:可以直接打开保桌面图标下置灰的应用；\n"
                 + "·消除启动白底:HyperOS4 专属，修复透底冷启动白闪，优化半屏动画。";
         showHintCard(text, "lsp", titleView, "专属LSPosed");
     }
@@ -4636,6 +4654,9 @@ public class FreezeListActivity extends BaseActivity {
     private void applyKeepLauncherIcon(boolean on) {
         keepLauncherIcon = on;
         prefs().edit().putBoolean(KEY_KEEP_LAUNCHER_ICON, on).apply();
+        // 冻结方式变了要立刻下发：LSPosed 配置 + Shizuku/守护的 suspend 字段
+        SwipeFreeze.syncAsync(this);
+        ShizukuLite.syncAsync(this);
         if (layoutKeepIconEntry != null) {
             layoutKeepIconEntry.setText(keepIconEntryText());
         }
@@ -5096,8 +5117,9 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 渲染后复核暂停真值：列表首屏不阻塞，后台逐个 dumpsys 查缓存里的包，
-     * 只在真值与缓存不一致（且真值非空，避免一次读失败把缓存清空）时回写并重刷一次。
+     * 渲染后复核暂停真值：列表首屏不阻塞，后台逐个 dumpsys 查缓存里的包。
+     * 真值与缓存不一致就回写并重刷一次；真值为空但查询确实成功时也要回写，
+     * 否则「在别处已经解暂停」（桌面静默打开、pm unsuspend）会让列表一直显示暂停标识。
      */
     private void verifySuspendedAsync() {
         if (skipSuspendVerify > 0) {
@@ -5109,9 +5131,10 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         IO.execute(() -> {
-            Set<String> truth = SuspendSupport.suspendedAmong(cached);
+            Set<String> truth = SuspendSupport.suspendedTruth(cached);
             suspendVerifying.set(false);
-            if (truth.isEmpty() || truth.equals(cached)) {
+            // null = 这次没读到，保留缓存，等下一次刷新再核
+            if (truth == null || truth.equals(cached)) {
                 return;
             }
             SuspendSupport.replace(this, truth);
@@ -6556,6 +6579,10 @@ public class FreezeListActivity extends BaseActivity {
                 reload();
                 toast("已冻结 " + doneN + " 个应用"
                         + (doneN < targetCount ? "，失败 " + (targetCount - doneN) + " 个" : ""));
+                if (doneN < targetCount) {
+                    // 有失败项：补一次权限申请（已有通道时静默）
+                    maybeRequestPrivAfterFail();
+                }
             });
         });
     }
@@ -7344,8 +7371,19 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private void showPmError(String title, Item it, String reason) {
+        // 冻结/解冻失败时顺手补一次权限申请（已有通道时不会弹任何东西）
+        maybeRequestPrivAfterFail();
         Ui.smallDialog(this, title, it.label + "：" + reason, "知道了");
         reload();
+    }
+
+    /** 冻结/解冻失败后按 root → Shizuku → Dhizuku 补申请一次权限；已有通道时静默跳过。 */
+    private void maybeRequestPrivAfterFail() {
+        PrivRequest.ensure(this, got -> {
+            if (got && privTitleRefresh != null) {
+                privTitleRefresh.run();
+            }
+        });
     }
 
     /** 在其他应用中配置：走系统应用详情页，失败落系统设置首页并提示。 */
@@ -7897,11 +7935,11 @@ public class FreezeListActivity extends BaseActivity {
         row.addView(enableBox, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // 子项：只有开关勾选后才出现；缩进 + 小圆点，表明挂在「划卡冻结」节点下
+        // 子项：只有开关勾选后才出现；圆点与开关方块左对齐（不再额外缩进）
         final LinearLayout child = new LinearLayout(this);
         child.setOrientation(LinearLayout.HORIZONTAL);
         child.setGravity(Gravity.CENTER_VERTICAL);
-        child.setPadding(Ui.dp(this, 32), 0, 0, 0);
+        child.setPadding(0, 0, 0, 0);
 
         View dot = new View(this);
         android.graphics.drawable.GradientDrawable dotBg = new android.graphics.drawable.GradientDrawable();
@@ -8046,7 +8084,7 @@ public class FreezeListActivity extends BaseActivity {
 
         final LinearLayout child = new LinearLayout(this);
         child.setOrientation(LinearLayout.VERTICAL);
-        child.setPadding(Ui.dp(this, 32), 0, 0, Ui.dp(this, 4));
+        child.setPadding(0, 0, 0, Ui.dp(this, 4));
 
         // 标签过滤：样式与划卡冻结的「按标签冻结」行一致，放在延时滑块上面
         LinearLayout tagRow = new LinearLayout(this);
@@ -8142,6 +8180,8 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         child.addView(delayBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 圆点按滑块的内部留白右移，视觉上和滑块轨道左端对齐（滑块本身保留留白，小球不会被裁一半）
+        tagRow.setPadding(delayBar.getPaddingLeft(), 0, 0, 0);
         child.setVisibility(enableBox.isChecked() ? View.VISIBLE : View.GONE);
 
         enableBox.setOnCheckedChangeListener((btn, on) -> {
@@ -8163,6 +8203,222 @@ public class FreezeListActivity extends BaseActivity {
                 }
             });
         });
+    }
+
+    /**
+     * 专属shizuku：Shizuku UserService（shell 进程）通道的划卡冻结与锁屏冻结。
+     * 只在凚已拿到 Shizuku 授权时显示；有 root 且 LSPosed 已接管时整组置灰。
+     */
+    private void addShizukuZoneSection(LinearLayout box) {
+        final TextView status = new TextView(this);
+        status.setTextSize(11);
+        status.setTextColor(getColor(R.color.text_secondary));
+        status.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 4));
+        status.setText("· 服务：读取中…");
+        box.addView(status);
+
+        // 划卡冻结
+        final CheckBox swipeBox = new CheckBox(this);
+        swipeBox.setText("划卡冻结");
+        swipeBox.setTextSize(11);
+        swipeBox.setTextColor(getColor(R.color.text_secondary));
+        swipeBox.setMinimumHeight(Ui.dp(this, 32));
+        swipeBox.setChecked(ShizukuLite.enabled(this));
+
+        final LinearLayout swipeChild = new LinearLayout(this);
+        swipeChild.setOrientation(LinearLayout.VERTICAL);
+        swipeChild.setPadding(0, 0, 0, Ui.dp(this, 2));
+        final TextView swipeSummary = new TextView(this);
+        swipeSummary.setTextSize(11);
+        swipeSummary.setTextColor(getColor(R.color.text_secondary));
+        swipeSummary.setSingleLine(true);
+        swipeSummary.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        swipeSummary.setText(tagSummaryText());
+        swipeChild.addView(tagRowView(swipeSummary, false));
+        swipeChild.setVisibility(swipeBox.isChecked() ? View.VISIBLE : View.GONE);
+
+        // 锁屏冻结
+        final CheckBox lockBox = new CheckBox(this);
+        lockBox.setText("锁屏冻结");
+        lockBox.setTextSize(11);
+        lockBox.setTextColor(getColor(R.color.text_secondary));
+        lockBox.setMinimumHeight(Ui.dp(this, 32));
+        lockBox.setChecked(ShizukuLite.lockEnabled(this));
+
+        final LinearLayout lockChild = new LinearLayout(this);
+        lockChild.setOrientation(LinearLayout.VERTICAL);
+        lockChild.setPadding(0, 0, 0, Ui.dp(this, 4));
+        final TextView lockSummary = new TextView(this);
+        lockSummary.setTextSize(11);
+        lockSummary.setTextColor(getColor(R.color.text_secondary));
+        lockSummary.setSingleLine(true);
+        lockSummary.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        lockSummary.setText(lockTagSummaryText());
+        LinearLayout lockTagRow = tagRowView(lockSummary, true);
+        lockChild.addView(lockTagRow);
+
+        LinearLayout delayRow = new LinearLayout(this);
+        delayRow.setOrientation(LinearLayout.HORIZONTAL);
+        delayRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView delayLabel = new TextView(this);
+        delayLabel.setText("锁屏后延时");
+        delayLabel.setTextSize(11);
+        delayLabel.setTextColor(getColor(R.color.text_primary));
+        delayRow.addView(delayLabel);
+        final TextView delayValue = new TextView(this);
+        delayValue.setTextSize(11);
+        delayValue.setTextColor(getColor(R.color.text_secondary));
+        delayValue.setGravity(Gravity.END);
+        delayRow.addView(delayValue, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final SeekBar delayBar = new SeekBar(this);
+        delayBar.setMax(SwipeFreeze.LOCK_DELAY_MAX);
+        delayBar.setProgress(ShizukuLite.lockDelaySeconds(this));
+        delayValue.setText(lockDelayLabel(delayBar.getProgress()));
+        delayBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                delayValue.setText(lockDelayLabel(p));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+                ShizukuLite.setLockDelaySeconds(FreezeListActivity.this, sb.getProgress());
+                ShizukuLite.syncAsync(FreezeListActivity.this);
+            }
+        });
+        lockChild.addView(delayRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        lockChild.addView(delayBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 圆点按滑块内部留白右移，视觉上与滑块轨道左端对齐（滑块保留留白，小球不会被裁）
+        lockTagRow.setPadding(delayBar.getPaddingLeft(), 0, 0, 0);
+        lockChild.setVisibility(lockBox.isChecked() ? View.VISIBLE : View.GONE);
+
+        swipeBox.setOnCheckedChangeListener((b, on) -> {
+            ShizukuLite.setEnabled(this, on);
+            swipeChild.setVisibility(on ? View.VISIBLE : View.GONE);
+            ShizukuLite.syncAsync(this);
+            status.postDelayed(() -> refreshShizukuStatus(status), 600);
+        });
+        lockBox.setOnCheckedChangeListener((b, on) -> {
+            ShizukuLite.setLockEnabled(this, on);
+            lockChild.setVisibility(on ? View.VISIBLE : View.GONE);
+            ShizukuLite.syncAsync(this);
+            status.postDelayed(() -> refreshShizukuStatus(status), 600);
+        });
+
+        box.addView(swipeBox);
+        box.addView(swipeChild);
+        box.addView(lockBox);
+        box.addView(lockChild);
+
+        final View[] controls = {swipeBox, swipeChild, lockBox, lockChild};
+        if (!ShizukuGate.available(this)) {
+            setShizukuZoneEnabled(controls, false);
+            status.setText("Shizuku 未运行，服务暂不可用");
+            return;
+        }
+        // 专属shizuku 与 专属LSPosed 互不排斥：Shizuku 在就正常可用
+        ShizukuLite.syncAsync(this);
+        status.postDelayed(() -> refreshShizukuStatus(status), 800);
+        // UserService 起不来时会切到 app_process 守护，启动需要几秒，多刷新两次
+        status.postDelayed(() -> refreshShizukuStatus(status), 2600);
+        status.postDelayed(() -> refreshShizukuStatus(status), 6000);
+    }
+
+    /** 未勾选任何标签时按全选处理，摘要口径与「专属LSPosed」那组一致。 */
+    private LinearLayout tagRowView(final TextView summary, final boolean forLock) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(Ui.dp(this, 40));
+
+        View dot = new View(this);
+        android.graphics.drawable.GradientDrawable dotBg =
+                new android.graphics.drawable.GradientDrawable();
+        dotBg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        dotBg.setColor(getColor(R.color.accent_surface_stroke));
+        dot.setBackground(dotBg);
+        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(
+                Ui.dp(this, 6), Ui.dp(this, 6));
+        dotLp.rightMargin = Ui.dp(this, 10);
+        row.addView(dot, dotLp);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.HORIZONTAL);
+        content.setGravity(Gravity.CENTER_VERTICAL);
+        TextView label = new TextView(this);
+        label.setText("按标签冻结");
+        label.setTextSize(11);
+        label.setTextColor(getColor(R.color.text_primary));
+        content.addView(label);
+        LinearLayout.LayoutParams summaryLp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        summaryLp.leftMargin = Ui.dp(this, 10);
+        content.addView(summary, summaryLp);
+        TextView chevron = new TextView(this);
+        chevron.setText("›");
+        chevron.setTextSize(14);
+        chevron.setTextColor(getColor(R.color.text_secondary));
+        chevron.setPadding(Ui.dp(this, 8), 0, 0, 0);
+        content.addView(chevron);
+        row.addView(content, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.setOnClickListener(v -> showTagPickerDialog(summary, forLock));
+        return row;
+    }
+
+    private void setShizukuZoneEnabled(View[] controls, boolean enabled) {
+        for (View v : controls) {
+            setEnabledDeep(v, enabled);
+        }
+    }
+
+    private static void setEnabledDeep(View v, boolean enabled) {
+        v.setEnabled(enabled);
+        v.setAlpha(enabled ? 1f : 0.45f);
+        if (v instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) v;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                setEnabledDeep(group.getChildAt(i), enabled);
+            }
+        }
+    }
+
+    /** 读一次服务自检：监听器注册情况、两套名单条数、最近事件。 */
+    private void refreshShizukuStatus(TextView status) {
+        JinApp.IO.execute(() -> {
+            String raw = ShizukuLite.statusBlocking();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (raw.startsWith("listener=已注册")) {
+                    status.setText("· 服务运行中");
+                } else if (raw.startsWith("未连接") || raw.startsWith("服务未连接")) {
+                    status.setText("· " + raw);
+                } else {
+                    status.setText("· 服务：" + raw);
+                }
+            });
+        });
+    }
+
+    /** 「专属shizuku」标题旁的说明卡片。 */
+    private void showShizukuZoneHint(TextView titleView) {
+        String text = "「专属Shizuku」\n"
+                + "· 用 Shizuku 在 shell 进程里常驻（UserService；起不来时自动改用 app_process 守护），"
+                + "不需要 root，也不依赖 LSPosed；\n"
+                + "· 划卡冻结：从最近任务划掉应用后冻结，按勾选的标签生效；\n"
+                + "· 锁屏冻结：息屏后按设定延时冻结，同样按勾选的标签生效；\n"
+                + "· 凚被冻结或退出都不影响服务，只有改设置时才需要打开凚。";
+        showHintCard(text, "sz", titleView, "专属Shizuku");
     }
 
     /** 锁屏延时文案：0 秒=立即冻结，60 秒=1分钟，70 秒=1分10秒，其余按秒。 */
@@ -8762,6 +9018,15 @@ public class FreezeListActivity extends BaseActivity {
                 final float[] downRaw = new float[2];
                 final long[] downAt = new long[2];
                 final boolean[] dragging = new boolean[2];
+                // 触发拖动时的反馈：整行浮起 + 淡蓝底 + 手柄变蓝 + 震动，明确表示「现在可以拖」
+                final android.graphics.drawable.GradientDrawable dragBg =
+                        new android.graphics.drawable.GradientDrawable();
+                dragBg.setColor(0x1F2F7BFF);
+                dragBg.setCornerRadius(Ui.dp(this, 10));
+                final ColorStateList sortTintNormal =
+                        ColorStateList.valueOf(getColor(R.color.text_secondary));
+                final ColorStateList sortTintActive =
+                        ColorStateList.valueOf(getColor(R.color.blue));
                 sortBtn.setOnTouchListener((v, ev) -> {
                     switch (ev.getActionMasked()) {
                         case android.view.MotionEvent.ACTION_DOWN:
@@ -8779,7 +9044,12 @@ public class FreezeListActivity extends BaseActivity {
                                     && (ev.getEventTime() - downAt[0] > 220
                                     || Math.abs(ev.getRawY() - downRaw[0]) > Ui.dp(this, 6))) {
                                 dragging[0] = true;
-                                row.setAlpha(0.85f);
+                                row.setAlpha(1f);
+                                row.setElevation(Ui.dp(this, 6));
+                                row.setBackground(dragBg);
+                                sortBtn.setImageTintList(sortTintActive);
+                                row.performHapticFeedback(
+                                        android.view.HapticFeedbackConstants.LONG_PRESS);
                             }
                             if (dragging[0]) {
                                 row.setTranslationY(ev.getRawY() - downRaw[0]);
@@ -8790,6 +9060,9 @@ public class FreezeListActivity extends BaseActivity {
                         case android.view.MotionEvent.ACTION_CANCEL: {
                             row.setTranslationY(0);
                             row.setAlpha(1f);
+                            row.setElevation(0);
+                            row.setBackground(null);
+                            sortBtn.setImageTintList(sortTintNormal);
                             ViewParent vpUp = v.getParent();
                             if (vpUp != null) {
                                 vpUp.requestDisallowInterceptTouchEvent(false);
@@ -8901,8 +9174,83 @@ public class FreezeListActivity extends BaseActivity {
         final LinearLayout lspHead = collapsibleHead(lspTitle, lspBody,
                 KEY_SETTINGS_LSP_COLLAPSED, null, () -> showLspHintDialog(lspTitle),
                 R.drawable.ic_qp_lsposed_official);
+        // 状态行：位置/字号与「专属shizuku」一致，模块心跳正常时显示「服务运行中」
+        final TextView lspStatus = new TextView(this);
+        lspStatus.setTextSize(11);
+        lspStatus.setTextColor(getColor(R.color.text_secondary));
+        lspStatus.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 4));
+        lspStatus.setText("· 服务：读取中…");
+        lspBody.addView(lspStatus);
         addSwipeFreezeSection(lspBody);
         addLockFreezeSection(lspBody);
+        // 置灰图标后台即停（原活体解冻/DoL）：打开时只放行这一次，回后台仍是暂停态
+        final CheckBox dolBox = new CheckBox(this);
+        dolBox.setText("置灰图标后台即停");
+        dolBox.setTextSize(11);
+        dolBox.setTextColor(getColor(R.color.text_secondary));
+        dolBox.setMinimumHeight(Ui.dp(this, 32));
+        dolBox.setChecked(SwipeFreeze.dolEnabled(this));
+        dolBox.setEnabled(false);
+        lspBody.addView(dolBox);
+        // 静默打开置灰图标：真正取消暂停，静默打开；回后台也不再自动暂停
+        final CheckBox silentBox = new CheckBox(this);
+        silentBox.setText("静默打开置灰图标");
+        silentBox.setTextSize(11);
+        silentBox.setTextColor(getColor(R.color.text_secondary));
+        silentBox.setMinimumHeight(Ui.dp(this, 32));
+        silentBox.setChecked(SwipeFreeze.silentOpenEnabled(this));
+        silentBox.setEnabled(false);
+        lspBody.addView(silentBox);
+        // 两个开关互斥：一个负责「回后台仍灰」，一个负责「打开后不再灰」，同时开等于互相抵消。
+        // 旧版本可能两个都开着，这里统一收敛成「静默打开优先」，与 hook 里的实际行为一致。
+        if (dolBox.isChecked() && silentBox.isChecked()) {
+            SwipeFreeze.setDolEnabled(this, false);
+            dolBox.setChecked(false);
+            SwipeFreeze.syncAsync(this);
+        }
+        dolBox.setOnCheckedChangeListener((b, on) -> {
+            SwipeFreeze.setDolEnabled(this, on);
+            if (on && silentBox.isChecked()) {
+                silentBox.setChecked(false);
+            } else {
+                SwipeFreeze.syncAsync(this);
+            }
+        });
+        silentBox.setOnCheckedChangeListener((b, on) -> {
+            SwipeFreeze.setSilentOpenEnabled(this, on);
+            if (on && dolBox.isChecked()) {
+                dolBox.setChecked(false);
+            } else {
+                SwipeFreeze.syncAsync(this);
+            }
+        });
+        // 与另外两个开关一致：只有 root 通道能写系统配置
+        JinApp.IO.execute(() -> {
+            boolean root = SwipeFreeze.hasRoot();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                dolBox.setEnabled(root);
+                dolBox.setAlpha(root ? 1f : 0.45f);
+                silentBox.setEnabled(root);
+                silentBox.setAlpha(root ? 1f : 0.45f);
+                if (!root) {
+                    dolBox.setChecked(false);
+                    silentBox.setChecked(false);
+                }
+            });
+        });
+        JinApp.IO.execute(() -> {
+            boolean active = SwipeFreeze.moduleActive();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                lspStatus.setText(active ? "· 服务运行中"
+                        : "· 服务未运行：需在 LSPosed 里启用凚并重启");
+            });
+        });
         // 消除启动白底：只针对 HyperOS 4 的预启动动画底板，别的 ROM 不显示
         if (isHyperOs4()) {
             addNoLaunchBgSection(lspBody);
@@ -9323,10 +9671,35 @@ public class FreezeListActivity extends BaseActivity {
         box.addView(ias, Math.max(0, box.indexOfChild(fabHead)));
         // 手势触发距离整栏放在「标签（查看说明）」上面（tabTitle 已包进 tabHead，按整块定位）
         box.addView(gestureSec, Math.max(0, box.indexOfChild(tabHead)));
-        // LSPosed 专属整块排在手势功能栏之后
-        int lspIdx = Math.max(0, box.indexOfChild(gestureSec) + 1);
-        box.addView(lspHead, lspIdx);
-        box.addView(lspBody, lspIdx + 1);
+        // LSPosed 专属整块排在手势功能栏之后；
+        // 设备上没检测到 LSPosed 框架就整组不显示（只留手势等功能）
+        if (lspFrameworkPresent()) {
+            int lspIdx = Math.max(0, box.indexOfChild(gestureSec) + 1);
+            box.addView(lspHead, lspIdx);
+            box.addView(lspBody, lspIdx + 1);
+        }
+        // 专属shizuku：凚已拿到 Shizuku 授权且 Shizuku 服务在运行时才显示
+        // （只检测到 root、或 Shizuku 没在跑，都不显示这一组）
+        if (ShizukuGate.installed(this) && ShizukuGate.authorized()
+                && ShizukuGate.available(this)) {
+            LinearLayout szBody = new LinearLayout(this);
+            szBody.setOrientation(LinearLayout.VERTICAL);
+            TextView szTitle = new TextView(this);
+            szTitle.setText(hintTitle("专属shizuku", "sz"));
+            szTitle.setTextSize(12);
+            szTitle.setTextColor(getColor(R.color.text_primary));
+            szTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
+            final LinearLayout szHead = collapsibleHead(szTitle, szBody,
+                    KEY_SETTINGS_SZ_COLLAPSED, null, () -> showShizukuZoneHint(szTitle),
+                    R.drawable.ic_qp_shizuku);
+            addShizukuZoneSection(szBody);
+            int szIdx = Math.max(0, box.indexOfChild(gestureSec) + 1);
+            if (lspFrameworkPresent()) {
+                szIdx = box.indexOfChild(lspBody) + 1;
+            }
+            box.addView(szHead, szIdx);
+            box.addView(szBody, szIdx + 1);
+        }
 
         // 自定义壁纸：作为背景层的底图，透明度/模糊仍由上面的背景滑块叠加；半屏与全屏各存各的。
         // 视图先收进 wps，最后整体插到「底部冻结按钮调节」上面
@@ -16031,6 +16404,30 @@ public class FreezeListActivity extends BaseActivity {
         main.postDelayed(onDone, 800);
     }
 
+    /**
+     * 设备上是否真的存在 LSPosed 框架：root 下能看到 LSPosed 目录/模块，或模块心跳在线才算。
+     * 只装了管理器但框架没激活不算；纯 root 设备不显示「专属LSPosed」。
+     */
+    private boolean detectLspFramework() {
+        if (PrivShell.mode() == PrivShell.Mode.ROOT) {
+            PrivShell.Result r = PrivShell.exec(
+                    "if [ -d /data/adb/lspd ] || [ -d /data/adb/modules/zygisk_lsposed ]; then echo yes; fi", 6);
+            if (r.out != null && r.out.contains("yes")) {
+                return true;
+            }
+        }
+        return SwipeFreeze.moduleActive();
+    }
+
+    /** 读本次开机后的检测结果；纯 root（没 LSPosed 框架）时为 false。 */
+    private boolean lspFrameworkPresent() {
+        Boolean cached = lspDetected;
+        if (cached != null) {
+            return cached;
+        }
+        return prefs().getBoolean(KEY_LSP_FRAMEWORK, false);
+    }
+
     /** 备份文件来源：当前备份目录 + 旧版本/用户手工放置的路径，按绝对路径去重。 */
     private List<File> collectBackupFiles() {
         List<File> files = new ArrayList<>();
@@ -17662,6 +18059,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 // 全部成功时完全静默，只靠图标灰度变化体现结果
                 if (!fails.isEmpty()) {
+                    maybeRequestPrivAfterFail();
                     StringBuilder sb = new StringBuilder();
                     sb.append("失败 ").append(fails.size()).append(" 个");
                     if (skippedFinal > 0) {
@@ -17707,8 +18105,9 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 降级通道的批量暂停：能走 SuspendDialogInfo 的逐包走它（标题/正文/按钮都可定制），
-     * 剩下的才拼成一条脚本执行，输出格式与 execPmBatch 一致。
+     * 降级通道的批量暂停：逐包走 SuspendSupport.suspend —— root 模式用 app_process CLI
+     * 带 SuspendDialogInfo（弹窗才有左下「打开应用」），Shizuku 模式走转发，
+     * 两条都不可用时它自己退回 pm suspend。
      */
     private Map<String, String> execSuspendBatch(List<String> pkgs) {
         Map<String, String> result = new HashMap<>();
@@ -17722,29 +18121,12 @@ public class FreezeListActivity extends BaseActivity {
                     "setPackagesSuspended(*, true) × " + pkgs.size(), null);
             return result;
         }
-        List<String> pending = new ArrayList<>();
         for (String pkg : pkgs) {
-            String name = packagePart(pkg);
-            if (SuspendDialog.suspend(this, name, labelOf(pkg))) {
-                result.put(pkg, "");
-            } else {
-                pending.add(pkg);
-            }
+            PrivShell.Result r = SuspendSupport.suspend(this, packagePart(pkg), labelOf(pkg));
+            result.put(pkg, r == null || r.out == null ? "" : r.out);
         }
-        if (pending.isEmpty()) {
-            return result;
-        }
-        StringBuilder script = new StringBuilder();
-        for (String pkg : pending) {
-            script.append("echo '").append(MARK).append(pkg).append("'; ")
-                    .append(SuspendSupport.suspendCommand(packagePart(pkg), labelOf(pkg)))
-                    .append(" 2>&1; ");
-        }
-        PrivShell.Result r = PrivShell.exec(script.toString(),
-                Math.max(30, 10 + pending.size() * 5));
-        result.putAll(splitMarked(r, pending));
         // 批量暂停只记一条汇总，避免 50 条流水被一次批量操作冲掉
-        recordDiagOp("批量暂停", "pm suspend × " + pending.size() + "\n" + script, r);
+        recordDiagOp("批量暂停", "setPackagesSuspended × " + pkgs.size(), null);
         return result;
     }
 
@@ -17827,6 +18209,10 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 it.frozen = false;
                 it.suspended = false;
+                // pm unsuspend 已生效：同步清掉暂停缓存，否则随后的 reload 会拿旧缓存继续显示暂停标识
+                if (it.userId == 0) {
+                    SuspendSupport.forget(this, packagePart(it.pkg));
+                }
                 keepOrderBeforeUnfreeze();
                 rebindCells();
                 launch(it);
@@ -17934,6 +18320,14 @@ public class FreezeListActivity extends BaseActivity {
         // 主用户与分身各自独立：冻结主应用不会连带分身，双开仍可单独打开/冻结
         String cmd = pmCommand(pkg, userId, freeze);
         PrivShell.Result r = PrivShell.exec(cmd, 30);
+        // pm 只能撤销 pm 自己建的暂停：JinLite 服务（shell 身份）暂停的会一直保持 true，
+        // 这里按候选 suspender 用 CLI 再撤一次，否则点开置灰应用后列表仍显示暂停
+        if (!freeze && userId == 0 && r.out != null
+                && r.out.contains("new suspended state: true")
+                && SuspendSupport.clearForeignSuspension(packagePart(pkg))) {
+            cmd = "pm enable --user 0 " + packagePart(pkg);
+            r = PrivShell.exec(cmd, 30);
+        }
         recordDiagOp("单次pm", cmd, r);
         return r;
     }
@@ -18071,7 +18465,9 @@ public class FreezeListActivity extends BaseActivity {
         }
         String low = r.out == null ? "" : r.out.toLowerCase(Locale.ROOT);
         return !low.contains("error") && !low.contains("exception")
-                && !low.contains("failure") && !low.contains("denied");
+                && !low.contains("failure") && !low.contains("denied")
+                // pm unsuspend 遇到别的 suspender 会打印 true：这不算撤销成功
+                && !low.contains("new suspended state: true");
     }
 
     /** 批量脚本按包切出来的文本兜底判定（真值读不到时才用）。 */

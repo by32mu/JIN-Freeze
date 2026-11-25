@@ -58,6 +58,11 @@
 -keep class rikka.shizuku.** { *; }
 -keep class moe.shizuku.** { *; }
 
+# ---------- Shizuku UserService / AIDL（实际跑在 shell 进程，类名不能改）----------
+-keep class com.jin.freeze.lite.** { *; }
+-keep interface com.jin.freeze.lite.** { *; }
+-keep class com.jin.freeze.core.ShizukuLite { *; }
+
 # ---------- 资源里通过 inflate 类名实例化的 View ----------
 # 本项目全部用系统控件，没有自定义 View；保留带 AttributeSet 的构造，防止后续新增被裁
 -keepclasseswithmembers class * {

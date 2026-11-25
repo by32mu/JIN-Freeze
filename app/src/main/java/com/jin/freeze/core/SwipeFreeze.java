@@ -43,6 +43,12 @@ public final class SwipeFreeze {
     public static final String KEY_LOCK_TAGS = "lock_freeze_tags";
     /** 消除启动白底（HyperOS 4 专属，默认关）：模块把系统预启动动画的白/黑底板透明化。 */
     public static final String KEY_NO_LAUNCH_BG = "no_launch_bg";
+    /** 活体解冻（DoL）：点图标/通知启动冻结应用时先解冻再放行，默认关。 */
+    public static final String KEY_DOL = "dol_enabled";
+    /** 静默打开置灰图标：真正取消暂停后静默打开，回后台也不再自动暂停，默认关。 */
+    public static final String KEY_SILENT_OPEN = "silent_open_enabled";
+    /** 冻结方式：保留桌面图标（转暂停）。划卡/锁屏也必须跟着用 suspend，否则直接停用会让图标消失。 */
+    public static final String KEY_KEEP_ICON = "keep_launcher_icon";
     public static final int LOCK_DELAY_MAX = 300;
     /** 默认「立即冻结」 */
     public static final int LOCK_DELAY_DEFAULT = 0;
@@ -129,6 +135,29 @@ public final class SwipeFreeze {
 
     public static void setNoLaunchBg(Context context, boolean on) {
         prefs(context).edit().putBoolean(KEY_NO_LAUNCH_BG, on).apply();
+    }
+
+    /** 活体解冻（DoL）：默认关。 */
+    public static boolean dolEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_DOL, false);
+    }
+
+    public static void setDolEnabled(Context context, boolean on) {
+        prefs(context).edit().putBoolean(KEY_DOL, on).apply();
+    }
+
+    /** 静默打开置灰图标：默认关。 */
+    public static boolean silentOpenEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_SILENT_OPEN, false);
+    }
+
+    public static void setSilentOpenEnabled(Context context, boolean on) {
+        prefs(context).edit().putBoolean(KEY_SILENT_OPEN, on).apply();
+    }
+
+    /** 保留桌面图标（转暂停）：划卡/锁屏冻结也要走 suspend，与列表的冻结方式保持一致。 */
+    public static boolean keepLauncherIcon(Context context) {
+        return prefs(context).getBoolean(KEY_KEEP_ICON, false);
     }
 
     /** null = 用户从未改过勾选，按「全选」处理（与默认全勾选一致）。 */
@@ -305,6 +334,12 @@ public final class SwipeFreeze {
             root.put("lock_delay", lockDelaySeconds(context));
             // 消除启动白底：hook 侧在图标启动时读，关掉就完全走系统默认
             root.put("no_launch_bg", noLaunchBg(context));
+            // 活体解冻：hook 侧拦截 startActivity，点图标先把冻结应用解冻再放行
+            root.put("dol", dolEnabled(context));
+            // 静默打开置灰图标：真正取消暂停后静默打开
+            root.put("silent_open", silentOpenEnabled(context));
+            // 保留桌面图标（转暂停）：划卡/锁屏冻结也必须用 suspend，不能 disable
+            root.put("suspend", keepLauncherIcon(context));
             root.put("packages", new JSONArray(pkgs));
 
             JSONObject tagsObj = new JSONObject();
@@ -335,6 +370,59 @@ public final class SwipeFreeze {
     public static void syncAsync(Context context) {
         Context app = context.getApplicationContext();
         JinApp.IO.execute(() -> sync(app));
+        // 名单/标签/开关的任何变更都顺带推给 Shizuku 通道（未启用时内部直接跳过）
+        ShizukuLite.syncAsync(app);
+    }
+
+    /**
+     * 按勾选的标签解析出名单里的实例键（含下拉回退、白名单剔除、剔除凚自身）。
+     * selected 为 null 时按「全选」处理，与设置页的默认勾选一致。
+     */
+    public static Set<String> packagesForTags(Context context, Set<String> selected) {
+        Set<String> raw = prefs(context).getStringSet(KEY_PKGS, new HashSet<>());
+        Map<String, Set<String>> mapping = appTabMap(context);
+        List<Tag> tabs = allTabs(context);
+        Set<String> picked = selected;
+        if (picked == null) {
+            picked = new HashSet<>();
+            for (Tag t : tabs) {
+                picked.add(t.id);
+            }
+        }
+        Set<String> white = prefs(context).getStringSet("freeze_whitelist", null);
+        String self = context.getPackageName();
+        Set<String> result = new HashSet<>();
+        for (String key : raw) {
+            if (key.isEmpty() || key.equals(self)) {
+                continue;
+            }
+            if (white != null && white.contains(key)) {
+                continue;
+            }
+            String pkg = packagePart(key);
+            Set<String> mapped = mapping.get(key);
+            if (mapped == null) {
+                mapped = mapping.get(pkg);
+            }
+            Set<String> set = new HashSet<>();
+            if (mapped != null) {
+                for (String tab : mapped) {
+                    if (containsTab(tabs, tab)) {
+                        set.add(tab);
+                    }
+                }
+            }
+            if (set.isEmpty()) {
+                set.add(isSystemApp(context, pkg) ? TAB_SYSTEM : TAB_USER);
+            }
+            for (String tab : set) {
+                if (picked.contains(tab)) {
+                    result.add(key);
+                    break;
+                }
+            }
+        }
+        return result;
     }
 
     public static void sync(Context context) {

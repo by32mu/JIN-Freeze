@@ -162,6 +162,36 @@
                 android:textColor="@color/blue"
                 android:textSize="12sp"
                 android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/state_in_list"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_btn_white"
+                android:paddingLeft="14dp"
+                android:paddingTop="6dp"
+                android:paddingRight="14dp"
+                android:paddingBottom="6dp"
+                android:text="已添加"
+                android:textColor="@color/blue"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/state_not_in_list"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_btn_white"
+                android:paddingLeft="14dp"
+                android:paddingTop="6dp"
+                android:paddingRight="14dp"
+                android:paddingBottom="6dp"
+                android:text="未添加"
+                android:textColor="@color/blue"
+                android:textSize="12sp"
+                android:textStyle="bold" />
         </LinearLayout>
 
         <LinearLayout

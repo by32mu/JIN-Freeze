@@ -29,6 +29,7 @@ import com.jin.freeze.R;
 import com.jin.freeze.core.AppIconCache;
 import com.jin.freeze.core.DhizukuGate;
 import com.jin.freeze.core.Pinyin;
+import com.jin.freeze.core.PrivRequest;
 import com.jin.freeze.core.PrivShell;
 import com.jin.freeze.core.SuspendSupport;
 import com.jin.freeze.core.SwipeFreeze;
@@ -108,8 +109,12 @@ public class AppFreezeActivity extends BaseActivity {
     private TextView stateAll;
     private TextView stateFrozen;
     private TextView stateUnfrozen;
-    /** 冻结状态筛选：0=全部、1=已冻结、2=未冻结；只在本次页面内有效，重进回到全部。 */
+    private TextView stateInList;
+    private TextView stateNotInList;
+    /** 冻结状态筛选：0=全部、1=已冻结、2=未冻结、3=已添加、4=未添加；只在本次页面内有效，重进回到全部。 */
     private int stateFilter;
+    /** 冻结列表里的键（主用户纯包名，分身 pkg@uid）：选择页的「已添加 / 未添加」筛选用。 */
+    private Set<String> listKeys = new HashSet<>();
     private TextView sysHint;
     private View sysHintRow;
     private TextView rootState;
@@ -180,6 +185,8 @@ public class AppFreezeActivity extends BaseActivity {
         stateAll = findViewById(R.id.state_all);
         stateFrozen = findViewById(R.id.state_frozen);
         stateUnfrozen = findViewById(R.id.state_unfrozen);
+        stateInList = findViewById(R.id.state_in_list);
+        stateNotInList = findViewById(R.id.state_not_in_list);
         sysHint = findViewById(R.id.sys_hint);
         sysHintRow = findViewById(R.id.sys_hint_row);
         View sysHintDismiss = findViewById(R.id.sys_hint_dismiss);
@@ -210,6 +217,14 @@ public class AppFreezeActivity extends BaseActivity {
         stateAll.setOnClickListener(v -> switchStateFilter(0));
         stateFrozen.setOnClickListener(v -> switchStateFilter(1));
         stateUnfrozen.setOnClickListener(v -> switchStateFilter(2));
+        stateInList.setOnClickListener(v -> switchStateFilter(3));
+        stateNotInList.setOnClickListener(v -> switchStateFilter(4));
+        // 「已添加 / 未添加」只在选择应用（加名单）时才有意义
+        if (!pickMode) {
+            stateInList.setVisibility(View.GONE);
+            stateNotInList.setVisibility(View.GONE);
+        }
+        loadFreezeListKeys();
         applyStateFilterStyle();
 
         viewModeBtn = findViewById(R.id.view_mode);
@@ -824,8 +839,9 @@ public class AppFreezeActivity extends BaseActivity {
         filterSystem.setTextColor(system ? 0xFFFFFFFF : getColor(R.color.blue));
         sysHintRow.setVisibility(system && !prefs().getBoolean(KEY_SYS_HINT_HIDDEN, false)
                 ? View.VISIBLE : View.GONE);
+        // 只切换标签 + 重绘：冻结状态不会因为换标签而变，没必要再跑一次 pm 真值查询
+        //（之前这里每次都 refreshFrozen → 一次 shell 查询 + 二次重绘，切标签明显卡顿）
         render(search.getText().toString().trim());
-        refreshFrozen();
     }
 
     private void applySysHintVisibility() {
@@ -856,12 +872,19 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     private void applyStateFilterStyle() {
-        TextView[] views = {stateAll, stateFrozen, stateUnfrozen};
+        TextView[] views = {stateAll, stateFrozen, stateUnfrozen, stateInList, stateNotInList};
         for (int i = 0; i < views.length; i++) {
             boolean on = i == stateFilter;
             views[i].setBackgroundResource(on ? R.drawable.bg_btn_blue : R.drawable.bg_btn_white);
             views[i].setTextColor(on ? 0xFFFFFFFF : getColor(R.color.blue));
         }
+    }
+
+    /** 冻结列表里的键：主用户是纯包名，分身是 pkg@uid（与冻结列表落盘格式一致）。 */
+    private void loadFreezeListKeys() {
+        Set<String> raw = getSharedPreferences("freeze_list", MODE_PRIVATE)
+                .getStringSet("pkgs", new HashSet<>());
+        listKeys = new HashSet<>(raw);
     }
 
 
@@ -902,6 +925,12 @@ public class AppFreezeActivity extends BaseActivity {
             if (stateFilter == 2 && a.frozen) {
                 continue;
             }
+            if (stateFilter == 3 && !inFreezeList(a)) {
+                continue;
+            }
+            if (stateFilter == 4 && inFreezeList(a)) {
+                continue;
+            }
             if (!q.isEmpty() && !matchesQuery(a, q)) {
                 continue;
             }
@@ -916,6 +945,10 @@ public class AppFreezeActivity extends BaseActivity {
                 grid.addView(emptyText("当前标签下没有已冻结的应用"));
             } else if (stateFilter == 2) {
                 grid.addView(emptyText("当前标签下没有未冻结的应用"));
+            } else if (stateFilter == 3) {
+                grid.addView(emptyText("当前标签下没有已添加的应用"));
+            } else if (stateFilter == 4) {
+                grid.addView(emptyText("当前标签下没有未添加的应用"));
             } else {
                 grid.addView(emptyText(pickMode && !showSystem
                         ? "名单里的应用也会显示，长按可移除列表并解冻"
@@ -938,6 +971,12 @@ public class AppFreezeActivity extends BaseActivity {
                 continue;
             }
             if (stateFilter == 2 && a.frozen) {
+                continue;
+            }
+            if (stateFilter == 3 && !inFreezeList(a)) {
+                continue;
+            }
+            if (stateFilter == 4 && inFreezeList(a)) {
                 continue;
             }
             allowed.add(instanceKey(a.pkg, a.userId));
@@ -1241,8 +1280,8 @@ public class AppFreezeActivity extends BaseActivity {
     }
 
     private boolean inFreezeList(App a) {
-        return new HashSet<>(listPrefs().getStringSet("pkgs", new HashSet<>()))
-                .contains(storageKey(a.pkg, a.userId));
+        // 用 onCreate 时缓存的名单键，避免每次判断都拷贝一遍 prefs 里的 StringSet
+        return listKeys.contains(storageKey(a.pkg, a.userId));
     }
 
     /** 与「冻结列表」里的移除入口同一语义：先摘名单与标签归属，再解冻；解冻失败单独报错。 */
@@ -1279,6 +1318,7 @@ public class AppFreezeActivity extends BaseActivity {
         } catch (Exception ignored) {
         }
         ed.apply();
+        loadFreezeListKeys();
         SwipeFreeze.syncAsync(this);
         Toast.makeText(this, "已从列表移除", Toast.LENGTH_SHORT).show();
     }
@@ -1566,9 +1606,20 @@ public class AppFreezeActivity extends BaseActivity {
         unfreezeBtn.setAlpha(has ? 1f : 0.4f);
     }
 
+    /** 冻结/解冻失败时按 root → Shizuku → Dhizuku 补申请一次权限；已有通道时静默跳过。 */
+    private void requestPrivAfterFail() {
+        PrivRequest.ensure(this, got -> {
+            if (got && !isFinishing() && !isDestroyed()) {
+                root = true;
+                refreshFrozen();
+            }
+        });
+    }
+
     private void toggle(App a) {
         if (!root) {
             Toast.makeText(this, "需要 root、Shizuku 或 Dhizuku 权限才能冻结/解冻", Toast.LENGTH_SHORT).show();
+            requestPrivAfterFail();
             return;
         }
         if (working) {
@@ -1645,6 +1696,8 @@ public class AppFreezeActivity extends BaseActivity {
                     Ui.smallDialog(this, toFreeze ? "冻结失败" : "解冻失败",
                             a.label + "：" + (blocked && !DhizukuGate.only(this)
                                     ? Ui.NO_FREEZE_CHANNEL : Ui.pmReason(failR, toFreeze)), "知道了");
+                    // 失败多半是没权限：顺手补一次可申请的授权
+                    requestPrivAfterFail();
                     return;
                 }
                 a.frozen = toFreeze;
@@ -1665,6 +1718,7 @@ public class AppFreezeActivity extends BaseActivity {
     private void unfreezeAndOpen(App a) {
         if (!root) {
             Toast.makeText(this, "需要 root、Shizuku 或 Dhizuku 权限才能解冻并打开", Toast.LENGTH_SHORT).show();
+            requestPrivAfterFail();
             return;
         }
         if (working) {
@@ -1688,6 +1742,7 @@ public class AppFreezeActivity extends BaseActivity {
                     Ui.smallDialog(this, "解冻失败，无法打开",
                             a.label + "：" + (failReason != null
                                     ? failReason : Ui.pmReason(r, false)), "知道了");
+                    requestPrivAfterFail();
                     refreshFrozen();
                     return;
                 }
@@ -1801,6 +1856,10 @@ public class AppFreezeActivity extends BaseActivity {
                 setBatchMode(false);
                 // 批量结束后按系统真值重新读一次状态，避免显示与实际不一致
                 refreshFrozen();
+                if (!fails.isEmpty()) {
+                    // 有失败项：顺手补一次可申请的授权
+                    requestPrivAfterFail();
+                }
                 StringBuilder sb = new StringBuilder();
                 sb.append("成功 ").append(okFinal).append(" 个，失败 ")
                         .append(fails.size()).append(" 个");
@@ -2006,3 +2065,4 @@ public class AppFreezeActivity extends BaseActivity {
         return null;
     }
 }
+

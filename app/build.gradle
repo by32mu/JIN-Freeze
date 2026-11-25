@@ -10,8 +10,8 @@ android {
         applicationId "com.jin.freeze"
         minSdk 24
         targetSdk 34
-        versionCode 190
-        versionName "2.10.20"
+        versionCode 191
+        versionName "2.10.21"
     }
 
     buildTypes {
@@ -26,6 +26,11 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        // Shizuku UserService 需要 AIDL 接口（IJinLite）
+        aidl true
     }
 }
 
@@ -46,4 +51,6 @@ dependencies {
     implementation fileTree(dir: 'libs', include: ['hiddenapibypass-6.1.jar'])
     // LSPosed 模块接口：只在 LSPosed 注入的 system_server 里加载，应用自身不引用（compileOnly 不打包）
     compileOnly fileTree(dir: 'libs', include: ['libxposed-api-102.jar', 'libxposed-interface-102.jar'])
+    // 隐藏类桩：TaskStackListener（照 Thanox lite 直接继承它注册划卡回调），运行时用系统实现
+    compileOnly files('libs/framework-stubs.jar')
 }
