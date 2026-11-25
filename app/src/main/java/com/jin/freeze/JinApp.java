@@ -36,6 +36,9 @@ public class JinApp extends Application {
     public void onCreate() {
         super.onCreate();
         ShortcutSync.publish(this);
+        // 「去 debug 痕迹」也包括设备侧：旧调试版曾往偏好写 zz_dbg_*，当前代码已不再写，
+        // 升级后一次性清掉这些键（仅清明确登记过的调试键，不动用户数据）
+        purgeLegacyDebugPrefs();
         // 旧版 root 通道的暂停记录 suspender 写成 "root"，系统暂停弹窗点确定会让系统界面崩溃：
         // 升级后一次性按 shell 身份重建（只跑一次，没有暂停记录或不是 root 时直接跳过）
         IO.execute(() -> com.jin.freeze.core.SuspendSupport.repairLegacyRootSuspender(this));
@@ -45,6 +48,32 @@ public class JinApp extends Application {
                 && !miuiShortcutAllowed()) {
             IO.execute(() -> PrivShell.exec("appops set " + getPackageName()
                     + " 10017 allow", 8));
+        }
+    }
+
+    /** 历史调试版留在 freeze_list 偏好里的键；只清这些，避免误删用户数据。 */
+    private static final String[] LEGACY_DEBUG_KEYS = {
+            "zz_dbg_hook", "zz_dbg_panel", "zz_dbg_post", "zz_dbg_post_txt", "zz_dbg_shown"
+    };
+
+    private void purgeLegacyDebugPrefs() {
+        try {
+            android.content.SharedPreferences sp =
+                    getSharedPreferences("freeze_list", MODE_PRIVATE);
+            android.content.SharedPreferences.Editor ed = null;
+            for (String key : LEGACY_DEBUG_KEYS) {
+                if (!sp.contains(key)) {
+                    continue;
+                }
+                if (ed == null) {
+                    ed = sp.edit();
+                }
+                ed.remove(key);
+            }
+            if (ed != null) {
+                ed.apply();
+            }
+        } catch (Throwable ignored) {
         }
     }
 

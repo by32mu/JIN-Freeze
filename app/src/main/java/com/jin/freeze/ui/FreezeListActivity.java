@@ -11,6 +11,7 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
@@ -83,6 +84,7 @@ import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -247,10 +249,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_SETTINGS_OPACITY_COLLAPSED = "settings_opacity_collapsed";
     /** 设置页及其所有二级弹窗的底板透明度：100 = 实心，0 = 全透明；半屏/全屏用 lk() 各存一份。 */
     private static final String KEY_SETTINGS_SURFACE = "settings_surface";
-    /** 设置页字体缩放百分比：80–130，默认 100；只作用于设置页内的文字。 */
+    /** 设置页字体缩放百分比：80–200，默认 105；只作用于设置页内的文字。 */
     private static final String KEY_SETTINGS_FONT = "settings_font_pct";
     private static final int SETTINGS_FONT_MIN = 80;
-    private static final int SETTINGS_FONT_MAX = 130;
+    private static final int SETTINGS_FONT_MAX = 200;
     private static final String KEY_SETTINGS_WALLPAPER_COLLAPSED = "settings_wallpaper_collapsed";
     /** 设置面板里所有可折叠分组：长按左上角设置按钮时一键全部展开。 */
     private static final String[] SETTINGS_COLLAPSE_KEYS = {
@@ -673,6 +675,9 @@ public class FreezeListActivity extends BaseActivity {
     /** 管理页是否从快面板进入：手势取消时返回快面板，点「关闭」则直接关闭。 */
     private boolean pairManagerFromQuickPanel;
     private boolean whitelistManagerFromQuickPanel;
+    /** 隐藏列表管理页是否从快面板进入：退出时回快面板。 */
+    private boolean hiddenManagerFromQuickPanel;
+    private AlertDialog hiddenManagerDialog;
     /** 布局设置弹窗：长按空白上下滑切形态时先把它收起。 */
     private android.app.Dialog settingsDialog;
     /** 设置面板当前的底板：拖动「设置页透明度」时直接刷它，不重建弹窗。 */
@@ -4408,7 +4413,6 @@ public class FreezeListActivity extends BaseActivity {
                 + "·激活后重启，无需常驻后台；\n"
                 + "·划卡冻结:滑动最近任务卡片冻结；\n"
                 + "·锁屏定时冻结:锁屏计时，亮屏重计；\n"
-                + "·置灰图标后台即停:保桌面图标模式下，进入后台立马暂停，可以直接打开置灰图标；\n"
                 + "·静默打开置灰图标:可以直接打开保桌面图标下置灰的应用；\n"
                 + "·消除启动白底:HyperOS4 专属，修复透底冷启动白闪，优化半屏动画。";
         showHintCard(text, "lsp", titleView, "专属LSPosed");
@@ -4426,7 +4430,9 @@ public class FreezeListActivity extends BaseActivity {
     private void showSpecialModeHintDialog(TextView titleView) {
         showHintCard("「桌面图标模式」\n"
                 + "·默认冻结:能冻则冻，失败降级暂停；\n"
-                + "·保留桌面图标:改用系统暂停，图标置灰保留，部分系统组件仍会唤醒。",
+                + "·保留桌面图标:改用系统暂停，图标置灰保留，部分系统组件仍会唤醒；\n"
+                + "·抽屉桌面:部分机型系统暂停后图标是彩色的（经典桌面可以置灰），"
+                + "如果真出现了，你可以选择喜欢的颜色了。",
                 "sp", titleView, "桌面图标模式");
     }
 
@@ -4443,19 +4449,20 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView yes = new TextView(this);
-        yes.setText("保留，切换系统暂停");
+        yes.setText("系统暂停（显示图标）");
         yes.setTextSize(13);
         yes.setTextColor(getColor(R.color.text_primary));
         yes.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 12));
 
         TextView no = new TextView(this);
-        no.setText("不保留，恢复默认冻结");
+        no.setText("默认冻结（隐藏图标）");
         no.setTextSize(13);
         no.setTextColor(getColor(R.color.text_primary));
         no.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 12));
 
-        col.addView(yes);
+        // 默认冻结排第一（当前默认项），系统暂停排第二
         col.addView(no);
+        col.addView(yes);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(col)
@@ -4906,7 +4913,8 @@ public class FreezeListActivity extends BaseActivity {
 
     /** 桌面图标模式入口文案：先显示「当前：」，再跟当前选项。 */
     private String keepIconEntryText() {
-        return "· 当前：" + (keepLauncherIcon ? "保留，切换系统暂停" : "不保留，恢复默认冻结");
+        // 外面只给短标签（显示图标 / 隐藏图标），完整说明放在点进去的选项里
+        return "· 当前：" + (keepLauncherIcon ? "显示图标" : "隐藏图标");
     }
 
     /** 保留桌面图标开关落地：是 → 冻结转系统暂停；否 → 暂停态转回默认冻结。 */
@@ -6913,6 +6921,16 @@ public class FreezeListActivity extends BaseActivity {
             }
             todo.removeAll(stillHidden);
             int done = 0;
+            if (keepLauncherIcon) {
+                // 暂停前先恢复启用态：暂停是最后一次状态变更，桌面才会把图标置灰
+                List<String> keepKeys = new ArrayList<>();
+                for (Item it : todo) {
+                    if (it.userId == 0) {
+                        keepKeys.add(it.pkg);
+                    }
+                }
+                enableBeforeSuspend(keepKeys);
+            }
             for (Item it : todo) {
                 boolean ok = false;
                 if (keepLauncherIcon && it.userId == 0) {
@@ -7509,6 +7527,9 @@ public class FreezeListActivity extends BaseActivity {
         }
         int uid = userIdPart(key);
         if ((keepLauncherIcon || DhizukuGate.only(this)) && uid == 0) {
+            if (keepLauncherIcon) {
+                enableBeforeSuspend(Collections.singletonList(packagePart(key)));
+            }
             SuspendSupport.suspend(this, packagePart(key), key);
         } else {
             execPm(key, uid, true);
@@ -7554,13 +7575,12 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 隐藏单个应用：先从白名单/保护名单过滤，再按 root / Shizuku / Dhizuku 通道执行。 */
+    /**
+     * 隐藏单个应用：白名单也允许隐藏（用户明确要求），只保留凚自身/系统界面/桌面的保护。
+     * 但隐藏后若仍在白名单，后续冻结入口的「重新隐藏」不生效，直到解除白名单。
+     */
     private void hideSingle(Item it, boolean systemToast) {
         if (working) {
-            return;
-        }
-        if (isWhitelisted(it.pkg)) {
-            toast("「" + it.label + "」在冻结白名单中，不会隐藏");
             return;
         }
         working = true;
@@ -7606,6 +7626,8 @@ public class FreezeListActivity extends BaseActivity {
                 if (panelDismissAfterFreeze) {
                     dismissAfterReload = true;
                 }
+                // 隐藏账本变了要重写 hook 配置，划卡/锁屏才会按「隐藏」处理而不是冻结
+                SwipeFreeze.syncAsync(this);
                 reload();
             });
         });
@@ -7638,6 +7660,8 @@ public class FreezeListActivity extends BaseActivity {
                 rebindCells();
                 // 取消隐藏不弹成功提示，列表角标已能看出状态
                 // 白名单永久有效：不因为取消隐藏就自动移出，需用户手动取消
+                // 同步 hook 配置：从 hidden 数组里移除，避免划卡/锁屏继续按隐藏处理
+                SwipeFreeze.syncAsync(this);
                 reload();
             });
         });
@@ -7741,7 +7765,6 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         final List<Item> todo = new ArrayList<>();
-        int whiteSkipped = 0;
         int skipped = 0;
         int notRunning = 0;
         boolean dhizuku = DhizukuGate.only(this);
@@ -7751,10 +7774,7 @@ public class FreezeListActivity extends BaseActivity {
                     skipped++;
                     continue;
                 }
-                if (isWhitelisted(it.pkg)) {
-                    whiteSkipped++;
-                    continue;
-                }
+                // 白名单允许隐藏（用户明确要求）：不再在这里拦截白名单
                 if (HideSupport.isProtected(this, packagePart(it.pkg))) {
                     skipped++;
                     continue;
@@ -7771,8 +7791,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         if (todo.isEmpty()) {
             if (hide) {
-                FrozenTip.show(this, whiteSkipped > 0 && skipped == 0 && notRunning == 0
-                        ? "白名单应用不隐藏" : "没有运行中的应用需要隐藏");
+                FrozenTip.show(this, "没有运行中的应用需要隐藏");
             } else {
                 FrozenTip.show(this, "无需取消隐藏");
             }
@@ -7785,7 +7804,6 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         working = true;
-        final int whiteN = whiteSkipped;
         final int runningN = notRunning;
         if (hide) {
             startFreezeSpin();
@@ -7873,13 +7891,12 @@ public class FreezeListActivity extends BaseActivity {
                 if (hide && runningN > 0) {
                     msg.append("，").append(runningN).append(" 个未运行已跳过");
                 }
-                if (hide && whiteN > 0) {
-                    msg.append("，").append(whiteN).append(" 个白名单跳过");
-                }
                 if (failedN > 0) {
                     Ui.smallDialog(this, action + "结果", msg + "\n\n首个失败：" + errorN, "知道了");
                 }
                 // 成功不弹 toast（隐藏/取消隐藏以列表角标为准），仅失败时给对话框
+                // 账本变化同步给划卡/锁屏的 hook 配置
+                SwipeFreeze.syncAsync(this);
                 reload();
                 if (after != null) {
                     after.run();
@@ -7898,6 +7915,11 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         if (it.hidden) {
+            // 白名单应用允许隐藏，但隐藏后不再响应冻结入口的「重新隐藏」（除非先解除白名单）
+            if (isWhitelisted(it.pkg)) {
+                toast("「" + it.label + "」在冻结白名单中，不会重新隐藏");
+                return;
+            }
             if (it.hiddenOn) {
                 toast("「" + it.label + "」是隐藏状态，请用「取消隐藏」");
                 return;
@@ -7939,6 +7961,8 @@ public class FreezeListActivity extends BaseActivity {
             boolean blocked = false;
             boolean suspendedNow = false;
             if (keep) {
+                // 先 enable 再 suspend：暂停作为最后一次状态变更，桌面才会把图标置灰
+                enableBeforeSuspend(Collections.singletonList(packagePart(it.pkg)));
                 r = SuspendSupport.suspend(this, packagePart(it.pkg), it.label);
                 ok = suspendApplied(it.pkg, r);
                 recordDiagOp(suspendDiagChannel("单次暂停"),
@@ -8073,6 +8097,310 @@ public class FreezeListActivity extends BaseActivity {
      * 先暂停，确认 suspended= 生效后再 pm enable 把图标放回桌面；暂停失败时保持原停用态，
      * 不会把应用误放出来。
      */
+    /**
+     * 暂停前先恢复启用态：此前用 disable-user 冻过的应用图标已被摘掉，
+     * 桌面只有对「启用中」的包收到暂停事件才会置灰；先 enable 再 suspend，
+     * 最后一次状态变更是暂停，图标才能「回来并变灰」。
+     */
+    private void enableBeforeSuspend(Collection<String> keys) {
+        if (keys == null || keys.isEmpty()) {
+            return;
+        }
+        // 只给「当前确实是停用」的包做 enable：已经启用的包再 pm enable 会向桌面发一次
+        // PACKAGE_CHANGED，HyperOS 桌面会按「已启用」把图标刷回彩色，把后面的暂停置灰覆盖掉
+        // （用户反馈：切换暂停后图标还是彩色，就是这个刷新竞争）
+        Set<String> disabled = disabledPackages();
+        StringBuilder script = new StringBuilder();
+        int n = 0;
+        for (String key : keys) {
+            String pkg = packagePart(key);
+            if (disabled != null && !disabled.contains(pkg)) {
+                continue;
+            }
+            script.append("pm enable --user ").append(userIdPart(key)).append(' ')
+                    .append(pkg).append(" >/dev/null 2>&1; ");
+            n++;
+        }
+        if (n == 0) {
+            return;
+        }
+        PrivShell.exec(script.toString(), Math.max(15, 5 + n * 2));
+        // 等桌面把图标加回来再暂停；否则暂停事件先到、enable 刷新后到，图标会停在彩色
+        android.os.SystemClock.sleep(800);
+    }
+
+    /**
+     * 分组交错「先 enable → 再 suspend」：每组 20 个，组内先恢复启用、留出桌面把图标加回来的时间，
+     * 再对这一组下发暂停。老做法是把上百个包一次性 enable、紧接着一次性 suspend，
+     * 桌面要处理的变更事件挤在一起会丢帧，部分包停在彩色
+     * （用户反馈：toast 成功、列表已显示暂停，桌面图标仍彩色）。
+     *
+     * onProgress 每完成一组回调一次已完成数量（已切到主线程），用来驱动「x/N」进度弹窗。
+     */
+    private Map<String, String> enableAndSuspendChunked(List<String> pkgs, ProgressSink onProgress) {
+        Map<String, String> outputs = new HashMap<>();
+        int done = 0;
+        final int chunk = 20;
+        for (int from = 0; from < pkgs.size(); from += chunk) {
+            List<String> part = pkgs.subList(from, Math.min(pkgs.size(), from + chunk));
+            enableBeforeSuspend(part);
+            Map<String, String> one = execSuspendBatch(part);
+            outputs.putAll(one);
+            for (String pkg : part) {
+                String out = one.get(pkg);
+                if (out != null && out.isEmpty()) {
+                    done++;
+                }
+            }
+            if (onProgress != null) {
+                final int d = done;
+                main.post(() -> onProgress.onProgress(d));
+            }
+            if (from + chunk < pkgs.size()) {
+                android.os.SystemClock.sleep(300);
+            }
+        }
+        return outputs;
+    }
+
+    /** 转换进度回调（在主线程触发）。 */
+    private interface ProgressSink {
+        void onProgress(int done);
+    }
+
+    /** 转换进度弹窗：总数先算好，转换过程中实时刷成「已完成/总数」。 */
+    private static final class MigrateProgress {
+        AlertDialog dialog;
+        TextView text;
+        android.widget.ProgressBar bar;
+        int total;
+        int done;
+    }
+
+    private MigrateProgress showMigrateProgress(String title, int total) {
+        MigrateProgress p = new MigrateProgress();
+        p.total = Math.max(1, total);
+        int pad = Ui.dp(this, 20);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(pad, pad / 2, pad, pad / 2);
+        p.text = new TextView(this);
+        p.text.setTextSize(15);
+        p.text.setText("0/" + total);
+        box.addView(p.text);
+        p.bar = new android.widget.ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        p.bar.setMax(p.total);
+        p.bar.setProgress(0);
+        applyRoundedProgress(p.bar);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 8));
+        lp.topMargin = Ui.dp(this, 10);
+        box.addView(p.bar, lp);
+        p.dialog = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(box)
+                .setCancelable(false)
+                .create();
+        p.dialog.show();
+        // 系统 AlertDialog 自带方角不透明底，会把圆角盖住；换成凚统一的圆角卡片底
+        Ui.roundAlertDialog(p.dialog);
+        // 清掉系统窗口底后内容会缩成自身宽度，这里把窗口宽度压回与设置面板卡片一致
+        applyMigrateDialogWidth(p.dialog);
+        return p;
+    }
+
+    /**
+     * 进度条改成圆角胶囊：轨道浅灰、进度用主题强调色，两端都是圆角。
+     * 不能靠 ClipDrawable 裁剪普通矩形：右端会被裁成直边，看起来还是方角；
+     * 这里按 level 自己画圆角矩形，填充部分两端都保持半圆。
+     */
+    private void applyRoundedProgress(android.widget.ProgressBar bar) {
+        int accent = 0xFF4C8DFF;
+        try {
+            TypedValue tv = new TypedValue();
+            if (getTheme().resolveAttribute(android.R.attr.colorAccent, tv, true)) {
+                accent = tv.data;
+            }
+        } catch (Throwable ignored) {
+        }
+        bar.setProgressDrawable(new CapsuleDrawable(0x33808080, accent));
+        bar.setMinimumHeight(Ui.dp(this, 8));
+    }
+
+    /** 胶囊进度条：按 Drawable level（0–10000）画填充宽度，填充两端同样圆角。 */
+    private static final class CapsuleDrawable extends Drawable {
+        private final android.graphics.Paint paint = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final int trackColor;
+        private final int barColor;
+
+        CapsuleDrawable(int trackColor, int barColor) {
+            this.trackColor = trackColor;
+            this.barColor = barColor;
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            if (b.isEmpty()) {
+                return;
+            }
+            float r = b.height() / 2f;
+            paint.setColor(trackColor);
+            canvas.drawRoundRect(b.left, b.top, b.right, b.bottom, r, r, paint);
+            float w = b.width() * getLevel() / 10000f;
+            if (w <= 0) {
+                return;
+            }
+            paint.setColor(barColor);
+            float rr = Math.min(r, w / 2f);
+            canvas.drawRoundRect(b.left, b.top, b.left + w, b.bottom, rr, rr, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(android.graphics.ColorFilter colorFilter) {
+            paint.setColorFilter(colorFilter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return android.graphics.PixelFormat.TRANSLUCENT;
+        }
+    }
+
+    /** 进度/失败弹窗的宽度对齐设置面板卡片，留出四周 12dp 的阴影空间。 */
+    private void applyMigrateDialogWidth(AlertDialog d) {
+        if (d == null) {
+            return;
+        }
+        android.view.Window w = d.getWindow();
+        if (w == null) {
+            return;
+        }
+        int pad = Ui.dp(this, 12);
+        w.setLayout(settingsDialogWidth() + pad * 2, ViewGroup.LayoutParams.WRAP_CONTENT);
+        android.view.WindowManager.LayoutParams lp = w.getAttributes();
+        lp.x = 0;
+        lp.gravity = Gravity.CENTER;
+        w.setAttributes(lp);
+    }
+
+    private void setMigrateProgress(MigrateProgress p, int done) {
+        if (p == null || p.text == null) {
+            return;
+        }
+        p.done = Math.min(Math.max(0, done), p.total);
+        if (p.bar != null) {
+            p.bar.setProgress(p.done);
+        }
+        p.text.setText(p.done + "/" + p.total);
+    }
+
+    private void dismissMigrateProgress(MigrateProgress p) {
+        try {
+            if (p != null && p.dialog != null && p.dialog.isShowing()) {
+                p.dialog.dismiss();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 失败清单弹窗：列出没转换成功的应用名，便于用户自己单独再处理。 */
+    private void showMigrateFailed(MigrateProgress p, List<String> failedPkgs, String reason) {
+        dismissMigrateProgress(p);
+        if (failedPkgs == null || failedPkgs.isEmpty() || isFinishing() || isDestroyed()) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        int n = 0;
+        for (String pkg : failedPkgs) {
+            if (n >= 30) {
+                sb.append("…等 ").append(failedPkgs.size()).append(" 个");
+                break;
+            }
+            if (n > 0) {
+                sb.append('\n');
+            }
+            sb.append("· ").append(labelOf(pkg));
+            n++;
+        }
+        String msg = sb.toString();
+        if (reason != null && !reason.isEmpty()) {
+            msg = msg + "\n\n" + reason;
+        }
+        AlertDialog failedDialog = new AlertDialog.Builder(this)
+                .setTitle(failedPkgs.size() + " 个应用未转换成功")
+                .setMessage(msg)
+                .setPositiveButton("知道了", null)
+                .create();
+        failedDialog.show();
+        Ui.roundAlertDialog(failedDialog);
+        applyMigrateDialogWidth(failedDialog);
+    }
+
+    /**
+     * 让桌面冷启动一次，按系统真值重新取一遍图标。
+     * 迁移后桌面可能把部分暂停广播丢掉（图标停在彩色），冷启动桌面是唯一能保证
+     * 「列表是暂停、桌面就是灰的」的兜底；只在切换冻结方式的迁移里做，
+     * 日常冻结不做，避免每次冻结都闪一下桌面。
+     */
+    private void refreshLauncherIcons() {
+        // 半屏面板是浮在桌面上的，杀掉桌面会让面板后面直接黑掉，只能在全屏列表里做
+        if (panelMode) {
+            return;
+        }
+        String pkg = launcherPackage();
+        if (pkg == null) {
+            return;
+        }
+        PrivShell.exec("am force-stop " + pkg, 15);
+    }
+
+    /** 当前默认桌面的包名；找不到或默认桌面就是凚自己时返回 null。 */
+    private String launcherPackage() {
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+            ResolveInfo ri = getPackageManager()
+                    .resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY);
+            String pkg = ri == null || ri.activityInfo == null ? null : ri.activityInfo.packageName;
+            if (pkg == null || pkg.isEmpty() || pkg.equals(getPackageName())) {
+                return null;
+            }
+            return pkg;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 设置里「刷新桌面图标」：暂停状态已经写进系统、桌面却没重绘（图标停在彩色）时，
+     * 让桌面冷启动一次并按系统真值重取，随后回到桌面就能看到图标变灰。
+     */
+    private void refreshDesktopIconsNow() {
+        if (!keepLauncherIcon) {
+            toast("当前是隐藏图标（默认冻结）：冻结会直接停用，不需要刷新");
+            return;
+        }
+        toast("正在刷新桌面图标…");
+        IO.execute(() -> {
+            String pkg = launcherPackage();
+            if (pkg == null) {
+                main.post(() -> toast("没找到桌面，无法刷新"));
+                return;
+            }
+            PrivShell.exec("am force-stop " + pkg, 15);
+            // 冷启动后主动拉回家，立刻按真值重绘（只杀不拉时，桌面要等下次回桌面才重载）
+            PrivShell.exec("am start -a android.intent.action.MAIN "
+                    + "-c android.intent.category.HOME", 12);
+        });
+    }
+
     private void migrateFrozenToSuspend() {
         if (working) {
             // 记成未完成，下次进页面由 ensureGrayIcons 自动接着切
@@ -8082,8 +8410,8 @@ public class FreezeListActivity extends BaseActivity {
         }
         final List<String> candidates = new ArrayList<>();
         for (Item it : items) {
-            // 暂停通道只覆盖主用户，分身不参与切换
-            if (it.userId == 0 && it.frozen && !it.suspended) {
+            // 暂停通道只覆盖主用户，分身不参与切换；隐藏项保持隐藏，不参与图标模式转换
+            if (it.userId == 0 && it.frozen && !it.suspended && !it.hidden) {
                 candidates.add(packagePart(it.pkg));
             }
         }
@@ -8091,9 +8419,15 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         working = true;
-        toast("正在把 " + candidates.size() + " 个已冻结应用切到暂停…");
+        // 先把总数算好再开跑，弹窗里实时显示「已完成/总数」，用户能看到还要转多少
+        final MigrateProgress progress = showMigrateProgress(
+                "切换为显示图标（系统暂停）", candidates.size());
         IO.execute(() -> {
-            execSuspendBatch(candidates);
+            // 顺序必须是「先 enable → 再 suspend」：这些应用此前是 disable-user，图标已被摘掉，
+            // 桌面只有对启用中的包收到暂停事件才会置灰；若先暂停后启用，桌面按「启用」刷新，
+            // 图标会回来但保持彩色（用户反馈的「切暂停后大部分图标没变灰」）。
+            // 分批交错执行，避免上百个 enable/suspend 事件同时涌给桌面。
+            enableAndSuspendChunked(candidates, done -> setMigrateProgress(progress, done));
             Set<String> suspended = SuspendSupport.suspendedAmong(candidates);
             // 批量 CLI 没成功的，再逐个走同一条 CLI 通道补一次（覆盖 ROM 差异）。
             // 不能用 pm suspend 补：root 身份会把 suspender 记成 root，点灰图标时系统界面崩溃。
@@ -8111,38 +8445,44 @@ public class FreezeListActivity extends BaseActivity {
                 suspended = SuspendSupport.suspendedAmong(candidates);
             }
             SuspendSupport.remember(this, suspended);
-            if (!suspended.isEmpty()) {
-                StringBuilder script = new StringBuilder();
-                for (String pkg : suspended) {
-                    script.append("pm enable --user 0 ").append(pkg).append(" 2>&1; ");
-                }
-                execPmScript(script.toString(), Math.max(30, 10 + suspended.size() * 5));
-                // enable 只恢复图标，不改暂停态；再回读一次，只有「仍是暂停 且 已启用」的才算切换成功
-                Set<String> stillSuspended = SuspendSupport.suspendedAmong(suspended);
-                Set<String> disabledNow = new HashSet<>();
-                PrivShell.Result d = PrivShell.exec("pm list packages -d --user 0", 30);
-                if (d.out != null) {
-                    for (String line : d.out.split("\n")) {
-                        String t = line.trim();
-                        if (t.startsWith("package:")) {
-                            disabledNow.add(t.substring(8).trim());
-                        }
+            // 事后不再 pm enable：那会再触发一次桌面重载，把刚置上的灰抹掉。
+            // 只回读真值：仍暂停、且已不在停用列表里的项才算切换成功
+            Set<String> disabledNow = new HashSet<>();
+            PrivShell.Result d = PrivShell.exec("pm list packages -d --user 0", 30);
+            if (d.out != null) {
+                for (String line : d.out.split("\n")) {
+                    String t = line.trim();
+                    if (t.startsWith("package:")) {
+                        disabledNow.add(t.substring(8).trim());
                     }
                 }
-                suspended.retainAll(stillSuspended);
-                suspended.removeAll(disabledNow);
-                SuspendSupport.remember(this, suspended);
             }
+            suspended.removeAll(disabledNow);
+            SuspendSupport.remember(this, suspended);
+            // 兜底：桌面可能把部分暂停广播丢掉（图标停在彩色）；切换冻结方式这种低频操作里
+            // 让桌面冷启动一次，按系统真值重新取图标，保证「列表是暂停、桌面就是灰的」
+            refreshLauncherIcons();
             final int done = suspended.size();
             final int failed = candidates.size() - done;
+            final List<String> failedPkgs = new ArrayList<>();
+            for (String pkg : candidates) {
+                if (!suspended.contains(pkg)) {
+                    failedPkgs.add(pkg);
+                }
+            }
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) {
+                    dismissMigrateProgress(progress);
                     return;
                 }
+                setMigrateProgress(progress, done);
+                dismissMigrateProgress(progress);
                 toast(failed == 0
                                 ? "已切换 " + done + " 个应用：图标保留并变灰"
                                 : "已切换 " + done + " 个，" + failed + " 个失败（仍保持停用）");
+                showMigrateFailed(progress, failedPkgs,
+                        "这些应用仍保持停用状态，可稍后重试，或到应用详情里手动启动一次再试。");
                 reload();
             });
         });
@@ -8163,11 +8503,16 @@ public class FreezeListActivity extends BaseActivity {
         }
         final Set<String> pool = new HashSet<>();
         for (Item it : items) {
-            if (it.frozen && it.userId == 0) {
+            // 隐藏项保持隐藏，不参与图标模式转换（隐藏账本单独管理）
+            if (it.frozen && it.userId == 0 && !it.hidden) {
                 pool.add(packagePart(it.pkg));
             }
         }
-        pool.addAll(SuspendSupport.cached(this));
+        for (String p : SuspendSupport.cached(this)) {
+            if (!hiddenKnown.contains(p)) {
+                pool.add(p);
+            }
+        }
         if (pool.isEmpty()) {
             return;
         }
@@ -8184,42 +8529,67 @@ public class FreezeListActivity extends BaseActivity {
                 });
                 return;
             }
-            // 关键：先把暂停真正撤掉（pm + CLI 兜底），否则 suspended= 会一直残留
-            Set<String> stillSuspended = SuspendSupport.unsuspendBatch(this, suspended);
-            StringBuilder script = new StringBuilder();
-            for (String pkg : suspended) {
-                script.append("pm disable-user --user 0 ").append(pkg)
-                        .append(" >/dev/null 2>&1; ");
-            }
-            execPmScript(script.toString(), Math.max(30, 15 + suspended.size() * 5));
-            // 回读真值：disable 列表里有、且暂停已撤掉，才算切换成功
-            Set<String> disabled = new HashSet<>();
-            PrivShell.Result d = PrivShell.exec("pm list packages -d", 30);
-            if (d.out != null) {
-                for (String line : d.out.split("\n")) {
-                    String t = line.trim();
-                    if (t.startsWith("package:")) {
-                        disabled.add(t.substring(8).trim());
+            final List<String> todo = new ArrayList<>(suspended);
+            final MigrateProgress[] progRef = new MigrateProgress[1];
+            main.post(() -> progRef[0] = showMigrateProgress(
+                    "切回默认冻结", todo.size()));
+            // 分组转换：每组 20 个，进度条才能按真实数量往前走
+            final Set<String> ok = new HashSet<>();
+            final int chunk = 20;
+            for (int from = 0; from < todo.size(); from += chunk) {
+                List<String> part = todo.subList(from, Math.min(todo.size(), from + chunk));
+                // 关键：先把暂停真正撤掉（pm + CLI 兜底），否则 suspended= 会一直残留
+                Set<String> stillSuspended = SuspendSupport.unsuspendBatch(this, part);
+                StringBuilder script = new StringBuilder();
+                for (String pkg : part) {
+                    script.append("pm disable-user --user 0 ").append(pkg)
+                            .append(" >/dev/null 2>&1; ");
+                }
+                execPmScript(script.toString(), Math.max(30, 15 + part.size() * 5));
+                // 回读真值：disable 列表里有、且暂停已撤掉，才算切换成功
+                Set<String> disabled = new HashSet<>();
+                PrivShell.Result d = PrivShell.exec("pm list packages -d", 30);
+                if (d.out != null) {
+                    for (String line : d.out.split("\n")) {
+                        String t = line.trim();
+                        if (t.startsWith("package:")) {
+                            disabled.add(t.substring(8).trim());
+                        }
                     }
                 }
-            }
-            int done = 0;
-            for (String pkg : suspended) {
-                if (disabled.contains(pkg) && !stillSuspended.contains(pkg)) {
-                    done++;
-                    SuspendSupport.forget(this, pkg);
+                for (String pkg : part) {
+                    if (disabled.contains(pkg) && !stillSuspended.contains(pkg)) {
+                        ok.add(pkg);
+                        SuspendSupport.forget(this, pkg);
+                    }
+                }
+                final int converted = ok.size();
+                main.post(() -> setMigrateProgress(progRef[0], converted));
+                if (from + chunk < todo.size()) {
+                    android.os.SystemClock.sleep(200);
                 }
             }
-            final int ok = done;
-            final int failed = suspended.size() - done;
+            final List<String> failedPkgs = new ArrayList<>();
+            for (String pkg : todo) {
+                if (!ok.contains(pkg)) {
+                    failedPkgs.add(pkg);
+                }
+            }
+            final int okCount = ok.size();
+            final int failed = failedPkgs.size();
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) {
+                    dismissMigrateProgress(progRef[0]);
                     return;
                 }
+                setMigrateProgress(progRef[0], okCount);
+                dismissMigrateProgress(progRef[0]);
                 toast(failed == 0
-                                ? "已切回默认冻结 " + ok + " 个应用：图标已隐藏"
-                                : "已切回 " + ok + " 个，" + failed + " 个失败（仍保持暂停）");
+                                ? "已切回默认冻结 " + okCount + " 个应用：图标已隐藏"
+                                : "已切回 " + okCount + " 个，" + failed + " 个失败（仍保持暂停）");
+                showMigrateFailed(progRef[0], failedPkgs,
+                        "这些应用仍保持暂停状态，可稍后重试。");
                 reload();
             });
         });
@@ -10107,15 +10477,6 @@ public class FreezeListActivity extends BaseActivity {
         lspBody.addView(lspStatus);
         addSwipeFreezeSection(lspBody);
         addLockFreezeSection(lspBody);
-        // 置灰图标后台即停（原活体解冻/DoL）：打开时只放行这一次，回后台仍是暂停态
-        final CheckBox dolBox = new CheckBox(this);
-        dolBox.setText("置灰图标后台即停");
-        dolBox.setTextSize(11);
-        dolBox.setTextColor(getColor(R.color.text_secondary));
-        dolBox.setMinimumHeight(Ui.dp(this, 32));
-        dolBox.setChecked(SwipeFreeze.dolEnabled(this));
-        dolBox.setEnabled(false);
-        lspBody.addView(dolBox);
         // 静默打开置灰图标：真正取消暂停，静默打开；回后台也不再自动暂停
         final CheckBox silentBox = new CheckBox(this);
         silentBox.setText("静默打开置灰图标");
@@ -10125,28 +10486,9 @@ public class FreezeListActivity extends BaseActivity {
         silentBox.setChecked(SwipeFreeze.silentOpenEnabled(this));
         silentBox.setEnabled(false);
         lspBody.addView(silentBox);
-        // 两个开关互斥：一个负责「回后台仍灰」，一个负责「打开后不再灰」，同时开等于互相抵消。
-        // 旧版本可能两个都开着，这里统一收敛成「静默打开优先」，与 hook 里的实际行为一致。
-        if (dolBox.isChecked() && silentBox.isChecked()) {
-            SwipeFreeze.setDolEnabled(this, false);
-            dolBox.setChecked(false);
-            SwipeFreeze.syncAsync(this);
-        }
-        dolBox.setOnCheckedChangeListener((b, on) -> {
-            SwipeFreeze.setDolEnabled(this, on);
-            if (on && silentBox.isChecked()) {
-                silentBox.setChecked(false);
-            } else {
-                SwipeFreeze.syncAsync(this);
-            }
-        });
         silentBox.setOnCheckedChangeListener((b, on) -> {
             SwipeFreeze.setSilentOpenEnabled(this, on);
-            if (on && dolBox.isChecked()) {
-                dolBox.setChecked(false);
-            } else {
-                SwipeFreeze.syncAsync(this);
-            }
+            SwipeFreeze.syncAsync(this);
         });
         // 与另外两个开关一致：只有 root 通道能写系统配置
         JinApp.IO.execute(() -> {
@@ -10155,12 +10497,9 @@ public class FreezeListActivity extends BaseActivity {
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
-                dolBox.setEnabled(root);
-                dolBox.setAlpha(root ? 1f : 0.45f);
                 silentBox.setEnabled(root);
                 silentBox.setAlpha(root ? 1f : 0.45f);
                 if (!root) {
-                    dolBox.setChecked(false);
                     silentBox.setChecked(false);
                 }
             });
@@ -10832,6 +11171,14 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout spBody = new LinearLayout(this);
         spBody.setOrientation(LinearLayout.VERTICAL);
         spBody.addView(layoutKeepIconEntry);
+        // 刷新桌面图标：暂停已写进系统、桌面却没重绘（图标停在彩色）时，点一下让桌面重取
+        TextView refreshIcons = new TextView(this);
+        refreshIcons.setText("· 图标未完全变化点击刷新");
+        refreshIcons.setTextSize(11);
+        refreshIcons.setTextColor(getColor(R.color.text_secondary));
+        refreshIcons.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        refreshIcons.setOnClickListener(v -> refreshDesktopIconsNow());
+        spBody.addView(refreshIcons);
         final LinearLayout spHead = collapsibleHead(spTitle, spBody,
                 KEY_SETTINGS_SP_COLLAPSED, null, () -> showSpecialModeHintDialog(spTitle),
                 R.drawable.ic_action_home);
@@ -11168,7 +11515,7 @@ public class FreezeListActivity extends BaseActivity {
         });
         opacityRows.put("qp", new View[]{qpAlphaLabel, qpAlphaBar});
 
-        // 设置页字体：只缩放设置页里的文字，80%–130%，拖动实时预览
+        // 设置页字体：只缩放设置页里的文字，80%–200%，拖动实时预览
         final TextView fontLabel = new TextView(this);
         fontLabel.setTextSize(11);
         fontLabel.setTextColor(getColor(R.color.text_secondary));
@@ -11276,14 +11623,15 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         // 弹窗外层留出阴影绘制空间：圆角 outline + elevation，阴影跟着圆角走
-        final int shadowPad = Ui.dp(this, 12);
+        final int shadowPad = Ui.dp(this, 16);
         boolean night = (getResources().getConfiguration().uiMode
                 & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
                 == android.content.res.Configuration.UI_MODE_NIGHT_YES;
-        root.setElevation(Ui.dp(this, night ? 18 : 10));
-        // 只保留四周淡淡的环境阴影，去掉主要落在下方的点光源阴影
+        root.setElevation(Ui.dp(this, night ? 20 : 12));
+        // 保留一层柔和的落向阴影：设置页默认带透明度，只剩环境光时几乎看不出面板浮在列表之上
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            root.setOutlineSpotShadowColor(android.graphics.Color.TRANSPARENT);
+            root.setOutlineSpotShadowColor(0x4D000000);
+            root.setOutlineAmbientShadowColor(0x26000000);
         }
         settingsSurfaceRoot = root;
 
@@ -11296,7 +11644,8 @@ public class FreezeListActivity extends BaseActivity {
         // 拖动只在「设置」两个字上生效，权限段的点击与长按不会被拖动手势吞掉
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
-        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        // 权限段贴着「设置」的底部对齐
+        titleRow.setGravity(Gravity.BOTTOM);
         titleRow.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 2));
         TextView title = new TextView(this);
         title.setText("设置");
@@ -11309,7 +11658,8 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView privTitle = new TextView(this);
-        privTitle.setTextSize(11);
+        // 与分组标题的「（查看说明）」同字号：12sp × 0.8 = 9.6sp
+        privTitle.setTextSize(9.6f);
         privTitle.setTextColor(getColor(R.color.text_secondary));
         privTitle.setSingleLine(true);
         privTitle.setIncludeFontPadding(false);
@@ -12500,7 +12850,7 @@ public class FreezeListActivity extends BaseActivity {
                         "hide_tab_row", "batch_tab_only", "panel_handle", "hide_status_bar",
                         "hide_recents", "gesture_enabled", "quick_panel_enabled"},
                 {"专属LSPosed", "swipe_freeze", "lock_freeze"},
-                {"特殊模式", "whitelist", "pair"},
+                {"特殊模式", "whitelist", "hidden", "pair"},
         };
     }
 
@@ -12586,6 +12936,8 @@ public class FreezeListActivity extends BaseActivity {
                 return "界面调节";
             case "whitelist":
                 return "列表白名单";
+            case "hidden":
+                return "隐藏应用";
             case "pair":
                 return "关联应用";
             case "select":
@@ -13753,6 +14105,8 @@ public class FreezeListActivity extends BaseActivity {
                 return R.drawable.ic_action_circle_unlock;
             case "whitelist":
                 return R.drawable.ic_action_whitelist;
+            case "hidden":
+                return R.drawable.ic_qp_eye_off;
             case "pair":
                 return R.drawable.ic_qp_link;
             case "select":
@@ -14325,15 +14679,21 @@ public class FreezeListActivity extends BaseActivity {
             }
             return wrap;
         }
-        if ("whitelist".equals(id) || "pair".equals(id)) {
-            // 参考搞机助手：标题在左，白名单图标 / 关联列表同排显示在右侧；
-            // 两行标题列宽固定，保证白名单第一个图标与关联应用主图标左对齐
+        if ("whitelist".equals(id) || "pair".equals(id) || "hidden".equals(id)) {
+            // 参考搞机助手：标题在左，白名单 / 隐藏 / 关联列表同排显示在右侧；
+            // 三行标题列宽固定，保证第一个图标左对齐
             LinearLayout.LayoutParams nlp = (LinearLayout.LayoutParams) name.getLayoutParams();
             nlp.width = Ui.dp(this, 84);
             nlp.weight = 0f;
             name.setLayoutParams(nlp);
-            View summary = "whitelist".equals(id)
-                    ? quickPanelWhitelistSummary() : quickPanelPairSummary();
+            View summary;
+            if ("whitelist".equals(id)) {
+                summary = quickPanelWhitelistSummary();
+            } else if ("hidden".equals(id)) {
+                summary = quickPanelHiddenSummary();
+            } else {
+                summary = quickPanelPairSummary();
+            }
             row.addView(summary, new LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             if ("whitelist".equals(id)) {
@@ -14341,6 +14701,12 @@ public class FreezeListActivity extends BaseActivity {
                     whitelistManagerFromQuickPanel = true;
                     dismissQuickPanel();
                     showWhitelistManager();
+                });
+            } else if ("hidden".equals(id)) {
+                row.setOnClickListener(v -> {
+                    hiddenManagerFromQuickPanel = true;
+                    dismissQuickPanel();
+                    showHiddenManager();
                 });
             } else {
                 row.setOnClickListener(v -> {
@@ -14411,7 +14777,10 @@ public class FreezeListActivity extends BaseActivity {
 
     private Drawable quickPanelIconFor(String key) {
         try {
-            ApplicationInfo ai = getPackageManager().getApplicationInfo(packagePart(key), 0);
+            // 隐藏中的应用对其他应用看起来像已卸载：必须带 MATCH_UNINSTALLED_PACKAGES，
+            // 否则隐藏列表 / 快面板摘要取不到图标，只剩系统默认占位图
+            ApplicationInfo ai = getPackageManager().getApplicationInfo(
+                    packagePart(key), PackageManager.MATCH_UNINSTALLED_PACKAGES);
             return AppIconCache.load(this, packagePart(key), ai);
         } catch (Exception ignored) {
             return null;
@@ -14449,6 +14818,322 @@ public class FreezeListActivity extends BaseActivity {
             i++;
         }
         return col;
+    }
+
+    /** 冻结列表里处于隐藏状态的实例键，按名称排序（主用户纯包名，分身带 @用户）。 */
+    private List<String> hiddenListKeys() {
+        Set<String> book = HideSupport.hiddenIntentKeys(this);
+        List<String> out = new ArrayList<>();
+        for (String key : pkgs()) {
+            if (book.contains(key) || book.contains(packagePart(key))) {
+                out.add(key);
+            }
+        }
+        Collections.sort(out, (a, b) -> labelFor(a).compareToIgnoreCase(labelFor(b)));
+        return out;
+    }
+
+    /** 「隐藏应用」行内摘要：与白名单同一套图标铺法，有多少显示多少。 */
+    private View quickPanelHiddenSummary() {
+        List<String> keys = hiddenListKeys();
+        if (keys.isEmpty()) {
+            return Ui.text(this, "未添加", 12, Ui.TEXT_SECONDARY, false);
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int size = Ui.dp(this, 20);
+        int gap = Ui.dp(this, 4);
+        final int perLine = 6;
+        LinearLayout line = null;
+        int i = 0;
+        for (String key : keys) {
+            if (i % perLine == 0) {
+                line = new LinearLayout(this);
+                line.setOrientation(LinearLayout.HORIZONTAL);
+                line.setGravity(Gravity.CENTER_VERTICAL);
+                col.addView(line);
+            }
+            ImageView icon = new ImageView(this);
+            Drawable d = quickPanelIconFor(key);
+            icon.setImageDrawable(d != null ? d
+                    : androidx.core.content.ContextCompat.getDrawable(this,
+                    android.R.drawable.sym_def_app_icon));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
+            lp.rightMargin = gap;
+            line.addView(icon, lp);
+            i++;
+        }
+        return col;
+    }
+
+    /**
+     * 隐藏列表：显示冻结列表里所有已隐藏的应用，交互格式与白名单列表一致
+     * （宫格、单删红减号、多选全选/反选）；这里的「移除」= 取消隐藏。
+     */
+    private void showHiddenManager() {
+        final int modeNormal = 0;
+        final int modeRemove = 1;
+        final int modeMulti = 2;
+        final int[] mode = {modeNormal};
+        final Set<String> checked = new HashSet<>();
+        final Runnable[] renderList = new Runnable[1];
+        final AlertDialog[] dlgHolder = new AlertDialog[1];
+        final java.util.function.IntConsumer syncNeutral = total -> {
+            if (dlgHolder[0] == null) {
+                return;
+            }
+            android.widget.Button nb = dlgHolder[0].getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (nb == null) {
+                return;
+            }
+            if (mode[0] != modeMulti) {
+                nb.setText("多选");
+            } else if (checked.isEmpty()) {
+                nb.setText("全选");
+            } else if (checked.size() >= total) {
+                nb.setText("全不选");
+            } else {
+                nb.setText("反选");
+            }
+        };
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        final int side = Ui.dp(this, 16);
+        root.setPadding(side, Ui.dp(this, 6), side, Ui.dp(this, 2));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = Ui.text(this, "隐藏列表", 16, Ui.TEXT_PRIMARY, true);
+        header.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final android.widget.ImageButton minusBtn =
+                whitelistHeaderBtn(R.drawable.ic_minus, "取消隐藏");
+        final android.widget.ImageButton backBtn =
+                whitelistHeaderBtn(R.drawable.ic_back, "返回");
+        header.addView(minusBtn);
+        header.addView(backBtn);
+        root.addView(header);
+
+        LinearLayout listBox = new LinearLayout(this);
+        listBox.setOrientation(LinearLayout.VERTICAL);
+        MaxHeightScrollView sv = new MaxHeightScrollView(this,
+                (int) (getResources().getDisplayMetrics().heightPixels * 0.58f));
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(listBox, new android.widget.ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(sv);
+
+        final java.util.function.Consumer<List<String>> unhideAll = keys -> {
+            if (keys == null || keys.isEmpty()) {
+                return;
+            }
+            final List<String> targets = new ArrayList<>(keys);
+            IO.execute(() -> {
+                for (String key : targets) {
+                    HideSupport.unhide(this, packagePart(key), userIdPart(key));
+                }
+                // 账本变化同步给划卡/锁屏的 hook 配置
+                SwipeFreeze.syncAsync(this);
+                main.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    toast("已取消隐藏 " + targets.size() + " 个应用");
+                    reload();
+                    if (renderList[0] != null) {
+                        renderList[0].run();
+                    }
+                });
+            });
+        };
+        final java.util.function.Consumer<String> unhideOne =
+                key -> unhideAll.accept(Collections.singletonList(key));
+
+        renderList[0] = () -> {
+            listBox.removeAllViews();
+            final boolean multi = mode[0] == modeMulti;
+            final boolean remove = mode[0] == modeRemove;
+            backBtn.setVisibility(multi ? View.VISIBLE : View.GONE);
+            minusBtn.setImageTintList(ColorStateList.valueOf(mode[0] == modeNormal
+                    ? getColor(R.color.text_primary) : getColor(R.color.danger)));
+
+            List<String> keys = hiddenListKeys();
+            syncNeutral.accept(keys.size());
+            if (keys.isEmpty()) {
+                TextView empty = new TextView(this);
+                empty.setText("没有隐藏的应用；长按图标选「隐藏」后会出现在这里");
+                empty.setTextSize(12);
+                empty.setTextColor(getColor(R.color.text_secondary));
+                empty.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 12));
+                listBox.addView(empty);
+                return;
+            }
+            final int cols = 5;
+            final int rowIconPx = Ui.dp(this, 40);
+            LinearLayout gridRow = null;
+            for (int i = 0; i < keys.size(); i++) {
+                if (i % cols == 0) {
+                    gridRow = new LinearLayout(this);
+                    gridRow.setOrientation(LinearLayout.HORIZONTAL);
+                    LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    if (i > 0) {
+                        rlp.topMargin = Ui.dp(this, 2);
+                    }
+                    listBox.addView(gridRow, rlp);
+                }
+                final String key = keys.get(i);
+                LinearLayout cell = new LinearLayout(this);
+                cell.setOrientation(LinearLayout.VERTICAL);
+                cell.setGravity(Gravity.CENTER_HORIZONTAL);
+                cell.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 4));
+
+                FrameLayout iconBox = new FrameLayout(this);
+                ImageView icon = new ImageView(this);
+                Drawable d = quickPanelIconFor(key);
+                if (d != null) {
+                    icon.setImageDrawable(d);
+                } else {
+                    icon.setImageResource(android.R.drawable.sym_def_app_icon);
+                }
+                iconBox.addView(icon, new FrameLayout.LayoutParams(rowIconPx, rowIconPx));
+                final TextView cb = new TextView(this);
+                cb.setTextSize(9);
+                cb.setTextColor(0xFFFFFFFF);
+                cb.setGravity(Gravity.CENTER);
+                cb.setBackgroundResource(checked.contains(key)
+                        ? R.drawable.bg_check_on : R.drawable.bg_check_off);
+                cb.setText(checked.contains(key) ? "✓" : "");
+                cb.setVisibility(multi ? View.VISIBLE : View.GONE);
+                FrameLayout.LayoutParams cbLp = new FrameLayout.LayoutParams(
+                        Ui.dp(this, 15), Ui.dp(this, 15));
+                cbLp.gravity = Gravity.BOTTOM | Gravity.END;
+                iconBox.addView(cb, cbLp);
+                final TextView rm = new TextView(this);
+                rm.setText("−");
+                rm.setTextColor(0xFFFFFFFF);
+                rm.setTextSize(12);
+                rm.setGravity(Gravity.CENTER);
+                rm.setBackgroundResource(R.drawable.bg_remove_badge);
+                rm.setVisibility(remove ? View.VISIBLE : View.GONE);
+                FrameLayout.LayoutParams rmLp = new FrameLayout.LayoutParams(
+                        Ui.dp(this, 18), Ui.dp(this, 18));
+                rmLp.gravity = Gravity.TOP | Gravity.END;
+                rm.setOnClickListener(v -> unhideOne.accept(key));
+                iconBox.addView(rm, rmLp);
+
+                cell.addView(iconBox, new LinearLayout.LayoutParams(rowIconPx, rowIconPx));
+                TextView name = new TextView(this);
+                name.setText(labelFor(key));
+                name.setTextSize(10);
+                name.setTextColor(getColor(R.color.text_primary));
+                name.setSingleLine(true);
+                name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                name.setGravity(Gravity.CENTER);
+                name.setPadding(0, Ui.dp(this, 4), 0, 0);
+                cell.addView(name, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+                cell.setOnClickListener(v -> {
+                    if (mode[0] != modeMulti) {
+                        return;
+                    }
+                    if (checked.contains(key)) {
+                        checked.remove(key);
+                    } else {
+                        checked.add(key);
+                    }
+                    boolean on = checked.contains(key);
+                    cb.setText(on ? "✓" : "");
+                    cb.setBackgroundResource(on
+                            ? R.drawable.bg_check_on : R.drawable.bg_check_off);
+                    syncNeutral.accept(keys.size());
+                });
+                gridRow.addView(cell, new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            }
+            if (gridRow != null) {
+                int rest = cols - keys.size() % cols;
+                if (rest > 0 && rest < cols) {
+                    for (int i = 0; i < rest; i++) {
+                        gridRow.addView(new View(this), new LinearLayout.LayoutParams(
+                                0, 1, 1f));
+                    }
+                }
+            }
+        };
+
+        backBtn.setOnClickListener(v -> {
+            mode[0] = modeNormal;
+            checked.clear();
+            renderList[0].run();
+        });
+        minusBtn.setOnClickListener(v -> {
+            if (mode[0] == modeMulti) {
+                if (checked.isEmpty()) {
+                    toast("先勾选要取消隐藏的应用");
+                    return;
+                }
+                List<String> targets = new ArrayList<>(checked);
+                checked.clear();
+                mode[0] = modeNormal;
+                unhideAll.accept(targets);
+            } else {
+                mode[0] = mode[0] == modeRemove ? modeNormal : modeRemove;
+                renderList[0].run();
+            }
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(root)
+                .setNeutralButton("多选", null)
+                .setNegativeButton("返回", (d, w) -> hiddenManagerFromQuickPanel = false)
+                .create();
+        dlgHolder[0] = dialog;
+        hiddenManagerDialog = dialog;
+        dialog.setOnCancelListener(d -> {
+            if (!hiddenManagerFromQuickPanel) {
+                return;
+            }
+            hiddenManagerFromQuickPanel = false;
+            main.post(this::showQuickPanel);
+        });
+        dialog.setOnDismissListener(d -> {
+            if (hiddenManagerDialog == dialog) {
+                hiddenManagerDialog = null;
+            }
+        });
+        renderList[0].run();
+        disableDialogWindowAnimation(dialog);
+        dialog.show();
+        if (hiddenManagerFromQuickPanel) {
+            Ui.skipAutoHide(dialog);
+        }
+        Ui.roundAlertDialog(dialog);
+        applySettingsAlignment(dialog);
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+            if (mode[0] != modeMulti) {
+                mode[0] = modeMulti;
+                checked.clear();
+                renderList[0].run();
+                return;
+            }
+            List<String> keys = hiddenListKeys();
+            if (checked.isEmpty()) {
+                checked.addAll(keys);
+            } else if (checked.size() >= keys.size()) {
+                checked.clear();
+            } else {
+                Set<String> inverted = new HashSet<>(keys);
+                inverted.removeAll(checked);
+                checked.clear();
+                checked.addAll(inverted);
+            }
+            renderList[0].run();
+        });
     }
 
     /** 「关联应用」行内摘要：每条关联一行「主图标→副图标 名称」，空则「未添加」。 */
@@ -15079,7 +15764,6 @@ public class FreezeListActivity extends BaseActivity {
                 + "· 划卡冻结：lsposed、shizuku 专属，最近任务卡片划掉即冻结，开启隐藏的则是隐藏；\n"
                 + "· 锁屏冻结：lsposed、shizuku 专属，锁屏后按设定的时间冻结，开启隐藏的则是隐藏；\n"
                 + "· 静默打开置灰图标：lsposed 专属，保留桌面图标转暂停模式后，点击桌面置灰图标可以静默打开，置灰应用回后台不会暂停；\n"
-                + "· 置灰图标后台即停：lsposed 专属，保留桌面图标转暂停模式后，点击桌面置灰图标可以静默打开，置灰应用回后台即继续暂停，类似墓碑机制；\n"
                 + "· 消除启动白底：lsposed、hyperOS4 专属，打开后，全屏透明度调节后，冷启动白底消失，并可以优化半屏打开动画；\n"
                 + "· 隐藏应用模式：root、dhizuku、shizuku 的 root 专属，开启相关功能后，可对应用进行隐藏，隐藏后任何手机等于没安装，但可以在列表打开或取消隐藏；\n"
                 + "· 备份恢复：可单独恢复添加的桌面图标、白名单、关联应用、列表、配置。";
@@ -16072,7 +16756,6 @@ public class FreezeListActivity extends BaseActivity {
                 sb.append("lock_tags(锁屏标签)=")
                         .append(lockTags == null ? "未设置（全选）" : lockTags.length() + " 个").append('\n');
                 sb.append("no_launch_bg(消除启动白底)=").append(o.optBoolean("no_launch_bg"))
-                        .append("，dol(置灰图标后台即停)=").append(o.optBoolean("dol"))
                         .append("，silent_open(静默打开置灰图标)=").append(o.optBoolean("silent_open"))
                         .append("，suspend(保留桌面图标)=").append(o.optBoolean("suspend")).append('\n');
                 JSONArray hidden = o.optJSONArray("hidden");
@@ -16090,7 +16773,6 @@ public class FreezeListActivity extends BaseActivity {
                 .append("，swipe_freeze_enabled=")
                 .append(String.valueOf(prefs().getAll().get("swipe_freeze_enabled"))).append('\n');
         sb.append("LSPosed 新功能偏好: no_launch_bg=").append(SwipeFreeze.noLaunchBg(this))
-                .append("，dol_enabled(置灰后台即停)=").append(SwipeFreeze.dolEnabled(this))
                 .append("，silent_open_enabled(静默打开)=").append(SwipeFreeze.silentOpenEnabled(this))
                 .append("，keep_launcher_icon=").append(SwipeFreeze.keepLauncherIcon(this)).append('\n');
         sb.append("专属 Shizuku 服务: 已连接=").append(ShizukuLite.ready())
@@ -16479,9 +17161,9 @@ public class FreezeListActivity extends BaseActivity {
         return "列表图标透明度：" + p + "%";
     }
 
-    /** 设置页字体缩放百分比（80–130），默认 100。 */
+    /** 设置页字体缩放百分比（80–200），默认 105。 */
     private int settingsFontPct() {
-        return clampInt(prefs().getInt(KEY_SETTINGS_FONT, 100),
+        return clampInt(prefs().getInt(KEY_SETTINGS_FONT, 105),
                 SETTINGS_FONT_MIN, SETTINGS_FONT_MAX);
     }
 
@@ -16545,22 +17227,24 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 阴影跟着透明度一起消失：卡片一旦开始变透明就直接撤掉外圈阴影，
-     * 否则阴影会残留成一圈「边框」，看起来像只有边缘变了。
-     * 原始阴影高度记在 tag 里，拉回 0% 时原样恢复。
+     * 阴影跟着透明度收放，但不收成 0：面板半透明时完全撤掉阴影，会整块贴在列表上、没有层次；
+     * 这里改成随透明度递减的柔和阴影（全透明时仍留约四成），实心时按原始高度还原。
+     * 原始阴影高度记在 tag 里，反复调节不会叠加衰减。
      */
     private void fadeElevation(View v) {
-        boolean transparent = settingsSurfacePct() > 0;
+        int pct = settingsSurfacePct();
         Object tag = v.getTag(TAG_BASE_ELEVATION);
-        if (tag instanceof Float) {
-            v.setElevation(transparent ? 0f : (Float) tag);
-            return;
-        }
-        float base = v.getElevation();
-        if (base > 0f) {
+        if (!(tag instanceof Float)) {
+            float base = v.getElevation();
+            if (base <= 0f) {
+                return;
+            }
             v.setTag(TAG_BASE_ELEVATION, base);
-            v.setElevation(transparent ? 0f : base);
+            tag = base;
         }
+        float base = (Float) tag;
+        float keep = pct <= 0 ? 1f : Math.max(0.6f, 1f - pct / 250f);
+        v.setElevation(base * keep);
     }
 
     /** 二级弹窗同步「设置页透明度」：从弹窗内容根整棵刷，边框与内层分组一起变。 */
@@ -17245,9 +17929,11 @@ public class FreezeListActivity extends BaseActivity {
     private static final int RESTORE_WHITELIST = 8;
     /** 只恢复关联应用（主副应用列表）：覆盖当前关联。 */
     private static final int RESTORE_PAIRS = 16;
-    /** 全部恢复：配置 + 冻结列表 + 桌面快捷方式 + 白名单 + 关联应用。 */
+    /** 只恢复隐藏应用：隐藏模式开关 + hide_keys 账本，并尽力补回系统隐藏位。 */
+    private static final int RESTORE_HIDDEN = 32;
+    /** 全部恢复：配置 + 冻结列表 + 桌面快捷方式 + 白名单 + 关联应用 + 隐藏应用。 */
     private static final int RESTORE_ALL = RESTORE_SETTINGS | RESTORE_FREEZE | RESTORE_SHORTCUTS
-            | RESTORE_WHITELIST | RESTORE_PAIRS;
+            | RESTORE_WHITELIST | RESTORE_PAIRS | RESTORE_HIDDEN;
 
     /** 名单类键归 freeze 段，其余键归 settings 段，不重复备份。 */
     private static final String[] BACKUP_LIST_KEYS = {
@@ -17255,7 +17941,9 @@ public class FreezeListActivity extends BaseActivity {
             KEY_CURRENT_TAB, KEY_DEFAULT_TAB, KEY_HIDE_TAB_ROW,
             "panel_hide_tab_row",
             // 白名单与主副关联单独成段备份，不再混进「配置」
-            KEY_WHITELIST, KEY_SUB_PAIRS
+            KEY_WHITELIST, KEY_SUB_PAIRS,
+            // 隐藏模式与隐藏账本单独成段备份（旧备份里混在配置段，恢复时忽略）
+            HideSupport.KEY_MODE, HideSupport.KEY_KEYS
     };
 
     /**
@@ -17314,8 +18002,10 @@ public class FreezeListActivity extends BaseActivity {
         ref[0] = compactCard("备份",
                 "冻结列表 " + Math.max(0, listCount) + " 个、设置 " + settingCount + " 项、桌面快捷方式 "
                         + shortcutCount + " 个、白名单 " + whiteCount + " 个、关联应用 "
-                        + pairCount + " 组，会写进同一份备份"
-                        + (hiddenCount > 0 ? "\n已跳过 " + hiddenCount + " 个隐藏应用" : ""),
+                        + pairCount + " 组"
+                        + (hiddenCount > 0 ? "、隐藏应用 " + hiddenCount + " 个" : "")
+                        + "，会写进同一份备份"
+                        + (hiddenCount > 0 ? "\n隐藏应用单独成段，恢复时可单独勾选" : ""),
                 content, new String[]{"返回"}, new Runnable[]{null});
     }
 
@@ -17931,6 +18621,12 @@ public class FreezeListActivity extends BaseActivity {
             JSONArray arr = pairsObj.optJSONArray("items");
             pairCount = arr == null ? pairsObj.optInt("count", 0) : arr.length();
         }
+        JSONObject hiddenObj = data.optJSONObject("hidden");
+        int hiddenCount = 0;
+        if (hiddenObj != null) {
+            JSONArray arr = hiddenObj.optJSONArray("keys");
+            hiddenCount = arr == null ? hiddenObj.optInt("count", 0) : arr.length();
+        }
         StringBuilder desc = new StringBuilder("来源：").append(source);
         String created = data.optString("createdAt", "");
         String ver = data.optString("appVersion", "");
@@ -17973,6 +18669,14 @@ public class FreezeListActivity extends BaseActivity {
             applyRestore(data, RESTORE_PAIRS);
         });
         content.addView(onlyPairs, topMargin(6));
+        LinearLayout onlyHidden = optionRowCompact("只恢复隐藏应用",
+                hiddenCount == 0 ? "这份备份里没有隐藏应用记录"
+                        : hiddenCount + " 个隐藏应用（含隐藏模式），恢复后会补回隐藏状态");
+        onlyHidden.setOnClickListener(v -> {
+            dismiss(ref);
+            applyRestore(data, RESTORE_HIDDEN);
+        });
+        content.addView(onlyHidden, topMargin(6));
         LinearLayout onlyShortcuts = optionRowCompact("只恢复快捷方式",
                 shortcutCount == 0 ? "这份备份里没有桌面快捷方式记录"
                         : shortcutCount + " 个桌面图标，只补当前桌面缺少的，每个需在系统弹框确认");
@@ -17983,8 +18687,8 @@ public class FreezeListActivity extends BaseActivity {
         content.addView(onlyShortcuts, topMargin(6));
         LinearLayout all = optionRowCompact("全部恢复",
                 "配置 " + setCount + " 项 + 冻结列表 " + listCount + " 个 + 白名单 "
-                        + whiteCount + " 个 + 关联应用 " + pairCount + " 组 + 快捷方式 "
-                        + shortcutCount + " 个");
+                        + whiteCount + " 个 + 关联应用 " + pairCount + " 组 + 隐藏应用 "
+                        + hiddenCount + " 个 + 快捷方式 " + shortcutCount + " 个");
         all.setOnClickListener(v -> {
             dismiss(ref);
             applyRestore(data, RESTORE_ALL);
@@ -18004,10 +18708,12 @@ public class FreezeListActivity extends BaseActivity {
         boolean doShortcuts = (mode & RESTORE_SHORTCUTS) != 0;
         boolean doWhitelist = (mode & RESTORE_WHITELIST) != 0;
         boolean doPairs = (mode & RESTORE_PAIRS) != 0;
+        boolean doHidden = (mode & RESTORE_HIDDEN) != 0;
         int setCount = 0;
         int listCount = 0;
         int missing = 0;
         int hiddenRestoreSkipped = 0;
+        int hiddenCount = -1;
         int shortcutTotal = 0;
         int shortcutRequested = 0;
         int whiteCount = -1;
@@ -18020,6 +18726,10 @@ public class FreezeListActivity extends BaseActivity {
             listCount = r[0];
             missing = r[1];
             hiddenRestoreSkipped = r.length > 2 ? r[2] : 0;
+        }
+        // 隐藏段放在冻结列表之后：它会把隐藏应用收回名单，白名单裁剪才能看到它们
+        if (doHidden) {
+            hiddenCount = writeBackupHidden(data.optJSONObject("hidden"));
         }
         if (doWhitelist) {
             JSONObject obj = data.optJSONObject("whitelist");
@@ -18065,6 +18775,17 @@ public class FreezeListActivity extends BaseActivity {
                 msg.append("备份里没有白名单记录，当前白名单未改动");
             } else {
                 msg.append("列表白名单 ").append(whiteCount).append(" 个");
+            }
+        }
+        if (doHidden) {
+            if (msg.length() > 0) {
+                msg.append('\n');
+            }
+            if (hiddenCount < 0) {
+                msg.append("备份里没有隐藏应用记录，当前隐藏未改动");
+            } else {
+                msg.append("隐藏应用 ").append(hiddenCount)
+                        .append(" 个（账本已恢复，正在按当前通道补回隐藏状态）");
             }
         }
         if (doPairs) {
@@ -18253,6 +18974,21 @@ public class FreezeListActivity extends BaseActivity {
             shortcuts.put("count", scArr.length());
             shortcuts.put("pkgs", scArr);
             root.put("shortcuts", shortcuts);
+
+            // 隐藏应用：单独成段（模式开关 + 账本）。恢复时写回账本并尽力补回系统隐藏位，
+            // 不再混进配置段，避免出现「账本有、列表没有」的半套状态
+            Set<String> hiddenKeys = HideSupport.hiddenIntentKeys(this);
+            List<String> hiddenSorted = new ArrayList<>(hiddenKeys);
+            Collections.sort(hiddenSorted);
+            JSONArray hiddenArr = new JSONArray();
+            for (String k : hiddenSorted) {
+                hiddenArr.put(k);
+            }
+            JSONObject hiddenObj = new JSONObject();
+            hiddenObj.put("count", hiddenArr.length());
+            hiddenObj.put("mode", HideSupport.modeOn(this));
+            hiddenObj.put("keys", hiddenArr);
+            root.put("hidden", hiddenObj);
 
             JSONObject settings = new JSONObject();
             for (Map.Entry<String, ?> en : prefs().getAll().entrySet()) {
@@ -18618,6 +19354,66 @@ public class FreezeListActivity extends BaseActivity {
         if (o.has(src) && !o.isNull(src)) {
             e.putString(key, o.optString(src, ""));
         }
+    }
+
+    /**
+     * 写回隐藏应用：隐藏模式开关 + hide_keys 账本，并把它们并回冻结列表
+     * （隐藏应用本身是名单成员，只是不进冻结备份段）。系统隐藏位不随偏好恢复，
+     * 写完后在当前权限可用时逐包补一次隐藏。
+     * 返回写回的隐藏应用数量；-1 表示备份里没有隐藏段（当前隐藏状态保持不动）。
+     */
+    private int writeBackupHidden(JSONObject hidden) {
+        if (hidden == null) {
+            return -1;
+        }
+        JSONArray arr = hidden.optJSONArray("keys");
+        boolean mode = hidden.optBoolean("mode", false);
+        Set<String> keys = new HashSet<>();
+        Set<String> list = pkgs();
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                String key = arr.optString(i, "").trim();
+                if (key.isEmpty()) {
+                    continue;
+                }
+                int uid = userIdPart(key);
+                if (uid != 0) {
+                    // 分身按对应 user 判断；查不到时宁可直接写入，交给 reload 兜底
+                    if (Boolean.FALSE.equals(cloneInstalled(packagePart(key), uid))) {
+                        continue;
+                    }
+                } else {
+                    try {
+                        getPackageManager().getApplicationInfo(packagePart(key),
+                                PackageManager.MATCH_UNINSTALLED_PACKAGES);
+                    } catch (Exception e) {
+                        continue;
+                    }
+                }
+                keys.add(key);
+                list.add(key);
+            }
+        }
+        prefs().edit()
+                .putStringSet(HideSupport.KEY_KEYS, keys)
+                .putBoolean(HideSupport.KEY_MODE, mode)
+                .putStringSet(KEY_PKGS, list)
+                .apply();
+        if (!keys.isEmpty() && HideSupport.available(this)) {
+            // 账本已恢复；系统隐藏位要重新执行一次（后台按当前通道尽力补回）
+            final List<String> todo = new ArrayList<>(keys);
+            IO.execute(() -> {
+                for (String key : todo) {
+                    // 上面已经把账本写成「隐藏」，hiddenOne 会因账本命中而返回已隐藏，
+                    // 所以这里不能再拿它判断，直接按当前通道补一次 hide（已隐藏时是幂等的）
+                    HideSupport.hide(this, HideSupport.pkgOf(key), HideSupport.userIdOf(key));
+                }
+                SwipeFreeze.syncAsync(this);
+            });
+        } else {
+            SwipeFreeze.syncAsync(this);
+        }
+        return keys.size();
     }
 
     /** 写回列表白名单：整体覆盖，只保留冻结列表里还在的应用，返回写入个数。 */
@@ -19393,7 +20189,12 @@ public class FreezeListActivity extends BaseActivity {
             if (!zeroKeys.isEmpty()) {
                 if (freeze && (keepLauncherIcon || dhizuku)) {
                     // 勾选「留桌面图标」或 Dhizuku-only：整批改走暂停通道，不执行 pm disable-user，图标才不会被摘掉
-                    outputs.putAll(execSuspendBatch(zeroKeys));
+                    if (keepLauncherIcon) {
+                        // 暂停必须是最后一次状态变更，桌面才会把图标置灰；分批交错，避免事件涌给桌面
+                        outputs.putAll(enableAndSuspendChunked(zeroKeys, null));
+                    } else {
+                        outputs.putAll(execSuspendBatch(zeroKeys));
+                    }
                 } else if (!freeze && dhizuku) {
                     // Dhizuku-only 解冻：逐包走 DPM 恢复暂停（DO 只作用 user 0）
                     for (String key : zeroKeys) {
@@ -19590,12 +20391,30 @@ public class FreezeListActivity extends BaseActivity {
         }
         // root：一条命令、一个进程处理整份名单（每个包仍带自己的弹窗文案）。
         // 逐个起 app_process 在名单长时会很慢，表现成「切换停不下来/转不过去」。
+        // 但一次把上百个包全塞给 PMS，桌面要处理的暂停广播会挤在一起，HyperOS 桌面
+        // 可能来不及逐个置灰（用户反馈：toast 成功、列表显示暂停，桌面仍彩色）。
+        // 这里按 20 个一组、组间留 250ms，让桌面把每组图标都刷新到灰色。
         Map<String, String> labels = new HashMap<>();
         for (String pkg : pkgs) {
             labels.put(pkg, labelOf(pkg));
         }
-        Map<String, Boolean> batch = SuspendSupport.cliBatch(this, pkgs, labels, true);
-        if (batch != null) {
+        Map<String, Boolean> batch = new HashMap<>();
+        boolean anyBatch = false;
+        final int chunk = 20;
+        for (int from = 0; from < pkgs.size(); from += chunk) {
+            List<String> part = pkgs.subList(from, Math.min(pkgs.size(), from + chunk));
+            Map<String, Boolean> one = SuspendSupport.cliBatch(this, part, labels, true);
+            if (one == null) {
+                batch = null;
+                break;
+            }
+            anyBatch = true;
+            batch.putAll(one);
+            if (from + chunk < pkgs.size()) {
+                android.os.SystemClock.sleep(250);
+            }
+        }
+        if (batch != null && anyBatch) {
             for (String pkg : pkgs) {
                 result.put(pkg, Boolean.TRUE.equals(batch.get(pkg)) ? "" : "suspend failed");
             }

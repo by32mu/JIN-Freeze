@@ -45,8 +45,6 @@ public final class JinHookConfig {
         final Set<String> lockSelected;
         /** 消除启动白底：关掉时完全按系统默认的启动动画走。 */
         final boolean noLaunchBg;
-        /** 活体解冻（DoL）：点图标/通知启动冻结应用时，先解冻再放行。 */
-        final boolean dol;
         /** 静默打开置灰图标：真正取消暂停后静默打开，回后台不再自动暂停。 */
         final boolean silentOpen;
         /** 保留桌面图标（转暂停）：划卡/锁屏冻结用 suspend 而不是 disable。 */
@@ -57,7 +55,7 @@ public final class JinHookConfig {
         Snapshot(boolean enabled, boolean lockEnabled, int lockDelaySeconds,
                  Set<String> packages, Map<String, Set<String>> tags,
                  Map<String, String> labels, Set<String> selected, Set<String> lockSelected,
-                 boolean noLaunchBg, boolean dol, boolean silentOpen, boolean suspend,
+                 boolean noLaunchBg, boolean silentOpen, boolean suspend,
                  Set<String> hiddenIntent) {
             this.enabled = enabled;
             this.lockEnabled = lockEnabled;
@@ -68,7 +66,6 @@ public final class JinHookConfig {
             this.selected = selected;
             this.lockSelected = lockSelected;
             this.noLaunchBg = noLaunchBg;
-            this.dol = dol;
             this.silentOpen = silentOpen;
             this.suspend = suspend;
             this.hiddenIntent = hiddenIntent;
@@ -277,7 +274,6 @@ public final class JinHookConfig {
         Set<String> selected = readIds(root, "selected");
         Set<String> lockSelected = readIds(root, "lock_tags");
         boolean noLaunchBg = root.optBoolean("no_launch_bg", false);
-        boolean dol = root.optBoolean("dol", false);
         boolean silentOpen = root.optBoolean("silent_open", false);
         boolean suspend = root.optBoolean("suspend", false);
         Set<String> hiddenIntent = new HashSet<>();
@@ -293,7 +289,7 @@ public final class JinHookConfig {
         return new Snapshot(enabled, lockEnabled, lockDelaySeconds,
                 Collections.unmodifiableSet(packages),
                 Collections.unmodifiableMap(tags), Collections.unmodifiableMap(labels),
-                selected, lockSelected, noLaunchBg, dol, silentOpen, suspend,
+                selected, lockSelected, noLaunchBg, silentOpen, suspend,
                 Collections.unmodifiableSet(hiddenIntent));
     }
 
@@ -301,12 +297,6 @@ public final class JinHookConfig {
     public static boolean noLaunchBg() {
         Snapshot snap = snapshot();
         return snap != null && snap.noLaunchBg;
-    }
-
-    /** 活体解冻总开关。 */
-    public static boolean dolEnabled() {
-        Snapshot snap = snapshot();
-        return snap != null && snap.dol;
     }
 
     /** 静默打开置灰图标总开关。 */

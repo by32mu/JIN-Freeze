@@ -43,8 +43,6 @@ public final class SwipeFreeze {
     public static final String KEY_LOCK_TAGS = "lock_freeze_tags";
     /** 消除启动白底（HyperOS 4 专属，默认关）：模块把系统预启动动画的白/黑底板透明化。 */
     public static final String KEY_NO_LAUNCH_BG = "no_launch_bg";
-    /** 活体解冻（DoL）：点图标/通知启动冻结应用时先解冻再放行，默认关。 */
-    public static final String KEY_DOL = "dol_enabled";
     /** 静默打开置灰图标：真正取消暂停后静默打开，回后台也不再自动暂停，默认关。 */
     public static final String KEY_SILENT_OPEN = "silent_open_enabled";
     /** 冻结方式：保留桌面图标（转暂停）。划卡/锁屏也必须跟着用 suspend，否则直接停用会让图标消失。 */
@@ -135,15 +133,6 @@ public final class SwipeFreeze {
 
     public static void setNoLaunchBg(Context context, boolean on) {
         prefs(context).edit().putBoolean(KEY_NO_LAUNCH_BG, on).apply();
-    }
-
-    /** 活体解冻（DoL）：默认关。 */
-    public static boolean dolEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_DOL, false);
-    }
-
-    public static void setDolEnabled(Context context, boolean on) {
-        prefs(context).edit().putBoolean(KEY_DOL, on).apply();
     }
 
     /** 静默打开置灰图标：默认关。 */
@@ -335,13 +324,24 @@ public final class SwipeFreeze {
             // 消除启动白底：hook 侧在图标启动时读，关掉就完全走系统默认
             root.put("no_launch_bg", noLaunchBg(context));
             // 活体解冻：hook 侧拦截 startActivity，点图标先把冻结应用解冻再放行
-            root.put("dol", dolEnabled(context));
             // 静默打开置灰图标：真正取消暂停后静默打开
             root.put("silent_open", silentOpenEnabled(context));
             // 保留桌面图标（转暂停）：划卡/锁屏冻结也必须用 suspend，不能 disable
             root.put("suspend", keepLauncherIcon(context));
-            // 用户标记隐藏的实例键：划卡/锁屏遇到它们改走「隐藏」，不再做冻结
-            root.put("hidden", new JSONArray(HideSupport.hiddenIntentKeys(context)));
+            // 用户标记隐藏的实例键：划卡/锁屏遇到它们改走「隐藏」，不再做冻结。
+            // 白名单里的隐藏项不写：白名单允许隐藏，但不允许冻结/重新隐藏（与列表一致）
+            Set<String> hiddenKeys = new TreeSet<>(HideSupport.hiddenIntentKeys(context));
+            if (white != null && !white.isEmpty()) {
+                hiddenKeys.removeAll(white);
+                Set<String> drop = new TreeSet<>();
+                for (String key : hiddenKeys) {
+                    if (white.contains(packagePart(key))) {
+                        drop.add(key);
+                    }
+                }
+                hiddenKeys.removeAll(drop);
+            }
+            root.put("hidden", new JSONArray(hiddenKeys));
             root.put("packages", new JSONArray(pkgs));
 
             JSONObject tagsObj = new JSONObject();

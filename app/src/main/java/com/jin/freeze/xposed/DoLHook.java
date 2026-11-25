@@ -56,7 +56,7 @@ final class DoLHook {
         if (args == null || args.length == 0 || args[0] == null) {
             return;
         }
-        if (!JinHookConfig.dolEnabled() && !JinHookConfig.silentOpenEnabled()) {
+        if (!JinHookConfig.silentOpenEnabled()) {
             return;
         }
         Object request = args[0];
