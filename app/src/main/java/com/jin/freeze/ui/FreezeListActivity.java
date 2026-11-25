@@ -7570,6 +7570,7 @@ public class FreezeListActivity extends BaseActivity {
         final boolean wasFrozen = it.frozen && !it.hidden;
         IO.execute(() -> {
             HideSupport.Result r = HideSupport.hide(this, packagePart(it.pkg), it.userId);
+            recordHideOp(r, it.pkg, true);
             if (r.ok) {
                 if (!wasFrozen && it.userId == 0) {
                     // pm hide 会结束进程，划卡/锁屏通道可能抢在隐藏生效前把它停用；
@@ -7618,6 +7619,7 @@ public class FreezeListActivity extends BaseActivity {
         working = true;
         IO.execute(() -> {
             HideSupport.Result r = HideSupport.unhide(this, packagePart(it.pkg), it.userId);
+            recordHideOp(r, it.pkg, false);
             final boolean ok = r.ok;
             main.post(() -> {
                 working = false;
@@ -7804,10 +7806,12 @@ public class FreezeListActivity extends BaseActivity {
                 String error;
                 if (it.hidden) {
                     HideSupport.Result r = HideSupport.unhide(this, packagePart(it.pkg), it.userId);
+                    recordHideOp(r, it.pkg, false);
                     ok = r.ok;
                     error = r.message;
                 } else if (hide) {
                     HideSupport.Result r = HideSupport.hide(this, packagePart(it.pkg), it.userId);
+                    recordHideOp(r, it.pkg, true);
                     ok = r.ok;
                     error = r.message;
                     if (ok) {
@@ -15057,7 +15061,7 @@ public class FreezeListActivity extends BaseActivity {
         featureTitle.setPadding(0, Ui.dp(this, 16), 0, 0);
         card.addView(featureTitle);
 
-        String featureText = "· 使用先知：需 root 或 Shizuku，无联网，尚未开源；\n"
+        String featureText = "· 使用先知：需 root 或 shizuku、dhizuku，Root 模式可激活 LSPosed 进行功能增强，无联网，尚未开源；\n"
                 + "· 名单与标签：可自建、重命名、隐藏、排序并可设每次默认进入的标签页，长按标签页可重命名、排序等；\n"
                 + "· 白名单：加入白名单的应用不会被冻结，列表仍保留图标，有白名单标识；\n"
                 + "· 关联应用：打开主可静默解冻副，冻结主也冻结副；\n"
@@ -15072,8 +15076,12 @@ public class FreezeListActivity extends BaseActivity {
                 + "· 冻结图标样式：全彩、全灰，左灰右彩等八种半灰半彩；\n"
                 + "· 主题图标样式：可选系统默认图标或当前主题图标，切换后自动刷新列表图标；\n"
                 + "· 保留桌面图标（转暂停）：冻结转为暂停模式，桌面图标保留并置灰，点击图标可继续打开；\n"
-                + "· 划卡冻结：标签应用划掉最近任务卡片即冻结；\n"
-                + "· 锁屏冻结：锁屏后按标签页冻结，可设定时间；\n"
+                + "· 划卡冻结：lsposed、shizuku 专属，最近任务卡片划掉即冻结，开启隐藏的则是隐藏；\n"
+                + "· 锁屏冻结：lsposed、shizuku 专属，锁屏后按设定的时间冻结，开启隐藏的则是隐藏；\n"
+                + "· 静默打开置灰图标：lsposed 专属，保留桌面图标转暂停模式后，点击桌面置灰图标可以静默打开，置灰应用回后台不会暂停；\n"
+                + "· 置灰图标后台即停：lsposed 专属，保留桌面图标转暂停模式后，点击桌面置灰图标可以静默打开，置灰应用回后台即继续暂停，类似墓碑机制；\n"
+                + "· 消除启动白底：lsposed、hyperOS4 专属，打开后，全屏透明度调节后，冷启动白底消失，并可以优化半屏打开动画；\n"
+                + "· 隐藏应用模式：root、dhizuku、shizuku 的 root 专属，开启相关功能后，可对应用进行隐藏，隐藏后任何手机等于没安装，但可以在列表打开或取消隐藏；\n"
                 + "· 备份恢复：可单独恢复添加的桌面图标、白名单、关联应用、列表、配置。";
         // 每条开头的功能名用主色加粗，后面的说明文字用次要色，两者明显区分
         android.text.SpannableString feats = new android.text.SpannableString(featureText);
@@ -15429,6 +15437,7 @@ public class FreezeListActivity extends BaseActivity {
                 writeDiagFile(new File(cache, "logcat_5min.txt"), collectDiagLogcat());
                 writeDiagFile(new File(cache, "last_pm.txt"), buildDiagLastPm());
                 writeDiagFile(new File(cache, "freeze_state.txt"), buildDiagFreezeState());
+                writeDiagFile(new File(cache, "hide_state.txt"), buildDiagHideState());
                 writeDiagFile(new File(cache, "freeze_actions.txt"), buildDiagActions());
                 writeDiagFile(new File(cache, "说明.txt"), buildDiagReadme());
                 File zip = new File(getCacheDir(), name);
@@ -15455,7 +15464,8 @@ public class FreezeListActivity extends BaseActivity {
                 compactCard("诊断包已导出", f.getAbsolutePath()
                                 + "\n\n包含：设备与 ROM 信息、设置快照、最近 5 分钟 logcat"
                                 + "（含 hook 专用 tag）、名单应用冻结状态、hook 配置真值、"
-                                + "LSPosed 作用域、最近 50 条操作流水。"
+                                + "LSPosed 作用域、隐藏应用真值、Shizuku/Dhizuku 通道、"
+                                + "最近 50 条操作流水（含隐藏操作）。"
                                 + "\n不收集：账号、IMEI、手机号、通讯录权限；不含名单外的应用。",
                         null, new String[]{"关闭", "复制路径"}, new Runnable[]{null, () -> {
                             android.content.ClipboardManager cm = (android.content.ClipboardManager)
@@ -15539,6 +15549,15 @@ public class FreezeListActivity extends BaseActivity {
                 .append("（").append(PrivShell.label()).append("）\n");
         PrivShell.Result id = PrivShell.exec("id", 8);
         sb.append("id: ").append(id == null || id.out == null ? "无返回" : id.out.trim()).append('\n');
+        sb.append("su 二进制: ").append(diagSuPaths()).append('\n');
+
+        sb.append("Shizuku: ").append(diagShizukuLine()).append('\n');
+        sb.append("Dhizuku: ").append(diagDhizukuLine()).append('\n');
+        sb.append("隐藏通道: ").append(diagHideChannelLine()).append('\n');
+        sb.append("专属 Shizuku 服务: ").append(ShizukuLite.ready() ? "已连接" : "未连接")
+                .append("；划卡开关=").append(ShizukuLite.enabled(this))
+                .append("，锁屏开关=").append(ShizukuLite.lockEnabled(this))
+                .append("，锁屏延时=").append(ShizukuLite.lockDelaySeconds(this)).append("s\n");
         sb.append("LSPosed 模块: ")
                 .append(SwipeFreeze.moduleActive() ? "已生效" : "未生效/未检测到").append('\n');
 
@@ -15586,6 +15605,189 @@ public class FreezeListActivity extends BaseActivity {
         } catch (Exception e) {
             sb.append("读取失败: ").append(e).append('\n');
         }
+        return sb.toString();
+    }
+
+    // ---- 诊断包：新功能通道探测（Shizuku / Dhizuku / 隐藏） ----
+
+    private static String diagSuPaths() {
+        String[] paths = {"/system/bin/su", "/system/xbin/su", "/sbin/su",
+                "/su/bin/su", "/debug_ramdisk/su"};
+        StringBuilder sb = new StringBuilder();
+        for (String p : paths) {
+            if (new File(p).canExecute()) {
+                if (sb.length() > 0) {
+                    sb.append('、');
+                }
+                sb.append(p);
+            }
+        }
+        return sb.length() == 0 ? "未发现（su 不存在或不可执行）" : sb.toString();
+    }
+
+    private String diagShizukuLine() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            sb.append("已安装=").append(ShizukuGate.installed(this));
+        } catch (Throwable t) {
+            sb.append("已安装=读取失败");
+        }
+        try {
+            boolean ping = rikka.shizuku.Shizuku.pingBinder();
+            sb.append("，运行=").append(ping);
+            if (ping) {
+                int uid = rikka.shizuku.Shizuku.getUid();
+                sb.append("，已授权=")
+                        .append(rikka.shizuku.Shizuku.checkSelfPermission()
+                                == PackageManager.PERMISSION_GRANTED)
+                        .append("，uid=").append(uid)
+                        .append(uid == 0 ? "(root)" : "(shell/adb)");
+                try {
+                    sb.append("，版本=").append(rikka.shizuku.Shizuku.getVersion());
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            sb.append("，探测失败=").append(t.getClass().getSimpleName());
+        }
+        return sb.toString();
+    }
+
+    private String diagDhizukuLine() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            sb.append("已安装=").append(DhizukuGate.installed(this));
+            sb.append("，服务可连=").append(DhizukuGate.available(this));
+            sb.append("，已授权=").append(DhizukuGate.authorized(this));
+            sb.append("，可走暂停/隐藏(only)=").append(DhizukuGate.only(this));
+            sb.append("，API+委托可用(>=8.0)=")
+                    .append(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O);
+        } catch (Throwable t) {
+            sb.append("读取失败=").append(t.getClass().getSimpleName());
+        }
+        return sb.toString();
+    }
+
+    private String diagHideChannelLine() {
+        boolean shizukuRoot = false;
+        try {
+            shizukuRoot = rikka.shizuku.Shizuku.pingBinder()
+                    && rikka.shizuku.Shizuku.checkSelfPermission()
+                    == PackageManager.PERMISSION_GRANTED
+                    && rikka.shizuku.Shizuku.getUid() == 0;
+        } catch (Throwable ignored) {
+        }
+        boolean dhizuku = false;
+        try {
+            dhizuku = DhizukuGate.only(this);
+        } catch (Throwable ignored) {
+        }
+        return "整体可用=" + HideSupport.available(this)
+                + "（root su=" + !"未发现（su 不存在或不可执行）".equals(diagSuPaths())
+                + "，Shizuku(root)=" + shizukuRoot
+                + "，Dhizuku=" + dhizuku
+                + "，模式开关=" + HideSupport.modeOn(this) + "）";
+    }
+
+    /**
+     * 隐藏应用状态：模式开关、通道可用性、hide_keys 账本逐条真值。
+     * 用来区分「没隐藏成功」「隐藏了但打开时临时取消」「隐藏后又被动解除」。
+     */
+    private String buildDiagHideState() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                .format(new Date())).append('\n');
+        sb.append("凚版本: ").append(aboutVersionText()).append('\n');
+
+        sb.append("\n【1. 隐藏通道】\n");
+        sb.append("模式开关(hide_mode)=").append(HideSupport.modeOn(this)).append('\n');
+        sb.append("整体可用=").append(HideSupport.available(this)).append('\n');
+        sb.append("root su: ").append(diagSuPaths()).append('\n');
+        sb.append("Shizuku: ").append(diagShizukuLine()).append('\n');
+        sb.append("Dhizuku: ").append(diagDhizukuLine()).append('\n');
+        sb.append("说明: root 与 Shizuku(root) 支持主用户+分身；Dhizuku 只支持主用户。\n");
+
+        sb.append("\n【2. 保护名单（不允许隐藏）】\n");
+        sb.append("凚自身: ").append(getPackageName()).append('\n');
+        sb.append("SystemUI: com.android.systemui\n");
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+            android.content.pm.ResolveInfo ri = getPackageManager()
+                    .resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY);
+            sb.append("当前桌面: ")
+                    .append(ri != null && ri.activityInfo != null
+                            ? ri.activityInfo.packageName : "无法解析")
+                    .append('\n');
+        } catch (Throwable t) {
+            sb.append("当前桌面: 读取失败\n");
+        }
+
+        sb.append("\n【3. hide_keys 账本逐条真值】\n");
+        sb.append("说明: 系统隐藏位=privateFlags HIDDEN；用户意图=账本；\n");
+        sb.append("      打开隐藏应用时会临时取消系统位，所以会出现「意图=是、系统位=否」。\n");
+        Set<String> keys = HideSupport.hiddenIntentKeys(this);
+        List<String> sorted = new ArrayList<>(keys);
+        Collections.sort(sorted);
+        Set<String> listed = new HashSet<>(pkgs());
+        sb.append("账本条目: ").append(sorted.size()).append('\n');
+        int hung = 0, intentOnly = 0, missing = 0;
+        for (String key : sorted) {
+            String pkg = HideSupport.pkgOf(key);
+            int uid = HideSupport.userIdOf(key);
+            String label = labelFor(key);
+            boolean system;
+            try {
+                system = HideSupport.systemHiddenOne(this, pkg, uid);
+            } catch (Throwable t) {
+                system = false;
+            }
+            Boolean intent = null;
+            try {
+                intent = HideSupport.hiddenOne(this, pkg, uid);
+            } catch (Throwable ignored) {
+            }
+            boolean installed = true;
+            boolean enabled = true;
+            String setting = "?";
+            Boolean suspended = null;
+            try {
+                ApplicationInfo ai = getPackageManager().getApplicationInfo(
+                        pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES);
+                enabled = ai.enabled;
+                setting = enabledSettingName(getPackageManager().getApplicationEnabledSetting(pkg));
+                if (uid == 0) {
+                    try {
+                        suspended = getPackageManager().isPackageSuspended(pkg);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } catch (Throwable t) {
+                installed = false;
+                missing++;
+            }
+            if (system && !Boolean.FALSE.equals(intent)) {
+                hung++;
+            } else if (!system) {
+                intentOnly++;
+            }
+            sb.append("  ").append(key).append(" | ").append(label)
+                    .append(" | 名单内=").append(listed.contains(key) ? "是" : "否")
+                    .append(" | 安装=").append(installed ? "是" : "否")
+                    .append(" | 系统隐藏位=").append(installed ? (system ? "是" : "否") : "-")
+                    .append(" | 用户意图=").append(intent == null ? "读不到" : (intent ? "是" : "否"))
+                    .append(" | enabled=").append(installed ? String.valueOf(enabled) : "-")
+                    .append(" | 设置=").append(setting)
+                    .append(" | suspended=").append(suspended == null ? "-" : String.valueOf(suspended))
+                    .append('\n');
+        }
+        if (sorted.isEmpty()) {
+            sb.append("  （没有隐藏记录）\n");
+        }
+        sb.append("汇总: 系统位真隐藏 ").append(hung)
+                .append("，仅账本意图 ").append(intentOnly)
+                .append("，已卸载 ").append(missing).append('\n');
+        sb.append("判定: 仅账本意图 = 打开过隐藏应用或别处取消了系统隐藏位，点一键冻结会补回隐藏。\n");
+        sb.append("最近隐藏/取消隐藏操作见 freeze_actions.txt（通道以「隐藏:」开头）。\n");
         return sb.toString();
     }
 
@@ -15731,7 +15933,9 @@ public class FreezeListActivity extends BaseActivity {
         for (String line : full.split("\r?\n")) {
             if (line.contains("JinLockFreeze") || line.contains("JinSwipeFreeze")
                     || line.contains("JinFreeze") || line.contains("JinHookConfig")
-                    || line.contains("JinPm") || line.contains("com.jin.freeze")
+                    || line.contains("JinPm") || line.contains("JinLite")
+                    || line.contains("DoL") || line.contains("dhizuku")
+                    || line.contains("com.jin.freeze")
                     || line.contains("suspend") || line.contains("disable-user")) {
                 hits.append(line).append('\n');
                 hitCount++;
@@ -15867,6 +16071,13 @@ public class FreezeListActivity extends BaseActivity {
                         .append(sel == null ? "未设置（全选）" : sel.length() + " 个").append('\n');
                 sb.append("lock_tags(锁屏标签)=")
                         .append(lockTags == null ? "未设置（全选）" : lockTags.length() + " 个").append('\n');
+                sb.append("no_launch_bg(消除启动白底)=").append(o.optBoolean("no_launch_bg"))
+                        .append("，dol(置灰图标后台即停)=").append(o.optBoolean("dol"))
+                        .append("，silent_open(静默打开置灰图标)=").append(o.optBoolean("silent_open"))
+                        .append("，suspend(保留桌面图标)=").append(o.optBoolean("suspend")).append('\n');
+                JSONArray hidden = o.optJSONArray("hidden");
+                sb.append("hidden(隐藏意图)=")
+                        .append(hidden == null ? 0 : hidden.length()).append(" 个\n");
             } catch (Exception e) {
                 sb.append("解析失败（").append(e.getClass().getSimpleName())
                         .append("），原文前 2000 字:\n").append(cutDiagText(rawCfg, 2000)).append('\n');
@@ -15878,6 +16089,18 @@ public class FreezeListActivity extends BaseActivity {
                 .append(String.valueOf(prefs().getAll().get("lock_freeze_delay_seconds")))
                 .append("，swipe_freeze_enabled=")
                 .append(String.valueOf(prefs().getAll().get("swipe_freeze_enabled"))).append('\n');
+        sb.append("LSPosed 新功能偏好: no_launch_bg=").append(SwipeFreeze.noLaunchBg(this))
+                .append("，dol_enabled(置灰后台即停)=").append(SwipeFreeze.dolEnabled(this))
+                .append("，silent_open_enabled(静默打开)=").append(SwipeFreeze.silentOpenEnabled(this))
+                .append("，keep_launcher_icon=").append(SwipeFreeze.keepLauncherIcon(this)).append('\n');
+        sb.append("专属 Shizuku 服务: 已连接=").append(ShizukuLite.ready())
+                .append("，sz_swipe_enabled=").append(ShizukuLite.enabled(this))
+                .append("，sz_lock_enabled=").append(ShizukuLite.lockEnabled(this))
+                .append("，sz_lock_delay=").append(ShizukuLite.lockDelaySeconds(this)).append("s\n");
+        sb.append("隐藏应用: hide_mode=").append(HideSupport.modeOn(this))
+                .append("，可用=").append(HideSupport.available(this))
+                .append("，账本条目=").append(HideSupport.hiddenIntentKeys(this).size())
+                .append("（逐条真值见 hide_state.txt）\n");
         sb.append("判定: 两者不一致时以文件为准——system_server 只认文件；开关没写进文件就不会生效。\n");
 
         sb.append("\n【3. LSPosed 心跳（证明 hook 进了 system_server）】\n");
@@ -15924,7 +16147,7 @@ public class FreezeListActivity extends BaseActivity {
         StringBuilder sb = new StringBuilder();
         sb.append("最近操作流水（最多 50 条，新 → 旧）\n");
         sb.append("通道: 单次pm=pm disable-user/enable；单次暂停/降级暂停/批量暂停=pm suspend；\n");
-        sb.append("      批量脚本=批量冻结/解冻脚本。\n\n");
+        sb.append("      批量脚本=批量冻结/解冻脚本；隐藏:root / 隐藏:shizuku / 隐藏:dhizuku=隐藏通道。\n\n");
         JSONArray arr = null;
         try {
             arr = new JSONArray(prefs().getString(KEY_DIAG_HIST, "[]"));
@@ -16024,19 +16247,25 @@ public class FreezeListActivity extends BaseActivity {
         return "凚 诊断包\n"
                 + "==========\n\n"
                 + "内容：\n"
-                + "1. device_info.txt   设备与 ROM（Build、屏幕、root/Shizuku、LSPosed、桌面版本、getprop 节选）\n"
+                + "1. device_info.txt   设备与 ROM（Build、屏幕、root/Shizuku/Dhizuku 通道、LSPosed、\n"
+                + "                     专属 Shizuku 服务、桌面版本、getprop 节选）\n"
                 + "2. prefs.txt         凚 版本与设置键值（名单只记数量，其它包名做短哈希）\n"
                 + "3. logcat_5min.txt   最近 5 分钟 logcat；含 logcat --help 原文、\n"
-                + "                     JinLockFreeze/JinSwipeFreeze/JinPm 等专用 tag 摘要、完整尾部\n"
-                + "4. last_pm.txt       最近一次冻结/解冻的命令、返回与时间\n"
-                + "5. freeze_state.txt  名单应用 enabled/suspended 快照、hook 配置文件真值与修改时间、\n"
+                + "                     JinLockFreeze/JinSwipeFreeze/JinLite/JinPm/DoL 等专用 tag 摘要、完整尾部\n"
+                + "4. last_pm.txt       最近一次冻结/解冻/隐藏的命令、返回与时间\n"
+                + "5. freeze_state.txt  名单应用 enabled/suspended 快照、hook 配置文件真值与修改时间\n"
+                + "                     （含 no_launch_bg/dol/silent_open/suspend/hidden）、\n"
                 + "                     LSPosed 心跳、模块作用域是否含 android（系统框架）\n"
-                + "6. freeze_actions.txt 最近 50 条手动冻结/解冻/暂停流水（时间、通道、退出码、返回），\n"
+                + "6. hide_state.txt    隐藏通道（root/Shizuku-root/Dhizuku）、保护名单、\n"
+                + "                     hide_keys 账本逐条：系统隐藏位、用户意图、enabled/suspended\n"
+                + "7. freeze_actions.txt 最近 50 条手动冻结/解冻/暂停/隐藏流水（时间、通道、退出码、返回），\n"
                 + "                     附 hook 侧自动冻结流水（锁屏/划卡，每次批量 1 行汇总 + 失败明细）\n\n"
                 + "排查顺序建议：\n"
-                + "· 「没自动冻结」→ 先看 5 的配置文件/心跳/作用域，再看 3 的 JinLockFreeze 命中行；\n"
+                + "· 「没自动冻结」→ 先看 5 的配置文件/心跳/作用域，再看 3 的 JinLockFreeze/JinLite 命中行；\n"
                 + "· 「冻结了但不是暂停」→ 看 5 的 enabled设置/suspended，区分停用与暂停；\n"
-                + "· 「操作失败」→ 看 6 的通道与退出码，定位是哪个入口失败。\n\n"
+                + "· 「置灰图标点不开 / 回后台又被暂停」→ 看 5 的 dol/silent_open 与 3 的 DoL 日志；\n"
+                + "· 「隐藏没生效 / 自己冒出来」→ 看 6 的通道可用性与账本真值（系统位 vs 用户意图）；\n"
+                + "· 「操作失败」→ 看 7 的通道与退出码，定位是哪个入口失败。\n\n"
                 + "不收集：账号、IMEI、手机号、通讯录权限；\n"
                 + "只导出名单内应用的状态，不含名单外的应用清单。\n"
                 + "适配只需要系统行为和报错，与个人隐私无关。\n";
@@ -19658,7 +19887,6 @@ public class FreezeListActivity extends BaseActivity {
      * 同时覆盖「最近一次」三个字段。通道用来区分入口，退出码/超时用来区分「没触发」和「触发了但失败」。
      */
     private void recordDiagOp(String channel, String cmd, PrivShell.Result r) {
-        String c = cutDiagText(cmd, 600);
         String out;
         if (r == null) {
             out = "（没有返回）";
@@ -19666,6 +19894,25 @@ public class FreezeListActivity extends BaseActivity {
             out = "退出码 " + r.code + (r.timeout ? "，执行超时" : "") + "\n"
                     + (r.out == null ? "" : r.out.trim());
         }
+        recordDiagOpRaw(channel, cmd, r == null ? -1 : r.code, r != null && r.timeout, out);
+    }
+
+    /** 隐藏通道走的是进程内反射/命令，没有 PrivShell.Result：按同样格式落一条流水。 */
+    private void recordHideOp(HideSupport.Result r, String pkgOrKey, boolean hide) {
+        if (r == null) {
+            return;
+        }
+        String channel = r.channel.isEmpty() ? "隐藏" : "隐藏:" + r.channel;
+        String cmd = r.cmd.isEmpty()
+                ? (hide ? "hide " : "unhide ") + pkgOrKey
+                : r.cmd;
+        String out = "退出码 " + (r.ok ? 0 : 1) + "\n" + r.message;
+        recordDiagOpRaw(channel, cmd, r.ok ? 0 : 1, false, out);
+    }
+
+    private void recordDiagOpRaw(String channel, String cmd, int code,
+                                 boolean timeout, String out) {
+        String c = cutDiagText(cmd, 600);
         out = cutDiagText(out, 800);
         try {
             JSONArray old = new JSONArray(prefs().getString(KEY_DIAG_HIST, "[]"));
@@ -19673,8 +19920,8 @@ public class FreezeListActivity extends BaseActivity {
             JSONObject entry = new JSONObject();
             entry.put("t", System.currentTimeMillis());
             entry.put("ch", channel);
-            entry.put("code", r == null ? -1 : r.code);
-            entry.put("to", r != null && r.timeout);
+            entry.put("code", code);
+            entry.put("to", timeout);
             entry.put("cmd", c);
             entry.put("out", out);
             next.put(entry);

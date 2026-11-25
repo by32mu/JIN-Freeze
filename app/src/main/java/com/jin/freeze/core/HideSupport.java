@@ -215,10 +215,20 @@ public final class HideSupport {
     public static final class Result {
         public final boolean ok;
         public final String message;
+        /** 诊断用：实际走的通道（root / shizuku / dhizuku），空表示未进入执行。 */
+        public final String channel;
+        /** 诊断用：实际下发的命令或调用描述。 */
+        public final String cmd;
 
         Result(boolean ok, String message) {
+            this(ok, message, "", "");
+        }
+
+        Result(boolean ok, String message, String channel, String cmd) {
             this.ok = ok;
             this.message = message == null ? "" : message;
+            this.channel = channel == null ? "" : channel;
+            this.cmd = cmd == null ? "" : cmd;
         }
     }
 
@@ -277,28 +287,30 @@ public final class HideSupport {
                 : "pm unhide --user " + userId + " " + pkg;
         PrivShell.Result r = PrivShell.exec(cmd, 20);
         if (r == null) {
-            return new Result(false, "root 命令没有返回");
+            return new Result(false, "root 命令没有返回", "root", cmd);
         }
         String out = r.out == null ? "" : r.out;
         boolean bad = out.contains("Exception") || out.contains("Error:") || out.contains("error:");
         if (r.code != 0 || bad) {
-            return new Result(false, firstLine(out));
+            return new Result(false, firstLine(out), "root", cmd);
         }
         // 只看系统隐藏位：账本里的「隐藏意图」不参与这次真值校验，
         // 否则带意图的应用永远撤不掉（会被误判成系统没接受）
         Boolean truth = systemHiddenOne(c, pkg, userId);
         if (truth != null && truth != hidden) {
-            return new Result(false, "系统未接受隐藏状态变更");
+            return new Result(false, "系统未接受隐藏状态变更", "root", cmd);
         }
-        return new Result(true, "");
+        return new Result(true, "", "root", cmd);
     }
 
     private static Result shizukuApply(Context c, String pkg, int userId, boolean hidden) {
+        String cmd = "IPackageManager.setApplicationHiddenSettingAsUser(" + pkg + ", "
+                + hidden + ", " + userId + ")";
         try {
             exemptHiddenApi();
             IBinder service = rikka.shizuku.SystemServiceHelper.getSystemService("package");
             if (service == null) {
-                return new Result(false, "取不到 package 服务");
+                return new Result(false, "取不到 package 服务", "shizuku", cmd);
             }
             Object pm = Class.forName(STUB)
                     .getMethod("asInterface", IBinder.class)
@@ -311,39 +323,43 @@ public final class HideSupport {
                 }
             }
             if (target == null) {
-                return new Result(false, "当前系统没有 setApplicationHiddenSettingAsUser");
+                return new Result(false, "当前系统没有 setApplicationHiddenSettingAsUser",
+                        "shizuku", cmd);
             }
             target.invoke(pm, pkg, hidden, userId);
-            return new Result(true, "");
+            return new Result(true, "", "shizuku", cmd);
         } catch (Throwable t) {
             Throwable cause = t.getCause() != null ? t.getCause() : t;
             String msg = String.valueOf(cause.getMessage());
             if (cause instanceof SecurityException || msg.contains("MANAGE_USERS")) {
-                return new Result(false, "Shizuku(shell) 缺少 MANAGE_USERS，隐藏需 root 通道或 Dhizuku");
+                return new Result(false, "Shizuku(shell) 缺少 MANAGE_USERS，隐藏需 root 通道或 Dhizuku",
+                        "shizuku", cmd);
             }
-            return new Result(false, firstLine(msg));
+            return new Result(false, firstLine(msg), "shizuku", cmd);
         }
     }
 
     private static Result dhizukuApply(Context c, String pkg, int userId, boolean hidden) {
+        String cmd = "DPM.setApplicationHidden(" + pkg + ", " + hidden + ")";
         if (userId != 0) {
-            return new Result(false, "Dhizuku 通道只支持主用户，分身请用 root/Shizuku");
+            return new Result(false, "Dhizuku 通道只支持主用户，分身请用 root/Shizuku",
+                    "dhizuku", cmd);
         }
         try {
             Object dpm = c.getSystemService(Context.DEVICE_POLICY_SERVICE);
             if (dpm == null) {
-                return new Result(false, "Dhizuku 未授权");
+                return new Result(false, "Dhizuku 未授权", "dhizuku", cmd);
             }
             Method m = Class.forName("android.app.admin.DevicePolicyManager")
                     .getMethod("setApplicationHidden", ComponentName.class, String.class, boolean.class);
             Object changed = m.invoke(dpm, null, pkg, hidden);
             if (Boolean.FALSE.equals(changed)) {
-                return new Result(false, "Dhizuku 拒绝执行（检查包访问权限）");
+                return new Result(false, "Dhizuku 拒绝执行（检查包访问权限）", "dhizuku", cmd);
             }
-            return new Result(true, "");
+            return new Result(true, "", "dhizuku", cmd);
         } catch (Throwable t) {
             Throwable cause = t.getCause() != null ? t.getCause() : t;
-            return new Result(false, firstLine(String.valueOf(cause.getMessage())));
+            return new Result(false, firstLine(String.valueOf(cause.getMessage())), "dhizuku", cmd);
         }
     }
 
