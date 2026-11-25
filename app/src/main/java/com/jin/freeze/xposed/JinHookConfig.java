@@ -51,11 +51,14 @@ public final class JinHookConfig {
         final boolean silentOpen;
         /** 保留桌面图标（转暂停）：划卡/锁屏冻结用 suspend 而不是 disable。 */
         final boolean suspend;
+        /** 用户标记隐藏的实例键：划卡/锁屏遇到它们改走隐藏，不再冻结。 */
+        final Set<String> hiddenIntent;
 
         Snapshot(boolean enabled, boolean lockEnabled, int lockDelaySeconds,
                  Set<String> packages, Map<String, Set<String>> tags,
                  Map<String, String> labels, Set<String> selected, Set<String> lockSelected,
-                 boolean noLaunchBg, boolean dol, boolean silentOpen, boolean suspend) {
+                 boolean noLaunchBg, boolean dol, boolean silentOpen, boolean suspend,
+                 Set<String> hiddenIntent) {
             this.enabled = enabled;
             this.lockEnabled = lockEnabled;
             this.lockDelaySeconds = lockDelaySeconds;
@@ -68,6 +71,7 @@ public final class JinHookConfig {
             this.dol = dol;
             this.silentOpen = silentOpen;
             this.suspend = suspend;
+            this.hiddenIntent = hiddenIntent;
         }
     }
 
@@ -276,10 +280,21 @@ public final class JinHookConfig {
         boolean dol = root.optBoolean("dol", false);
         boolean silentOpen = root.optBoolean("silent_open", false);
         boolean suspend = root.optBoolean("suspend", false);
+        Set<String> hiddenIntent = new HashSet<>();
+        JSONArray hiddenArr = root.optJSONArray("hidden");
+        if (hiddenArr != null) {
+            for (int i = 0; i < hiddenArr.length(); i++) {
+                String k = hiddenArr.optString(i, "").trim();
+                if (!k.isEmpty()) {
+                    hiddenIntent.add(k);
+                }
+            }
+        }
         return new Snapshot(enabled, lockEnabled, lockDelaySeconds,
                 Collections.unmodifiableSet(packages),
                 Collections.unmodifiableMap(tags), Collections.unmodifiableMap(labels),
-                selected, lockSelected, noLaunchBg, dol, silentOpen, suspend);
+                selected, lockSelected, noLaunchBg, dol, silentOpen, suspend,
+                Collections.unmodifiableSet(hiddenIntent));
     }
 
     /** 消除启动白底开关：配置里显式打开才生效，默认关、完全走系统默认。 */
@@ -304,6 +319,16 @@ public final class JinHookConfig {
     public static boolean suspendMode() {
         Snapshot snap = snapshot();
         return snap != null && snap.suspend;
+    }
+
+    /** 该实例是否被用户标记为「隐藏」：划卡/锁屏遇到它改走隐藏，不再冻结。 */
+    public static boolean hiddenIntent(String pkg, int userId) {
+        Snapshot snap = snapshot();
+        if (snap == null || pkg == null || pkg.isEmpty()) {
+            return false;
+        }
+        return snap.hiddenIntent.contains(instanceKey(pkg, userId))
+                || snap.hiddenIntent.contains(pkg);
     }
 
     /**

@@ -54,6 +54,36 @@ public final class DhizukuGate {
                 .getBoolean(KEY_GRANTED, false);
     }
 
+    /**
+     * 用 Dhizuku 服务端的真实授权状态校正本地记录。
+     * 用户在 Dhizuku 应用里撤销授权后，本地布尔值不会自己变，必须主动核对一次，
+     * 否则凚会一直显示「Dhizuku 授权」并挡住重新申请 Shizuku。
+     * 服务连不上（init 失败）时保持原记录，避免临时不可用被误判成撤销。
+     */
+    public static void refresh(Context c) {
+        remember(c);
+        if (appCtx == null || !installed(c)) {
+            return;
+        }
+        try {
+            if (!init()) {
+                return;
+            }
+            boolean granted = Dhizuku.isPermissionGranted();
+            if (granted != authorized(appCtx)) {
+                setAuthorized(granted);
+            }
+        } catch (Throwable ignored) {
+            // 读不到就沿用旧记录
+        }
+    }
+
+    /** 清掉本地授权记录（长按权限重置时用，下一次请求会重新弹授权框）。 */
+    public static void forget(Context c) {
+        remember(c);
+        setAuthorized(false);
+    }
+
     private static void setAuthorized(boolean granted) {
         if (appCtx != null) {
             appCtx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

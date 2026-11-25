@@ -56,7 +56,9 @@ import androidx.core.view.WindowInsetsControllerCompat;
 import com.jin.freeze.R;
 import com.jin.freeze.JinApp;
 import com.jin.freeze.core.AppIconCache;
+import com.jin.freeze.core.ChannelGuard;
 import com.jin.freeze.core.DhizukuGate;
+import com.jin.freeze.core.HideSupport;
 import com.jin.freeze.core.LaunchTarget;
 import com.jin.freeze.core.Pinyin;
 import com.jin.freeze.core.PrivRequest;
@@ -113,6 +115,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_PKGS = "pkgs";
     /** 记录 View 原始 elevation 的 tag 键（仅本类内部使用，避免阴影被反复缩放失真）。 */
     private static final int TAG_BASE_ELEVATION = 0x0A1B2C3D;
+    /** 记录 TextView 原始字号（设置页字体缩放用），避免重复缩放叠加。 */
+    private static final int TAG_BASE_TEXT_SIZE = 0x0A1B2C3E;
 
     private static String instanceKey(String pkg, int userId) {
         return pkg + "@" + userId;
@@ -243,6 +247,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_SETTINGS_OPACITY_COLLAPSED = "settings_opacity_collapsed";
     /** 设置页及其所有二级弹窗的底板透明度：100 = 实心，0 = 全透明；半屏/全屏用 lk() 各存一份。 */
     private static final String KEY_SETTINGS_SURFACE = "settings_surface";
+    /** 设置页字体缩放百分比：80–130，默认 100；只作用于设置页内的文字。 */
+    private static final String KEY_SETTINGS_FONT = "settings_font_pct";
+    private static final int SETTINGS_FONT_MIN = 80;
+    private static final int SETTINGS_FONT_MAX = 130;
     private static final String KEY_SETTINGS_WALLPAPER_COLLAPSED = "settings_wallpaper_collapsed";
     /** 设置面板里所有可折叠分组：长按左上角设置按钮时一键全部展开。 */
     private static final String[] SETTINGS_COLLAPSE_KEYS = {
@@ -404,6 +412,10 @@ public class FreezeListActivity extends BaseActivity {
         boolean frozen;
         /** 走降级通道（pm suspend）冻结：显示成冻结态，另在图标右下角加区分标识。 */
         boolean suspended;
+        /** 隐藏应用模式：系统隐藏位为真时显示 ×，点击图标 = 取消隐藏并打开。 */
+        boolean hidden;
+        /** 系统层此刻是否真的隐藏；false 且 hidden=true 表示「为了打开临时取消，仍记着要隐藏」。 */
+        boolean hiddenOn;
         /** 名称的拼音首字母（懒计算，供搜索用）。 */
         String py;
     }
@@ -419,6 +431,8 @@ public class FreezeListActivity extends BaseActivity {
         View badge;
         /** 暂停标识：只在 pm suspend 降级冻结时显示，正常 disable-user 冻结不显示。 */
         SuspendBadge suspendBadge;
+        /** 隐藏标识：隐藏应用模式下显示在图标右下角的 ×。 */
+        TextView hiddenBadge;
         /** 白名单标识：灰化/半灰半彩图标时固定在图标右下角。 */
         ImageView whiteBadge;
         Item item;
@@ -675,6 +689,15 @@ public class FreezeListActivity extends BaseActivity {
     private boolean dismissAfterReload;
     /** 「去掉 toast 提示」开关：勾选后凚 内所有短提示都不显示。 */
     private boolean hideToasts;
+    /** 隐藏应用模式：冻结入口改为系统隐藏（应用对其他应用不可见）。 */
+    private boolean hideMode;
+    /** 通道切换提示本次进程只弹一次，避免每次刷新页面重复打扰。 */
+    private boolean channelTipShown;
+    /** 「保留桌面图标」自动迁移灰色图标：每次进页面只试一次（含重试计数）。 */
+    private boolean grayIconChecked;
+    private int grayIconTries;
+    /** 最近一次刷新得到的隐藏实例键，供主副关联判断联动是否暂停。 */
+    private final Set<String> hiddenKnown = new HashSet<>();
     /** 列表区域左右滑动切标签；布局设置可关。 */
     private boolean tabSwipeEnabled = true;
     /** 长按空白处左右滑翻标签时是否振动；布局设置可关。 */
@@ -1189,6 +1212,8 @@ public class FreezeListActivity extends BaseActivity {
         panelDismissAfterFreeze = prefs().getBoolean(KEY_PANEL_DISMISS, false);
         panelHideRecents = prefs().getBoolean(KEY_PANEL_HIDE_RECENTS, false);
         keepLauncherIcon = prefs().getBoolean(KEY_KEEP_LAUNCHER_ICON, false);
+        // 普通 Shizuku(shell) 没有隐藏权限：开关不显示，也不按隐藏语义执行
+        hideMode = HideSupport.modeOn(this) && HideSupport.available(this);
         batchCurrentTabOnly = prefs().getBoolean(KEY_BATCH_CURRENT_TAB_ONLY, true);
         if (panelMode) {
             panelHandleEnabled = prefs().getBoolean(KEY_PANEL_HANDLE, true);
@@ -1274,6 +1299,119 @@ public class FreezeListActivity extends BaseActivity {
         if (savedInstanceState == null && consumeCheckRequest()) {
             checkPrivilegeOnStart();
         }
+        // 通道变化检测：root / Shizuku / Dhizuku 能撤销的冻结不同，
+        // 换通道前没在原通道解冻，存量应用会变成新通道处理不了的「孤儿」
+        if (savedInstanceState == null) {
+            checkChannelChangeAsync();
+            // 开了「保留桌面图标（转暂停）」但应用还是停用态：自动迁到暂停，桌面灰色图标才会回来
+            main.postDelayed(this::ensureGrayIcons, 1800);
+        }
+    }
+
+    /**
+     * 勾了「保留桌面图标」却还是停用态（图标直接消失）时，自动迁到暂停态（图标保留并变灰）。
+     * 每次进页面只尝试一次；列表还没装载就再等一轮。
+     */
+    private void ensureGrayIcons() {
+        if (grayIconChecked || !keepLauncherIcon || working) {
+            return;
+        }
+        if (items.isEmpty() && grayIconTries < 3) {
+            grayIconTries++;
+            main.postDelayed(this::ensureGrayIcons, 1500);
+            return;
+        }
+        grayIconChecked = true;
+        for (Item it : items) {
+            if (it.userId == 0 && it.frozen && !it.suspended && !it.hidden) {
+                migrateFrozenToSuspend();
+                return;
+            }
+        }
+    }
+
+    /** 对比上次与本次生效的冻结通道，真的换了且都不是「未激活」时提示存量迁移。 */
+    private void checkChannelChangeAsync() {
+        IO.execute(() -> {
+            // 顺带补一次暂停身份迁移：开机时 su 可能还没就绪，之前那次没跑成不会落标记
+            SuspendSupport.repairLegacyRootSuspender(this);
+            String now = ChannelGuard.current(this);
+            // 未激活不覆盖记录：保留上一个可用通道，等真正拿到权限后再和它比对
+            if (ChannelGuard.NONE.equals(now)) {
+                return;
+            }
+            String before = ChannelGuard.last(this);
+            ChannelGuard.remember(this, now);
+            if (before.isEmpty() || before.equals(now) || ChannelGuard.NONE.equals(before)) {
+                return;
+            }
+            main.postDelayed(() -> showChannelChangeTip(before, now), 900);
+        });
+    }
+
+    /**
+     * 通道切换提示：说明风险，并给一个「立即解冻」存量应用的入口。
+     * 解冻走当前可用通道；若原通道已不可用，解冻失败数会如实提示（即那些孤儿应用）。
+     */
+    private void showChannelChangeTip(String before, String now) {
+        if (isFinishing() || isDestroyed() || channelTipShown
+                || (privDialog != null && privDialog.isShowing())) {
+            return;
+        }
+        channelTipShown = true;
+        int padH = Ui.dp(this, 18);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 6));
+
+        TextView body = new TextView(this);
+        body.setText(boldHintTitle("「冻结权限已切换」\n"
+                + "·上次使用：" + ChannelGuard.label(before)
+                + "，当前使用：" + ChannelGuard.label(now) + "。\n"
+                + "·不同通道能撤销的冻结不同：Dhizuku 只能撤销自己发起的暂停，"
+                + "Root/Shizuku 冻结的停用应用它解不开（Root 兜底除外）。\n"
+                + "·建议先在原通道把所有已冻结应用解冻，再用新通道重新冻结，"
+                + "否则可能留下无法解冻的应用。"));
+        body.setTextSize(12);
+        body.setTextColor(getColor(R.color.text_secondary));
+        body.setLineSpacing(Ui.dp(this, 2), 1f);
+        card.addView(body, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView later = hintButton("稍后处理", false);
+        TextView nowBtn = hintButton("立即解冻", true);
+        btnRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        btnRow.addView(nowBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        btnRow.addView(later, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(btnRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final AlertDialog d = new AlertDialog.Builder(this)
+                .setView(card)
+                .create();
+        d.show();
+        Ui.roundAlertDialog(d);
+        applySettingsAlignment(d);
+        later.setOnClickListener(v -> d.dismiss());
+        nowBtn.setOnClickListener(v -> {
+            d.dismiss();
+            unfreezeAllForChannelChange();
+        });
+    }
+
+    /** 通道切换后的存量迁移：把名单里所有仍处于冻结/暂停的应用按当前通道解冻一遍。 */
+    private void unfreezeAllForChannelChange() {
+        Set<String> all = new HashSet<>(pkgs());
+        if (all.isEmpty()) {
+            toast("冻结名单为空，无需解冻");
+            return;
+        }
+        runBatch(false, quickItems(all, savedOrder(), customOrder()));
     }
 
     /** 半屏出厂值升级：旧默认 38/5 → 39/4，只替换仍是旧默认值的设备，用户调过的不动。 */
@@ -4535,6 +4673,127 @@ public class FreezeListActivity extends BaseActivity {
         });
     }
 
+    /** 「隐藏应用模式」说明卡片：与全局美化同步完全同一套交互（不再提醒 / 确认 / 返回）。 */
+    private void showHideModeHint(Runnable onConfirm, Runnable onCancel) {
+        showModeHint(true, onConfirm, onCancel);
+    }
+
+    /** 「取消隐藏应用模式」说明卡片：底部交互与开启时完全一致。 */
+    private void showHideOffHint(Runnable onConfirm, Runnable onCancel) {
+        showModeHint(false, onConfirm, onCancel);
+    }
+
+    private void showModeHint(boolean on, Runnable onConfirm, Runnable onCancel) {
+        int padH = Ui.dp(this, 18);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(padH, Ui.dp(this, 16), padH, Ui.dp(this, 6));
+
+        TextView body = new TextView(this);
+        body.setText(on
+                ? boldHintTitle("「隐藏应用模式」\n"
+                + "·开启后只是在原列表里新增「隐藏 / 取消隐藏」，不影响其他方式；\n"
+                + "·隐藏与冻结相互独立：冻结的保持冻结、暂停的保持暂停、隐藏的保持隐藏；\n"
+                + "·隐藏应用仍保留在列表里并在图标右下角显示 ×，\n"
+                + "  列表可继续打开隐藏应用，任意冻结方式跟随隐藏。")
+                : boldHintTitle("「取消隐藏应用模式」\n"
+                + "·取消隐藏后，已隐藏的应用将保留列表并解冻；"));
+        body.setTextSize(12);
+        body.setTextColor(getColor(R.color.text_secondary));
+        body.setLineSpacing(Ui.dp(this, 2), 1f);
+        card.addView(body, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView never = hintButton("不再提醒", false);
+        TextView confirm = hintButton("确认", true);
+        TextView cancel = hintButton("返回", false);
+        btnRow.addView(never, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        btnRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        btnRow.addView(confirm, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        btnRow.addView(cancel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(btnRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final AlertDialog d = new AlertDialog.Builder(this)
+                .setView(card)
+                .create();
+        d.show();
+        Ui.roundAlertDialog(d);
+        applySettingsAlignment(d);
+        // 点弹窗外面/返回键关掉且没点「确认」，按取消处理：勾选要回退成原状态
+        final boolean[] handled = {false};
+        d.setOnDismissListener(x -> {
+            if (!handled[0]) {
+                handled[0] = true;
+                onCancel.run();
+            }
+        });
+        never.setOnClickListener(v -> {
+            // 不再提醒：以后勾选直接生效，这次按「确认」处理
+            handled[0] = true;
+            prefs().edit().putBoolean(KEY_HINT_SUFFIX_HIDDEN
+                    + (on ? "hide_mode" : "hide_mode_off"), true).apply();
+            onConfirm.run();
+            d.dismiss();
+        });
+        confirm.setOnClickListener(v -> {
+            handled[0] = true;
+            onConfirm.run();
+            d.dismiss();
+        });
+        cancel.setOnClickListener(v -> {
+            handled[0] = true;
+            onCancel.run();
+            d.dismiss();
+        });
+    }
+
+    /** 隐藏应用模式开关落盘并生效：说明弹窗点确认后打开，或不再提醒后直接勾选/取消。 */
+    private void setHideMode(boolean on) {
+        hideMode = on;
+        HideSupport.setModeOn(this, on);
+        // 划卡/锁屏冻结同步切换语义
+        SwipeFreeze.syncAsync(this);
+        if (!on) {
+            // 取消隐藏应用模式：已隐藏的应用取消隐藏并解冻，名单保留，之后可正常冻结
+            Set<String> keys = new LinkedHashSet<>(HideSupport.hiddenIntentKeys(this));
+            for (Item it : items) {
+                if (it.hidden) {
+                    keys.add(instanceKey(packagePart(it.pkg), it.userId));
+                }
+            }
+            if (!keys.isEmpty()) {
+                working = true;
+                IO.execute(() -> {
+                    for (String key : keys) {
+                        String pkg = packagePart(key);
+                        int uid = userIdPart(key);
+                        HideSupport.unhide(this, pkg, uid);
+                        // 与解冻一致：恢复启用；应用仍留在名单里，可以继续正常冻结
+                        PrivShell.exec("pm enable --user " + uid + " " + pkg, 20);
+                    }
+                    main.post(() -> {
+                        working = false;
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
+                        reload();
+                    });
+                });
+                reload();
+                return;
+            }
+        }
+        // 勾选 / 取消勾选都不弹 toast
+        reload();
+    }
+
     /** 全局美化开关落盘并生效：说明弹窗点确认后打开，或不再提醒后直接勾选/取消。 */
     private void setGlobalTheme(boolean on) {
         prefs().edit().putBoolean(KEY_GLOBAL_THEME, on).apply();
@@ -4662,6 +4921,7 @@ public class FreezeListActivity extends BaseActivity {
         }
         if (on) {
             // 已有停用态的应用逐个迁到暂停态，否则图标仍缺失
+            grayIconChecked = true;
             migrateFrozenToSuspend();
         } else {
             // 恢复默认冻结：暂停态应用立刻转回停用，图标随之消失
@@ -4820,8 +5080,12 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private static int byDefault(Item x, Item y) {
-        if (x.frozen != y.frozen) {
-            return x.frozen ? -1 : 1;
+        // 隐藏项（包括打开过、临时取消隐藏的）仍按「冻结组」参与排序，
+        // 避免打开一次就跳到下面去；是否显示雪花由 frozen 单独控制
+        boolean fx = x.frozen || x.hidden;
+        boolean fy = y.frozen || y.hidden;
+        if (fx != fy) {
+            return fx ? -1 : 1;
         }
         return String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
     }
@@ -4833,6 +5097,7 @@ public class FreezeListActivity extends BaseActivity {
     private List<Item> quickItems(Set<String> wanted, List<String> order, boolean custom) {
         PackageManager pm = getPackageManager();
         Set<String> suspended = SuspendSupport.cached(this);
+        Set<String> hidden = HideSupport.hiddenAmong(this, wanted);
         Map<String, Item> map = new HashMap<>();
         for (String key : wanted) {
             String pkg = packagePart(key);
@@ -4841,16 +5106,23 @@ public class FreezeListActivity extends BaseActivity {
             it.pkg = key;
             it.userId = userId;
             try {
-                ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+                ApplicationInfo ai = pm.getApplicationInfo(pkg,
+                        PackageManager.MATCH_UNINSTALLED_PACKAGES);
                 it.label = pm.getApplicationLabel(ai).toString();
                 // 内存/磁盘缓存里的图标先顶上，缺的等正式刷新再补
                 it.icon = AppIconCache.peekAny(this, pkg);
                 it.system = (ai.flags & (ApplicationInfo.FLAG_SYSTEM
                         | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
                 it.suspended = userId == 0 && suspended.contains(pkg);
-                it.frozen = it.suspended || !ai.enabled;
+                it.hidden = hidden.contains(key);
+                // 首帧就按系统真值判断，避免「打开过的隐藏应用先闪一下雪花再消失」
+                it.hiddenOn = HideSupport.systemHiddenOne(this, pkg, userId);
+                it.frozen = (it.hidden && it.hiddenOn) || it.suspended || !ai.enabled;
             } catch (Exception e) {
                 it.label = pkg;
+                it.hidden = hidden.contains(key);
+                it.hiddenOn = HideSupport.systemHiddenOne(this, pkg, userId);
+                it.frozen = it.hidden && it.hiddenOn;
             }
             if (userId != 0) {
                 it.label += cloneTag(userId);
@@ -4931,6 +5203,7 @@ public class FreezeListActivity extends BaseActivity {
                 }
             }
             PackageManager pm = getPackageManager();
+            Set<String> hidden = HideSupport.hiddenAmong(this, wanted);
             Map<String, Item> map = new HashMap<>();
             Set<String> kept = new HashSet<>();
             Set<String> removed = new HashSet<>();
@@ -4942,7 +5215,7 @@ public class FreezeListActivity extends BaseActivity {
                 it.userId = userId;
                 ApplicationInfo ai = null;
                 try {
-                    ai = pm.getApplicationInfo(pkg, 0);
+                    ai = pm.getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES);
                 } catch (PackageManager.NameNotFoundException e) {
                     // 已卸载：从名单（及标签归属）里移除
                     removed.add(key);
@@ -4972,6 +5245,11 @@ public class FreezeListActivity extends BaseActivity {
                     it.frozen = cloneTruth != null ? cloneTruth.contains(pkg)
                             : (ai != null && !ai.enabled);
                 }
+                it.hidden = hidden.contains(key);
+                // 系统隐藏位单独记一份：hidden 还包含「打开时临时取消、但仍要隐藏」的意图
+                it.hiddenOn = HideSupport.systemHiddenOne(this, pkg, userId);
+                // 只有「真正隐藏」才算冻结态；打开过的隐藏应用按正常（解冻）样式显示，雪花消失
+                it.frozen = it.frozen || (it.hidden && it.hiddenOn);
                 if (userId != 0) {
                     it.label += cloneTag(userId);
                 }
@@ -5021,7 +5299,8 @@ public class FreezeListActivity extends BaseActivity {
                     AppIconCache.EXEC.execute(() -> {
                         try {
                             String name = packagePart(target.pkg);
-                            ApplicationInfo info = pm.getApplicationInfo(name, 0);
+                            ApplicationInfo info = pm.getApplicationInfo(name,
+                                    PackageManager.MATCH_UNINSTALLED_PACKAGES);
                             Drawable icon = AppIconCache.load(this, name, info);
                             if (icon != null) {
                                 target.icon = icon;
@@ -5055,6 +5334,12 @@ public class FreezeListActivity extends BaseActivity {
                 items.clear();
                 items.addAll(list);
                 loadedOnce = true;
+                hiddenKnown.clear();
+                for (Item it : list) {
+                    if (it.hidden) {
+                        hiddenKnown.add(it.pkg);
+                    }
+                }
                 render();
                 // 上面等图标最多 800ms，超时的那几个继续在后台补，补到再重绘一次
                 loadPendingIconsAsync();
@@ -5419,6 +5704,22 @@ public class FreezeListActivity extends BaseActivity {
         badge.setLayoutParams(bLp);
         iconBox.addView(badge);
 
+        // 隐藏应用模式：已隐藏的图标在右下角打红 ×（暂停标识让位）
+        TextView hiddenBadge = new TextView(this);
+        hiddenBadge.setText("×");
+        hiddenBadge.setTextColor(0xFFFFFFFF);
+        hiddenBadge.setTextSize(13);
+        hiddenBadge.setGravity(Gravity.CENTER);
+        hiddenBadge.setBackgroundResource(R.drawable.bg_remove_badge);
+        FrameLayout.LayoutParams hLp = new FrameLayout.LayoutParams(
+                Ui.dp(this, 18), Ui.dp(this, 18));
+        hLp.gravity = Gravity.BOTTOM | Gravity.END;
+        hLp.bottomMargin = Ui.dp(this, 1);
+        hLp.rightMargin = Ui.dp(this, 1);
+        hiddenBadge.setLayoutParams(hLp);
+        hiddenBadge.setVisibility(View.GONE);
+        iconBox.addView(hiddenBadge);
+
         // 暂停标识固定在右下角，和右上角的移除减号各占一角，移动/选中态都不会互相压住
         SuspendBadge suspendBadge = new SuspendBadge(this);
         FrameLayout.LayoutParams sLp = new FrameLayout.LayoutParams(
@@ -5474,6 +5775,7 @@ public class FreezeListActivity extends BaseActivity {
         cell.snow = snow;
         cell.badge = badge;
         cell.suspendBadge = suspendBadge;
+        cell.hiddenBadge = hiddenBadge;
         cell.whiteBadge = whiteBadge;
         // 把 Cell 挂到 root 上：多选态要靠它反查可见格子的抖动/选中圈
         box.setTag(cell);
@@ -5801,8 +6103,21 @@ public class FreezeListActivity extends BaseActivity {
         // 编辑模式（全屏减号）或半屏勾选「快捷移除图标」时常驻红标；移动模式下让位给选中/拖动
         boolean showBadge = editMode || (panelMode && quickRemove && !moveMode);
         cell.badge.setVisibility(showBadge ? View.VISIBLE : View.GONE);
-        // 暂停标识只跟随状态：正常 disable-user 冻结的图标不加任何标识
-        cell.suspendBadge.setVisibility(it.suspended ? View.VISIBLE : View.GONE);
+        // 暂停标识只跟随状态：正常 disable-user 冻结的图标不加任何标识；隐藏态让位给 ×
+        cell.suspendBadge.setVisibility(it.suspended && !it.hidden ? View.VISIBLE : View.GONE);
+        if (cell.hiddenBadge != null) {
+            cell.hiddenBadge.setVisibility(it.hidden ? View.VISIBLE : View.GONE);
+            if (it.hidden
+                    && cell.hiddenBadge.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+                // 隐藏标识固定右下角；白名单标识让到左下角，避免右下角看起来「× 变成打勾」
+                FrameLayout.LayoutParams hLp =
+                        (FrameLayout.LayoutParams) cell.hiddenBadge.getLayoutParams();
+                hLp.gravity = Gravity.BOTTOM | Gravity.END;
+                hLp.leftMargin = 0;
+                hLp.rightMargin = Ui.dp(this, 1);
+                cell.hiddenBadge.setLayoutParams(hLp);
+            }
+        }
         // 冻结图标样式：0=全彩（名称左侧补雪花），1..8=按方向灰化半边
         int splitStyle = it.frozen ? iconStyle : 0;
         cell.icon.clearColorFilter();
@@ -5813,8 +6128,8 @@ public class FreezeListActivity extends BaseActivity {
         }
         boolean white = isWhitelisted(it.pkg);
         if (cell.snow != null) {
-            // 全彩：冻结时名称左侧显示雪花；白名单标识统一挪到图标左下角（见下面的 whiteBadge）
-            boolean showRow = !white && it.frozen && splitStyle == 0;
+            // 全彩：冻结时名称左侧显示雪花；白名单标识在图标左下角，两者互不冲突
+            boolean showRow = it.frozen && splitStyle == 0;
             cell.snow.setImageResource(R.drawable.ic_sc_freeze);
             cell.snow.setVisibility(showRow ? View.VISIBLE : View.GONE);
         }
@@ -5832,9 +6147,11 @@ public class FreezeListActivity extends BaseActivity {
                 int inset = artInset + center - size / 2;
                 FrameLayout.LayoutParams wlp =
                         (FrameLayout.LayoutParams) cell.whiteBadge.getLayoutParams();
-                int side = whiteBadgeRight ? Gravity.END : Gravity.START;
-                int leftMargin = whiteBadgeRight ? 0 : inset;
-                int rightMargin = whiteBadgeRight ? inset : 0;
+                // 隐藏态时右下角留给 ×，白名单标识统一放左下角
+                boolean right = whiteBadgeRight && !it.hidden;
+                int side = right ? Gravity.END : Gravity.START;
+                int leftMargin = right ? 0 : inset;
+                int rightMargin = right ? inset : 0;
                 if (wlp != null && (wlp.width != size || wlp.gravity != (Gravity.BOTTOM | side)
                         || wlp.leftMargin != leftMargin || wlp.rightMargin != rightMargin
                         || wlp.bottomMargin != inset)) {
@@ -6243,7 +6560,7 @@ public class FreezeListActivity extends BaseActivity {
         int sheetAlpha = panelMode
                 ? prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)
                 : prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID);
-        AppActionSheet.show(this, it.label, it.icon, it.frozen, srcMode(), sheetAlpha, new AppActionSheet.Actions() {
+        AppActionSheet.show(this, it.label, it.icon, it.frozen && !it.hidden, srcMode(), sheetAlpha, new AppActionSheet.Actions() {
             @Override
             public void run() {
                 runApp(it);
@@ -6252,10 +6569,33 @@ public class FreezeListActivity extends BaseActivity {
             @Override
             public void toggleFreeze() {
                 // 长按图标菜单触发：提示走系统默认 Toast
+                if (it.hidden) {
+                    toast("「" + it.label + "」是隐藏状态，请用「取消隐藏」");
+                    return;
+                }
                 if (it.frozen) {
                     unfreezeSingle(it, true);
                 } else {
                     freezeSingle(it, true);
+                }
+            }
+
+            @Override
+            public boolean hideMode() {
+                return hideMode;
+            }
+
+            @Override
+            public boolean hidden() {
+                return it.hidden;
+            }
+
+            @Override
+            public void toggleHide() {
+                if (it.hidden) {
+                    unhideSingle(it, true);
+                } else {
+                    hideSingle(it, true);
                 }
             }
 
@@ -6429,16 +6769,30 @@ public class FreezeListActivity extends BaseActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         batchDivider(content, lineColor);
 
-        // 先扫一遍选中项，看 frozen / unfrozen 各有多少（按钮上标数量，但两个都常驻）
+        // 先扫一遍选中项，看隐藏 / 冻结 / 未冻结各有多少（按钮上标数量，按钮常驻）
         int frozenCnt = 0;
         int unfrozenCnt = 0;
+        int hiddenCnt = 0;
         for (Item it : batchTargets) {
-            if (it.frozen) frozenCnt++; else unfrozenCnt++;
+            if (it.hidden) {
+                hiddenCnt++;
+            } else if (it.frozen) {
+                frozenCnt++;
+            } else {
+                unfrozenCnt++;
+            }
         }
         batchItem(R.drawable.ic_sc_freeze, "冻结（" + unfrozenCnt + "）",
                 () -> batchFreeze(), sheet, fg, iconFg, content, true);
         batchItem(R.drawable.ic_sc_unfreeze, "解冻（" + frozenCnt + "）",
                 () -> batchUnfreeze(), sheet, fg, iconFg, content, true);
+        // 隐藏与冻结/解冻相互独立：开了隐藏模式时额外给一组隐藏操作
+        if (hideMode) {
+            batchItem(R.drawable.ic_qp_eye_off, "隐藏（" + unfrozenCnt + "）",
+                    () -> batchHide(), sheet, fg, iconFg, content, true);
+            batchItem(R.drawable.ic_qp_eye, "取消隐藏（" + hiddenCnt + "）",
+                    () -> batchUnhide(), sheet, fg, iconFg, content, true);
+        }
         batchDivider(content, lineColor);
         batchItem(R.drawable.ic_action_tag, "更改标签页", () -> batchMoveTab(), sheet, fg, iconFg, content, true);
         batchItem(R.drawable.ic_action_home, "添加到桌面", () -> batchPinHome(), sheet, fg, iconFg, content, true);
@@ -6527,7 +6881,8 @@ public class FreezeListActivity extends BaseActivity {
         List<Item> todo = new ArrayList<>();
         int whiteSkipped = 0;
         for (Item it : batchTargets) {
-            if (it.frozen) {
+            // 隐藏与冻结相互独立：冻结入口不改变隐藏项
+            if (it.frozen || it.hidden) {
                 continue;
             }
             if (isWhitelisted(it.pkg)) {
@@ -6539,7 +6894,7 @@ public class FreezeListActivity extends BaseActivity {
         if (todo.isEmpty()) {
             toast(whiteSkipped > 0
                             ? "选中项都在冻结白名单中，不会冻结"
-                            : "选中项都已经是冻结状态");
+                            : "选中项都已经是冻结或隐藏状态");
             exitSelectMode();
             return;
         }
@@ -6548,6 +6903,15 @@ public class FreezeListActivity extends BaseActivity {
         exitSelectMode();
         toast("正在冻结 " + targetCount + " 个应用…");
         IO.execute(() -> {
+            // 系统真值兜底：隐藏项不参与冻结（列表标记过期也不会误冻）
+            List<Item> stillHidden = new ArrayList<>();
+            for (Item it : todo) {
+                if (Boolean.TRUE.equals(HideSupport.hiddenOne(this,
+                        packagePart(it.pkg), it.userId))) {
+                    stillHidden.add(it);
+                }
+            }
+            todo.removeAll(stillHidden);
             int done = 0;
             for (Item it : todo) {
                 boolean ok = false;
@@ -6573,18 +6937,41 @@ public class FreezeListActivity extends BaseActivity {
                 if (ok) done++;
             }
             final int doneN = done;
+            final int effective = todo.size();
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) return;
                 reload();
                 toast("已冻结 " + doneN + " 个应用"
-                        + (doneN < targetCount ? "，失败 " + (targetCount - doneN) + " 个" : ""));
-                if (doneN < targetCount) {
+                        + (doneN < effective ? "，失败 " + (effective - doneN) + " 个" : ""));
+                if (doneN < effective) {
                     // 有失败项：补一次权限申请（已有通道时静默）
                     maybeRequestPrivAfterFail();
                 }
             });
         });
+    }
+
+    /** 多选批量隐藏：只处理当前未冻结、未隐藏的选中项，隐藏与冻结互不影响。 */
+    private void batchHide() {
+        if (working) {
+            toast("正在执行其他操作，请稍后再试");
+            return;
+        }
+        List<Item> sel = new ArrayList<>(batchTargets);
+        exitSelectMode();
+        runHideBatch(true, sel);
+    }
+
+    /** 多选批量取消隐藏：只处理隐藏项，冻结/暂停项保持不动。 */
+    private void batchUnhide() {
+        if (working) {
+            toast("正在执行其他操作，请稍后再试");
+            return;
+        }
+        List<Item> sel = new ArrayList<>(batchTargets);
+        exitSelectMode();
+        runHideBatch(false, sel);
     }
 
     /** 批量解冻：IO 线程拼 pm 脚本一次性执行，跑完回读暂停缓存再 reload。 */
@@ -6595,7 +6982,8 @@ public class FreezeListActivity extends BaseActivity {
         }
         List<Item> frozen = new ArrayList<>();
         for (Item it : batchTargets) {
-            if (it.frozen) {
+            // 隐藏与解冻相互独立：解冻不碰隐藏项（隐藏项要单独取消隐藏）
+            if (it.frozen && !it.hidden) {
                 frozen.add(it);
             }
         }
@@ -6609,6 +6997,16 @@ public class FreezeListActivity extends BaseActivity {
         exitSelectMode();
         toast("正在解冻 " + targetCount + " 个应用…");
         IO.execute(() -> {
+            // 系统真值兜底：隐藏项不参与解冻
+            List<Item> stillHidden = new ArrayList<>();
+            for (Item it : frozen) {
+                if (Boolean.TRUE.equals(HideSupport.hiddenOne(this,
+                        packagePart(it.pkg), it.userId))) {
+                    stillHidden.add(it);
+                }
+            }
+            frozen.removeAll(stillHidden);
+            final int effective = frozen.size();
             StringBuilder script = new StringBuilder();
             Set<String> suspended = new HashSet<>();
             boolean dhizuku = DhizukuGate.only(this);
@@ -6624,8 +7022,11 @@ public class FreezeListActivity extends BaseActivity {
                     dhizukuCount++;
                     continue;
                 }
-                script.append("pm unsuspend --user ").append(it.userId).append(' ')
-                        .append(name).append(" >/dev/null 2>&1; ");
+                if (it.userId != 0) {
+                    // 分身暂停同样记在 com.android.shell 名下，pm 撤不掉；主用户统一在下面走 CLI
+                    script.append("pm unsuspend --user ").append(it.userId).append(' ')
+                            .append(name).append(" >/dev/null 2>&1; ");
+                }
                 script.append("pm enable --user ").append(it.userId).append(' ')
                         .append(name).append(" >/dev/null 2>&1; ");
             }
@@ -6633,15 +7034,22 @@ public class FreezeListActivity extends BaseActivity {
                 recordDiagOp("dhizuku:setPackagesSuspended",
                         "setPackagesSuspended(*, false) × " + dhizukuCount, null);
             }
+            // 主用户暂停由 CLI（suspender=com.android.shell）建立，pm unsuspend 静默失败；
+            // 先按真值真正撤销，再跑启用脚本，否则解冻后列表仍显示暂停
+            if (!suspended.isEmpty()) {
+                Set<String> left = SuspendSupport.unsuspendBatch(this, suspended);
+                Set<String> next = SuspendSupport.cached(this);
+                next.removeAll(suspended);
+                next.addAll(left);
+                SuspendSupport.replace(this, next);
+            }
             if (script.length() > 0) {
                 execPmScript(script.toString(), Math.max(30, 10 + frozen.size() * 5));
             }
-            Set<String> truth = SuspendSupport.suspendedAmong(suspended);
-            SuspendSupport.remember(this, truth);
             main.post(() -> {
                 working = false;
                 reload();
-                toast("已解冻 " + targetCount + " 个应用");
+                toast("已解冻 " + effective + " 个应用");
             });
         });
     }
@@ -6786,8 +7194,10 @@ public class FreezeListActivity extends BaseActivity {
                         dhizukuCount++;
                         continue;
                     }
-                    script.append("pm unsuspend --user ").append(item.userId).append(' ')
-                            .append(name).append(" >/dev/null 2>&1; ");
+                    if (item.userId != 0) {
+                        script.append("pm unsuspend --user ").append(item.userId).append(' ')
+                                .append(name).append(" >/dev/null 2>&1; ");
+                    }
                     script.append("pm enable --user ").append(item.userId).append(' ')
                             .append(name).append(" >/dev/null 2>&1; ");
                 }
@@ -6795,11 +7205,16 @@ public class FreezeListActivity extends BaseActivity {
                     recordDiagOp("dhizuku:setPackagesSuspended",
                             "setPackagesSuspended(*, false) × " + dhizukuCount, null);
                 }
+                if (!suspended.isEmpty()) {
+                    Set<String> left = SuspendSupport.unsuspendBatch(this, suspended);
+                    Set<String> next = SuspendSupport.cached(this);
+                    next.removeAll(suspended);
+                    next.addAll(left);
+                    SuspendSupport.replace(this, next);
+                }
                 if (script.length() > 0) {
                     execPmScript(script.toString(), Math.max(30, 10 + toUnfreeze.size() * 5));
                 }
-                Set<String> truth = SuspendSupport.suspendedAmong(suspended);
-                SuspendSupport.remember(this, truth);
             });
         }
 
@@ -6956,11 +7371,25 @@ public class FreezeListActivity extends BaseActivity {
     private Map<String, String> subPairs() {
         Map<String, String> map = new LinkedHashMap<>();
         for (Pair p : allPairs()) {
-            if (p.enabled) {
+            // 任一方被隐藏时联动暂停：隐藏期间不自动冻结/解冻对方，取消隐藏后自动恢复
+            if (p.enabled && !pairHidden(p)) {
                 map.put(p.main, p.sub);
             }
         }
         return map;
+    }
+
+    /** 主副关联里任一方「真的隐藏了」→ 这组联动暂停（只是标记隐藏、当前还开着不算）。 */
+    private boolean pairHidden(Pair p) {
+        return actuallyHidden(p.main) || actuallyHidden(p.sub);
+    }
+
+    /** 系统层是否真的隐藏：列表上的 × 还包含「打开时临时取消、仍记着要隐藏」的意图，这里不算。 */
+    private boolean actuallyHidden(String key) {
+        if (key == null || key.isEmpty()) {
+            return false;
+        }
+        return HideSupport.systemHiddenOne(this, packagePart(key), userIdPart(key));
     }
 
     private String subOf(String mainKey) {
@@ -7101,6 +7530,360 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /** 只冻结当前应用；已冻结时直接提示，不重复执行。 */
+    // ---------------- 隐藏应用模式 ----------------
+
+    private void showHideError(String title, Item it, String reason) {
+        Ui.smallDialog(this, title,
+                it.label + "：" + (reason == null || reason.isEmpty() ? "系统拒绝了这次操作" : reason),
+                "知道了");
+    }
+
+    private boolean anyHidden(List<Item> list) {
+        for (Item it : list) {
+            if (it.hidden) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void hideQuiet(String key) {
+        try {
+            HideSupport.hide(this, packagePart(key), userIdPart(key));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 隐藏单个应用：先从白名单/保护名单过滤，再按 root / Shizuku / Dhizuku 通道执行。 */
+    private void hideSingle(Item it, boolean systemToast) {
+        if (working) {
+            return;
+        }
+        if (isWhitelisted(it.pkg)) {
+            toast("「" + it.label + "」在冻结白名单中，不会隐藏");
+            return;
+        }
+        working = true;
+        startFreezeSpin();
+        // 隐藏前是否本来就被冻结：本来没冻结的，隐藏后要保持「只隐藏、不冻结」
+        // （隐藏项自身的 frozen 是显示用的合成值，不能拿来判断）
+        final boolean wasFrozen = it.frozen && !it.hidden;
+        IO.execute(() -> {
+            HideSupport.Result r = HideSupport.hide(this, packagePart(it.pkg), it.userId);
+            if (r.ok) {
+                if (!wasFrozen && it.userId == 0) {
+                    // pm hide 会结束进程，划卡/锁屏通道可能抢在隐藏生效前把它停用；
+                    // 等 600ms 过了那个窗口，再把它恢复成启用（隐藏位不受影响），
+                    // 保证「该隐藏的就是隐藏」，不会悄悄变成冻结。
+                    android.os.SystemClock.sleep(600);
+                    PrivShell.exec("pm enable --user 0 " + packagePart(it.pkg)
+                            + " >/dev/null 2>&1", 10);
+                }
+                String sub = subOf(it.pkg);
+                if (sub != null) {
+                    hideQuiet(sub);
+                }
+            }
+            final boolean ok = r.ok;
+            main.post(() -> {
+                stopFreezeSpin();
+                working = false;
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (!ok) {
+                    showHideError("隐藏失败", it, r.message);
+                    reload();
+                    return;
+                }
+                it.hidden = true;
+                it.hiddenOn = true;
+                it.frozen = true;
+                it.suspended = false;
+                rebindCells();
+                // 隐藏/取消隐藏不再弹成功提示（列表角标已能看出状态）
+                if (panelDismissAfterFreeze) {
+                    dismissAfterReload = true;
+                }
+                reload();
+            });
+        });
+    }
+
+    /** 取消隐藏：成功后按系统真值重读，避免把旧的停用态误当成已解冻。 */
+    private void unhideSingle(Item it, boolean systemToast) {
+        if (working) {
+            return;
+        }
+        working = true;
+        IO.execute(() -> {
+            HideSupport.Result r = HideSupport.unhide(this, packagePart(it.pkg), it.userId);
+            final boolean ok = r.ok;
+            main.post(() -> {
+                working = false;
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (!ok) {
+                    showHideError("取消隐藏失败", it, r.message);
+                    reload();
+                    return;
+                }
+                keepOrderBeforeUnfreeze();
+                it.hidden = false;
+                it.frozen = false;
+                it.suspended = false;
+                rebindCells();
+                // 取消隐藏不弹成功提示，列表角标已能看出状态
+                // 白名单永久有效：不因为取消隐藏就自动移出，需用户手动取消
+                reload();
+            });
+        });
+    }
+
+    /**
+     * 点击已隐藏图标：取消隐藏 → 让系统重新解析启动组件（不依赖本进程 PM 的旧缓存）→ am start。
+     * 之前用 getLaunchIntentForPackage 轮询，取消隐藏后本进程可能还拿不到启动入口，
+     * 表现为第一次点提示「该应用没有可启动的界面」，第二次才打开。
+     */
+    private void openHidden(Item it) {
+        if (working) {
+            return;
+        }
+        final String subKey = subOf(it.pkg);
+        final String pkg = packagePart(it.pkg);
+        working = true;
+        JinApp.OPEN.execute(() -> {
+            // 只为打开临时取消系统隐藏位，保留「用户想隐藏」的账本：列表仍显示 ×，
+            // 之后点一键冻结会恢复隐藏，而不是改成冻结
+            HideSupport.Result r = HideSupport.unhideForLaunch(this, pkg, it.userId);
+            boolean started = false;
+            if (r.ok) {
+                // 保住「想隐藏」的意图：系统隐藏位只是临时取消，列表继续显示 ×
+                HideSupport.markHiddenIntent(this, pkg, it.userId, true);
+                // 隐藏不影响启用状态，但系统/省电策略可能把它冻住（enabled=DISABLED_USER），
+                // 停用状态下解析不到启动入口，会表现成「隐藏应用无法打开」：先启用再拉起
+                PrivShell.exec("pm enable --user " + it.userId + " " + pkg
+                        + " >/dev/null 2>&1", 10);
+                if (subKey != null) {
+                    HideSupport.unhideForLaunch(this, packagePart(subKey), userIdPart(subKey));
+                    HideSupport.markHiddenIntent(this, packagePart(subKey),
+                            userIdPart(subKey), true);
+                }
+                // 系统侧解析启动组件：取消隐藏后 PMS 要刷新可见性，这里最多等约 1.5 秒
+                String comp = null;
+                for (int i = 0; i < 12 && comp == null; i++) {
+                    comp = resolveLauncherComponent(pkg, it.userId);
+                    if (comp == null) {
+                        android.os.SystemClock.sleep(120);
+                    }
+                }
+                if (comp != null) {
+                    started = amStartComponent(comp, it.userId);
+                }
+                if (!started) {
+                    // 解析不到（或启动失败）时按 MAIN/LAUNCHER 直接指定包名启动
+                    started = amStartLauncher(pkg, it.userId);
+                }
+            }
+            final boolean done = r.ok;
+            final boolean launched = started;
+            main.post(() -> {
+                working = false;
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (!done) {
+                    showHideError("取消隐藏失败，无法打开", it, r.message);
+                    reload();
+                    return;
+                }
+                it.hidden = true;
+                it.hiddenOn = false;
+                it.frozen = false;
+                it.suspended = false;
+                // 取消暂停缓存，后面的 reload 不会拿旧缓存继续显示
+                if (it.userId == 0) {
+                    SuspendSupport.forget(this, packagePart(it.pkg));
+                }
+                keepOrderBeforeUnfreeze();
+                rebindCells();
+                if (!launched) {
+                    // 系统侧两条路都失败：最后按本进程 Intent 兜底，仍拿不到才提示
+                    Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+                    if (i != null) {
+                        startActivity(i);
+                    } else {
+                        toast("该应用没有可启动的界面");
+                    }
+                }
+                // 白名单永久有效：打开隐藏应用不会自动移出白名单
+                reload();
+            });
+        });
+    }
+
+    /**
+     * 隐藏/取消隐藏批量入口。hide=true 时只处理仍在运行的进程（Dhizuku 无法查进程，按全量处理）；
+     * hide=false 时把隐藏项取消隐藏、其余冻结项按原 pm 通道解冻。
+     */
+    private void runHideBatch(boolean hide, List<Item> shown) {
+        runHideBatch(hide, shown, null);
+    }
+
+    private void runHideBatch(boolean hide, List<Item> shown, Runnable after) {
+        if (working) {
+            if (after != null) {
+                after.run();
+            }
+            return;
+        }
+        final List<Item> todo = new ArrayList<>();
+        int whiteSkipped = 0;
+        int skipped = 0;
+        int notRunning = 0;
+        boolean dhizuku = DhizukuGate.only(this);
+        for (Item it : shown) {
+            if (hide) {
+                if (it.frozen) {
+                    skipped++;
+                    continue;
+                }
+                if (isWhitelisted(it.pkg)) {
+                    whiteSkipped++;
+                    continue;
+                }
+                if (HideSupport.isProtected(this, packagePart(it.pkg))) {
+                    skipped++;
+                    continue;
+                }
+                // 一键隐藏只处理仍在运行的进程：已经退出的不需要再隐藏
+                if (!dhizuku && !HideSupport.isRunning(this, packagePart(it.pkg))) {
+                    notRunning++;
+                    continue;
+                }
+                todo.add(it);
+            } else if (it.hidden) {
+                todo.add(it);
+            }
+        }
+        if (todo.isEmpty()) {
+            if (hide) {
+                FrozenTip.show(this, whiteSkipped > 0 && skipped == 0 && notRunning == 0
+                        ? "白名单应用不隐藏" : "没有运行中的应用需要隐藏");
+            } else {
+                FrozenTip.show(this, "无需取消隐藏");
+            }
+            if (skipped > 0 && panelDismissAfterFreeze) {
+                closeSelf();
+            }
+            if (after != null) {
+                after.run();
+            }
+            return;
+        }
+        working = true;
+        final int whiteN = whiteSkipped;
+        final int runningN = notRunning;
+        if (hide) {
+            startFreezeSpin();
+        } else {
+            keepOrderBeforeUnfreeze();
+        }
+        render();
+        if (count != null) {
+            count.setText((hide ? "正在隐藏 " : "正在取消隐藏 ") + todo.size() + " 个应用…");
+        }
+        IO.execute(() -> {
+            int done = 0;
+            int failed = 0;
+            String firstError = "";
+            List<String> justHidden = new ArrayList<>();
+            for (Item it : todo) {
+                boolean ok;
+                String error;
+                if (it.hidden) {
+                    HideSupport.Result r = HideSupport.unhide(this, packagePart(it.pkg), it.userId);
+                    ok = r.ok;
+                    error = r.message;
+                } else if (hide) {
+                    HideSupport.Result r = HideSupport.hide(this, packagePart(it.pkg), it.userId);
+                    ok = r.ok;
+                    error = r.message;
+                    if (ok) {
+                        // 只隐藏、不冻结：划卡/锁屏可能抢在隐藏生效前停用它，最后统一恢复启用
+                        if (it.userId == 0) {
+                            justHidden.add(packagePart(it.pkg));
+                        }
+                        String sub = subOf(it.pkg);
+                        if (sub != null) {
+                            hideQuiet(sub);
+                        }
+                    }
+                } else {
+                    PrivShell.Result r = execPm(it.pkg, it.userId, false);
+                    ok = applied(it.pkg, false, r);
+                    error = r == null || r.out == null ? "" : r.out;
+                    if (ok && it.userId == 0) {
+                        SuspendSupport.forget(this, packagePart(it.pkg));
+                    }
+                }
+                if (ok) {
+                    done++;
+                } else {
+                    failed++;
+                    if (firstError.isEmpty()) {
+                        firstError = packagePart(it.pkg) + "：" + error;
+                    }
+                }
+            }
+            if (!justHidden.isEmpty()) {
+                // 等划卡/锁屏那 200ms 的窗口过去，再把被顺手停用的重新启用；
+                // 隐藏位不受影响，保证「隐藏的只是隐藏，不会连带冻结」
+                android.os.SystemClock.sleep(600);
+                StringBuilder enable = new StringBuilder();
+                for (String pkg : justHidden) {
+                    enable.append("pm enable --user 0 ").append(pkg)
+                            .append(" >/dev/null 2>&1; ");
+                }
+                PrivShell.exec(enable.toString(), Math.max(15, 5 + justHidden.size() * 3));
+            }
+            final int doneN = done;
+            final int failedN = failed;
+            final String errorN = firstError;
+            main.post(() -> {
+                stopFreezeSpin();
+                working = false;
+                if (isFinishing() || isDestroyed()) {
+                    if (after != null) {
+                        after.run();
+                    }
+                    return;
+                }
+                String action = hide ? "隐藏" : "取消隐藏";
+                StringBuilder msg = new StringBuilder("已").append(action).append(' ')
+                        .append(doneN).append(" 个应用");
+                if (failedN > 0) {
+                    msg.append("，失败 ").append(failedN).append(" 个");
+                }
+                if (hide && runningN > 0) {
+                    msg.append("，").append(runningN).append(" 个未运行已跳过");
+                }
+                if (hide && whiteN > 0) {
+                    msg.append("，").append(whiteN).append(" 个白名单跳过");
+                }
+                if (failedN > 0) {
+                    Ui.smallDialog(this, action + "结果", msg + "\n\n首个失败：" + errorN, "知道了");
+                }
+                // 成功不弹 toast（隐藏/取消隐藏以列表角标为准），仅失败时给对话框
+                reload();
+                if (after != null) {
+                    after.run();
+                }
+            });
+        });
+    }
+
     private void freezeSingle(Item it) {
         freezeSingle(it, false);
     }
@@ -7108,6 +7891,15 @@ public class FreezeListActivity extends BaseActivity {
     /** @param systemToast 长按图标菜单触发时用系统默认 Toast，其它入口沿用自绘提示 */
     private void freezeSingle(Item it, boolean systemToast) {
         if (working) {
+            return;
+        }
+        if (it.hidden) {
+            if (it.hiddenOn) {
+                toast("「" + it.label + "」是隐藏状态，请用「取消隐藏」");
+                return;
+            }
+            // 打开应用时临时取消过隐藏位：这里恢复隐藏，而不是改成冻结
+            hideSingle(it, systemToast);
             return;
         }
         if (isWhitelisted(it.pkg)) {
@@ -7121,6 +7913,20 @@ public class FreezeListActivity extends BaseActivity {
         working = true;
         startFreezeSpin();
         IO.execute(() -> {
+            // 系统真值兜底：列表标记可能是旧的，隐藏项一律不冻结
+            if (Boolean.TRUE.equals(HideSupport.hiddenOne(this,
+                    packagePart(it.pkg), it.userId))) {
+                main.post(() -> {
+                    stopFreezeSpin();
+                    working = false;
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    toast("「" + it.label + "」是隐藏状态，请用「取消隐藏」");
+                    reload();
+                });
+                return;
+            }
             PrivShell.Result r;
             boolean ok;
             // 勾选「保留桌面图标」时直接走暂停通道：停用会让桌面图标消失，暂停不会
@@ -7214,8 +8020,25 @@ public class FreezeListActivity extends BaseActivity {
         if (working) {
             return;
         }
+        if (it.hidden) {
+            toast("「" + it.label + "」是隐藏状态，请用「取消隐藏」");
+            return;
+        }
         working = true;
         IO.execute(() -> {
+            // 系统真值兜底：隐藏项不参与解冻，避免把「隐藏」变成「冻结/解冻」来回改状态
+            if (Boolean.TRUE.equals(HideSupport.hiddenOne(this,
+                    packagePart(it.pkg), it.userId))) {
+                main.post(() -> {
+                    working = false;
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    toast("「" + it.label + "」是隐藏状态，请用「取消隐藏」");
+                    reload();
+                });
+                return;
+            }
             PrivShell.Result r = execPm(it.pkg, it.userId, false);
             boolean ok = applied(it.pkg, false, r);
             main.post(() -> {
@@ -7248,6 +8071,9 @@ public class FreezeListActivity extends BaseActivity {
      */
     private void migrateFrozenToSuspend() {
         if (working) {
+            // 记成未完成，下次进页面由 ensureGrayIcons 自动接着切
+            grayIconChecked = false;
+            toast("正在执行其他操作，稍后打开页面会自动继续切换");
             return;
         }
         final List<String> candidates = new ArrayList<>();
@@ -7265,6 +8091,21 @@ public class FreezeListActivity extends BaseActivity {
         IO.execute(() -> {
             execSuspendBatch(candidates);
             Set<String> suspended = SuspendSupport.suspendedAmong(candidates);
+            // 批量 CLI 没成功的，再逐个走同一条 CLI 通道补一次（覆盖 ROM 差异）。
+            // 不能用 pm suspend 补：root 身份会把 suspender 记成 root，点灰图标时系统界面崩溃。
+            List<String> missing = new ArrayList<>();
+            for (String pkg : candidates) {
+                if (!suspended.contains(pkg)) {
+                    missing.add(pkg);
+                }
+            }
+            if (!missing.isEmpty()) {
+                for (String pkg : missing) {
+                    SuspendSupport.suspend(this, pkg, labelOf(pkg));
+                }
+                recordDiagOp("单次暂停", "SuspendCli × " + missing.size(), null);
+                suspended = SuspendSupport.suspendedAmong(candidates);
+            }
             SuspendSupport.remember(this, suspended);
             if (!suspended.isEmpty()) {
                 StringBuilder script = new StringBuilder();
@@ -7272,8 +8113,20 @@ public class FreezeListActivity extends BaseActivity {
                     script.append("pm enable --user 0 ").append(pkg).append(" 2>&1; ");
                 }
                 execPmScript(script.toString(), Math.max(30, 10 + suspended.size() * 5));
-                // enable 只恢复图标，不改暂停态；再回读一次，只有仍是暂停的才算切换成功
-                suspended.retainAll(SuspendSupport.suspendedAmong(suspended));
+                // enable 只恢复图标，不改暂停态；再回读一次，只有「仍是暂停 且 已启用」的才算切换成功
+                Set<String> stillSuspended = SuspendSupport.suspendedAmong(suspended);
+                Set<String> disabledNow = new HashSet<>();
+                PrivShell.Result d = PrivShell.exec("pm list packages -d --user 0", 30);
+                if (d.out != null) {
+                    for (String line : d.out.split("\n")) {
+                        String t = line.trim();
+                        if (t.startsWith("package:")) {
+                            disabledNow.add(t.substring(8).trim());
+                        }
+                    }
+                }
+                suspended.retainAll(stillSuspended);
+                suspended.removeAll(disabledNow);
                 SuspendSupport.remember(this, suspended);
             }
             final int done = suspended.size();
@@ -7293,8 +8146,11 @@ public class FreezeListActivity extends BaseActivity {
 
     /**
      * 取消「留桌面图标」：把当前处于暂停态的已冻结应用立刻转回默认冻结（disable-user）。
-     * 先 pm unsuspend 清掉暂停标志再 disable-user，避免 suspended= 残留；
-     * 用 pm list packages -d 批量回读判成败，转失败的保持暂停态，不会把应用放出来。
+     *
+     * 先真正撤销暂停再 disable-user：凚的 root 通道/划卡锁屏建立的暂停记的是
+     * suspender=com.android.shell，而 pm 在 root 下的身份是 root，pm unsuspend 会静默失败
+     * （打印 new suspended state: true 却不生效），必须用 CLI 按同一个 suspender 撤销。
+     * 最后用 pm list packages -d 批量回读判成败，转失败的保持暂停态，不会把应用放出来。
      */
     private void migrateSuspendedToDisabled() {
         if (working) {
@@ -7324,15 +8180,15 @@ public class FreezeListActivity extends BaseActivity {
                 });
                 return;
             }
+            // 关键：先把暂停真正撤掉（pm + CLI 兜底），否则 suspended= 会一直残留
+            Set<String> stillSuspended = SuspendSupport.unsuspendBatch(this, suspended);
             StringBuilder script = new StringBuilder();
             for (String pkg : suspended) {
-                script.append("pm unsuspend --user 0 ").append(pkg)
-                        .append(" >/dev/null 2>&1; pm disable-user --user 0 ").append(pkg)
+                script.append("pm disable-user --user 0 ").append(pkg)
                         .append(" >/dev/null 2>&1; ");
             }
-            execPmScript(script.toString(), Math.max(30, 15 + suspended.size() * 6));
-            // 回读真值：仍在暂停集合里的算失败；disable 列表里有的才算转换成功
-            Set<String> stillSuspended = SuspendSupport.suspendedAmong(suspended);
+            execPmScript(script.toString(), Math.max(30, 15 + suspended.size() * 5));
+            // 回读真值：disable 列表里有、且暂停已撤掉，才算切换成功
             Set<String> disabled = new HashSet<>();
             PrivShell.Result d = PrivShell.exec("pm list packages -d", 30);
             if (d.out != null) {
@@ -7503,16 +8359,27 @@ public class FreezeListActivity extends BaseActivity {
         working = true;
         render();
         IO.execute(() -> {
-            PrivShell.Result r = execPm(it.pkg, it.userId, false);
-            boolean ok = applied(it.pkg, false, r);
+            boolean ok;
+            String reason;
+            if (it.hidden) {
+                HideSupport.Result hr = HideSupport.unhide(this, packagePart(it.pkg), it.userId);
+                ok = hr.ok;
+                reason = hr.message;
+            } else {
+                PrivShell.Result r = execPm(it.pkg, it.userId, false);
+                ok = applied(it.pkg, false, r);
+                reason = Ui.pmReason(r, false);
+            }
+            final boolean done = ok;
+            final String why = reason;
             main.post(() -> {
                 working = false;
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
-                if (!ok) {
-                    Ui.smallDialog(this, "已移出名单，但解冻失败",
-                            it.label + "：" + Ui.pmReason(r, false), "知道了");
+                if (!done) {
+                    Ui.smallDialog(this, "已移出名单，但取消隐藏/解冻失败",
+                            it.label + "：" + why, "知道了");
                 }
                 reload();
             });
@@ -8691,6 +9558,58 @@ public class FreezeListActivity extends BaseActivity {
             prefs().edit().putBoolean(KEY_HIDE_TOASTS, on).apply();
         });
 
+        // 隐藏应用模式：只有 root / root 授权的 Shizuku / Dhizuku 才显示；
+        // 普通 Shizuku(shell) 没有 MANAGE_USERS，放出来也只会失败
+        CheckBox hideModeBox = new CheckBox(this);
+        hideModeBox.setText("隐藏应用模式");
+        hideModeBox.setTextSize(11);
+        hideModeBox.setTextColor(getColor(R.color.text_secondary));
+        hideModeBox.setMinimumHeight(Ui.dp(this, 32));
+        final boolean hideAvailable = HideSupport.available(this);
+        if (!hideAvailable) {
+            hideModeBox.setVisibility(View.GONE);
+        }
+        final boolean[] hideOnNow = {hideMode};
+        hideModeBox.setChecked(hideOnNow[0]);
+        final android.widget.CompoundButton.OnCheckedChangeListener[] hideListener =
+                new android.widget.CompoundButton.OnCheckedChangeListener[1];
+        hideListener[0] = (b, on) -> {
+            if (on == hideOnNow[0]) {
+                return;
+            }
+            if (on && !hintSuffixHidden("hide_mode")) {
+                // 勾选先弹说明：确认才真正打开，取消则把勾去掉（与全局美化同步一致）
+                showHideModeHint(
+                        () -> {
+                            hideOnNow[0] = true;
+                            setHideMode(true);
+                        },
+                        () -> {
+                            b.setOnCheckedChangeListener(null);
+                            b.setChecked(false);
+                            b.setOnCheckedChangeListener(hideListener[0]);
+                        });
+                return;
+            }
+            if (!on && !hintSuffixHidden("hide_mode_off")) {
+                // 取消勾选同样先说明：确认后取消隐藏（应用保留在列表并解冻）
+                showHideOffHint(
+                        () -> {
+                            hideOnNow[0] = false;
+                            setHideMode(false);
+                        },
+                        () -> {
+                            b.setOnCheckedChangeListener(null);
+                            b.setChecked(true);
+                            b.setOnCheckedChangeListener(hideListener[0]);
+                        });
+                return;
+            }
+            hideOnNow[0] = on;
+            setHideMode(on);
+        };
+        hideModeBox.setOnCheckedChangeListener(hideListener[0]);
+
         // 底部按钮仅冻/解当前列表：标签栏可见时长按标签就能切换，设置里不显示；
         // 勾选「隐藏标签页文字」收起标签行、或没有可见标签时才露出，并随勾选实时变化
         CheckBox tabOnlyBox = new CheckBox(this);
@@ -9138,6 +10057,7 @@ public class FreezeListActivity extends BaseActivity {
         personalBody.addView(defaultFormBox);
         personalBody.addView(nameBox);
         personalBody.addView(tipBox);
+        personalBody.addView(hideModeBox);
         if (dismissBox != null) {
             personalBody.addView(dismissBox);
         }
@@ -9930,7 +10850,7 @@ public class FreezeListActivity extends BaseActivity {
         its.setOrientation(LinearLayout.VERTICAL);
         // 「界面透明度」：下面收着背景与搜索框两条透明度，标题右侧箭头可折叠
         TextView uiOpacityTitle = new TextView(this);
-        uiOpacityTitle.setText("界面透明度");
+        uiOpacityTitle.setText("界面调节");
         uiOpacityTitle.setTextSize(12);
         uiOpacityTitle.setTextColor(getColor(R.color.text_primary));
         uiOpacityTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
@@ -10022,7 +10942,7 @@ public class FreezeListActivity extends BaseActivity {
             int outerStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(lk(KEY_BLUR), 20)));
             outerBar.setProgress(outerStart);
-            outerLabel.setText("半屏外侧：" + outerStart + "%");
+            outerLabel.setText("半屏外侧透明度：" + outerStart + "%");
             outerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -10030,7 +10950,7 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
-                    outerLabel.setText("半屏外侧：" + p + "%");
+                    outerLabel.setText("半屏外侧透明度：" + p + "%");
                     applyBackdropStrength();
                 }
 
@@ -10053,7 +10973,7 @@ public class FreezeListActivity extends BaseActivity {
             int innerStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
             innerBar.setProgress(innerStart);
-            innerLabel.setText("半屏列表背景：" + innerStart + "%");
+            innerLabel.setText("半屏列表背景透明度：" + innerStart + "%");
             innerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -10065,7 +10985,7 @@ public class FreezeListActivity extends BaseActivity {
                     if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                         prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                     }
-                    innerLabel.setText("半屏列表背景：" + p + "%");
+                    innerLabel.setText("半屏列表背景透明度：" + p + "%");
                     applyPanelSurface();
                 }
 
@@ -10088,7 +11008,7 @@ public class FreezeListActivity extends BaseActivity {
             int bgStart = 100 - Math.max(0, Math.min(100,
                     prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
             bgBar.setProgress(bgStart);
-            bgLabel.setText("全屏列表背景：" + bgStart + "%");
+            bgLabel.setText("全屏列表背景透明度：" + bgStart + "%");
             bgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -10100,7 +11020,7 @@ public class FreezeListActivity extends BaseActivity {
                     if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                         prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
                     }
-                    bgLabel.setText("全屏列表背景：" + p + "%");
+                    bgLabel.setText("全屏列表背景透明度：" + p + "%");
                     // 真正改窗口底板 alpha 与模糊的是 applyFullscreenSurface（整页背景唯一出口）
                     applyFullscreenSurface();
                 }
@@ -10124,7 +11044,7 @@ public class FreezeListActivity extends BaseActivity {
             headerBar.setMax(100);
             int headerStart = 100 - headerSurfacePct();
             headerBar.setProgress(headerStart);
-            headerLabel.setText("横幅：" + headerStart + "%");
+            headerLabel.setText("横幅透明度：" + headerStart + "%");
             headerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -10132,7 +11052,7 @@ public class FreezeListActivity extends BaseActivity {
                         return;
                     }
                     prefs().edit().putInt(KEY_HEADER_SURFACE, 100 - p).apply();
-                    headerLabel.setText("横幅：" + p + "%");
+                    headerLabel.setText("横幅透明度：" + p + "%");
                     // 顶栏档位在 applyFullscreenSurface 里统一铺（page_header 那一层）
                     applyFullscreenSurface();
                 }
@@ -10158,7 +11078,7 @@ public class FreezeListActivity extends BaseActivity {
             searchBar.setMax(100);
             int searchStart = 100 - searchPct();
             searchBar.setProgress(searchStart);
-            searchLabel.setText("搜索框：" + searchStart + "%");
+            searchLabel.setText("搜索框透明度：" + searchStart + "%");
             searchBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -10167,7 +11087,7 @@ public class FreezeListActivity extends BaseActivity {
                     }
                     // 滑块值 = 透明度：0 不透明，100 全透明
                     prefs().edit().putInt(lk(KEY_SEARCH_SURFACE), 100 - p).apply();
-                    searchLabel.setText("搜索框：" + p + "%");
+                    searchLabel.setText("搜索框透明度：" + p + "%");
                     applySearchSurface();
                 }
 
@@ -10220,7 +11140,7 @@ public class FreezeListActivity extends BaseActivity {
         qpAlphaBar.setMax(100);
         int qpAlphaStart = quickPanelSurfacePct();
         qpAlphaBar.setProgress(qpAlphaStart);
-        qpAlphaLabel.setText("快面板：" + qpAlphaStart + "%");
+        qpAlphaLabel.setText("快面板透明度：" + qpAlphaStart + "%");
         qpAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -10228,7 +11148,7 @@ public class FreezeListActivity extends BaseActivity {
                     return;
                 }
                 prefs().edit().putInt(KEY_QUICK_PANEL_SURFACE, p).apply();
-                qpAlphaLabel.setText("快面板：" + p + "%");
+                qpAlphaLabel.setText("快面板透明度：" + p + "%");
                 if (quickPanelDialog != null) {
                     applyQuickPanelSurfaceAlpha(quickPanelDialog);
                 }
@@ -10243,12 +11163,43 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         opacityRows.put("qp", new View[]{qpAlphaLabel, qpAlphaBar});
+
+        // 设置页字体：只缩放设置页里的文字，80%–130%，拖动实时预览
+        final TextView fontLabel = new TextView(this);
+        fontLabel.setTextSize(11);
+        fontLabel.setTextColor(getColor(R.color.text_secondary));
+        final SeekBar fontBar = new SeekBar(this);
+        fontBar.setMax(SETTINGS_FONT_MAX - SETTINGS_FONT_MIN);
+        int fontStart = settingsFontPct();
+        fontBar.setProgress(fontStart - SETTINGS_FONT_MIN);
+        fontLabel.setText("设置页字体：" + fontStart + "%");
+        fontBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                int pct = SETTINGS_FONT_MIN + p;
+                prefs().edit().putInt(KEY_SETTINGS_FONT, pct).apply();
+                fontLabel.setText("设置页字体：" + pct + "%");
+                applySettingsFontScale(settingsSurfaceRoot, pct);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+        opacityRows.put("font", new View[]{fontLabel, fontBar});
         // 统一按最终顺序铺进组体：
-        // 全屏：横幅、搜索、列表图标、全屏背景、全屏外模糊、快面板、设置页
-        // 半屏：列表图标、半屏面板、半屏外侧、快面板、设置页
+        // 全屏：横幅、搜索、列表图标、全屏背景、全屏外模糊、快面板、设置页、设置页字体
+        // 半屏：列表图标、半屏面板、半屏外侧、快面板、设置页、设置页字体
         String[] opacityOrder = panelMode
-                ? new String[]{"icon", "inner", "outer", "qp", "settings"}
-                : new String[]{"header", "search", "icon", "bg", "blur", "qp", "settings"};
+                ? new String[]{"icon", "inner", "outer", "qp", "settings", "font"}
+                : new String[]{"header", "search", "icon", "bg", "blur", "qp", "settings", "font"};
         for (String key : opacityOrder) {
             View[] row = opacityRows.get(key);
             if (row != null) {
@@ -10337,16 +11288,33 @@ public class FreezeListActivity extends BaseActivity {
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(pad, Ui.dp(this, 4), Ui.dp(this, 6), Ui.dp(this, 2));
+        // 标题拆成「设置」（可长按拖动）+「（当前权限：X）」（点击刷新 / 长按重置）两段：
+        // 拖动只在「设置」两个字上生效，权限段的点击与长按不会被拖动手势吞掉
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        titleRow.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 2));
         TextView title = new TextView(this);
+        title.setText("设置");
         title.setTextSize(15);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         title.setTextColor(getColor(R.color.text_primary));
-        title.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 2));
         title.setSingleLine(true);
-        header.addView(title, new LinearLayout.LayoutParams(
+        title.setIncludeFontPadding(false);
+        titleRow.addView(title, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        // 权限标识直接拼进标题文本：同一 TextView 天然同基线，读起来是一句话
-        bindPrivilegeTitle(title);
+
+        TextView privTitle = new TextView(this);
+        privTitle.setTextSize(11);
+        privTitle.setTextColor(getColor(R.color.text_secondary));
+        privTitle.setSingleLine(true);
+        privTitle.setIncludeFontPadding(false);
+        privTitle.setPadding(Ui.dp(this, 1), 0, 0, 0);
+        titleRow.addView(privTitle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        header.addView(titleRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        bindPrivilegeTitle(privTitle);
 
         // 中间留白，把右上角关闭入口推到最右；热区与文字版一致（48×34dp）
         header.addView(new View(this), new LinearLayout.LayoutParams(
@@ -10686,6 +11654,8 @@ public class FreezeListActivity extends BaseActivity {
             panelOpenHeightDp = -1;
             settingsSurfaceRoot = null;
         });
+        // 设置页字体：按用户设定的百分比缩放（首次记录原始字号，之后不会叠加）
+        applySettingsFontScale(root, settingsFontPct());
         // 只把勾选框里的方块画小一点：字体、行距、文字位置都保持原样
         shrinkCheckBoxes(box);
         dialog.show();
@@ -10786,14 +11756,20 @@ public class FreezeListActivity extends BaseActivity {
             return "· 主副应用关联";
         }
         int paused = 0;
+        int hiddenPaused = 0;
         for (Pair p : list) {
             if (!p.enabled) {
                 paused++;
+            } else if (pairHidden(p)) {
+                hiddenPaused++;
             }
         }
         String text = "· 主副应用关联（" + list.size() + " 组";
         if (paused > 0) {
             text += "，" + paused + " 组已暂停";
+        }
+        if (hiddenPaused > 0) {
+            text += "，" + hiddenPaused + " 组因应用隐藏而暂停";
         }
         return text + "）";
     }
@@ -11177,10 +12153,12 @@ public class FreezeListActivity extends BaseActivity {
                 }
 
                 TextView name = new TextView(this);
+                boolean hiddenPaused = p.enabled && pairHidden(p);
                 name.setText(labelFor(p.main) + " → " + labelFor(p.sub)
-                        + (p.enabled ? "" : "（已暂停）"));
+                        + (!p.enabled ? "（已暂停）" : hiddenPaused ? "（因应用已隐藏而暂停）" : ""));
                 name.setTextSize(12);
-                name.setTextColor(getColor(p.enabled ? R.color.text_primary : R.color.text_secondary));
+                name.setTextColor(getColor(p.enabled && !hiddenPaused
+                        ? R.color.text_primary : R.color.text_secondary));
                 row.addView(name, new LinearLayout.LayoutParams(0,
                         ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -11601,7 +12579,7 @@ public class FreezeListActivity extends BaseActivity {
             case "wallpaper_group":
                 return "自定义壁纸";
             case "ui_opacity":
-                return "界面透明度";
+                return "界面调节";
             case "whitelist":
                 return "列表白名单";
             case "pair":
@@ -12339,7 +13317,7 @@ public class FreezeListActivity extends BaseActivity {
                 int outerStart = 100 - Math.max(0, Math.min(100,
                         prefs().getInt(lk(KEY_BLUR), 20)));
                 outerBar.setProgress(outerStart);
-                outerLabel.setText("半屏外侧：" + outerStart + "%");
+                outerLabel.setText("半屏外侧透明度：" + outerStart + "%");
                 outerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -12347,7 +13325,7 @@ public class FreezeListActivity extends BaseActivity {
                             return;
                         }
                         prefs().edit().putInt(lk(KEY_BLUR), 100 - p).apply();
-                        outerLabel.setText("半屏外侧：" + p + "%");
+                        outerLabel.setText("半屏外侧透明度：" + p + "%");
                         applyBackdropStrength();
                     }
 
@@ -12372,7 +13350,7 @@ public class FreezeListActivity extends BaseActivity {
                 int innerStart = 100 - Math.max(0, Math.min(100,
                         prefs().getInt(lk(KEY_SURFACE), SURFACE_SOLID)));
                 innerBar.setProgress(innerStart);
-                innerLabel.setText("半屏列表背景：" + innerStart + "%");
+                innerLabel.setText("半屏列表背景透明度：" + innerStart + "%");
                 innerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -12384,7 +13362,7 @@ public class FreezeListActivity extends BaseActivity {
                         if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt(KEY_FULL_SURFACE, 100 - p).apply();
                         }
-                        innerLabel.setText("半屏列表背景：" + p + "%");
+                        innerLabel.setText("半屏列表背景透明度：" + p + "%");
                         applyPanelSurface();
                     }
 
@@ -12409,7 +13387,7 @@ public class FreezeListActivity extends BaseActivity {
                 int bgStart = 100 - Math.max(0, Math.min(100,
                         prefs().getInt(KEY_FULL_SURFACE, SURFACE_SOLID)));
                 bgBar.setProgress(bgStart);
-                bgLabel.setText("全屏列表背景：" + bgStart + "%");
+                bgLabel.setText("全屏列表背景透明度：" + bgStart + "%");
                 bgBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -12421,7 +13399,7 @@ public class FreezeListActivity extends BaseActivity {
                         if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
                             prefs().edit().putInt("panel_" + KEY_SURFACE, 100 - p).apply();
                         }
-                        bgLabel.setText("全屏列表背景：" + p + "%");
+                        bgLabel.setText("全屏列表背景透明度：" + p + "%");
                         // 真正改窗口底板 alpha 与模糊的是 applyFullscreenSurface（整页背景唯一出口）
                         applyFullscreenSurface();
                     }
@@ -12446,7 +13424,7 @@ public class FreezeListActivity extends BaseActivity {
                 headerBar.setMax(100);
                 int headerStart = 100 - headerSurfacePct();
                 headerBar.setProgress(headerStart);
-                headerLabel.setText("横幅：" + headerStart + "%");
+                headerLabel.setText("横幅透明度：" + headerStart + "%");
                 headerBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -12454,7 +13432,7 @@ public class FreezeListActivity extends BaseActivity {
                             return;
                         }
                         prefs().edit().putInt(KEY_HEADER_SURFACE, 100 - p).apply();
-                        headerLabel.setText("横幅：" + p + "%");
+                        headerLabel.setText("横幅透明度：" + p + "%");
                         // 顶栏档位在 applyFullscreenSurface 里统一铺（page_header 那一层）
                         applyFullscreenSurface();
                     }
@@ -12513,7 +13491,7 @@ public class FreezeListActivity extends BaseActivity {
                 searchBar.setMax(100);
                 int searchStart = 100 - searchPct();
                 searchBar.setProgress(searchStart);
-                searchLabel.setText("搜索框：" + searchStart + "%");
+                searchLabel.setText("搜索框透明度：" + searchStart + "%");
                 searchBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -12522,7 +13500,7 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         // 滑块值 = 透明度：0 不透明，100 全透明
                         prefs().edit().putInt(lk(KEY_SEARCH_SURFACE), 100 - p).apply();
-                        searchLabel.setText("搜索框：" + p + "%");
+                        searchLabel.setText("搜索框透明度：" + p + "%");
                         applySearchSurface();
                     }
 
@@ -13490,10 +14468,19 @@ public class FreezeListActivity extends BaseActivity {
                     android.R.drawable.sym_def_app_icon));
             line.addView(mainIcon, new LinearLayout.LayoutParams(size, size));
 
-            // 主 → 副 之间用链环标识；这组关联暂停后改为双竖杠暂停图标
+            // 主 → 副 之间：任一方被隐藏 → 红叉；只是手动暂停 → 双竖杠；两个应用都正常 → 链环
+            boolean hiddenPaused = pairHidden(p);
             ImageView linkIcon = new ImageView(this);
-            linkIcon.setImageResource(p.enabled ? R.drawable.ic_qp_link : R.drawable.ic_qp_pause);
-            linkIcon.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+            if (hiddenPaused) {
+                // 不打 tint，保留图标本身的红色，明确「是隐藏导致的暂停」
+                linkIcon.setImageResource(R.drawable.ic_qp_link_off);
+            } else if (!p.enabled) {
+                linkIcon.setImageResource(R.drawable.ic_qp_pause);
+                linkIcon.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+            } else {
+                linkIcon.setImageResource(R.drawable.ic_qp_link);
+                linkIcon.setImageTintList(ColorStateList.valueOf(getColor(R.color.text_secondary)));
+            }
             LinearLayout.LayoutParams linkLp = new LinearLayout.LayoutParams(
                     Ui.dp(this, 12), Ui.dp(this, 12));
             linkLp.leftMargin = Ui.dp(this, 2);
@@ -13742,6 +14729,7 @@ public class FreezeListActivity extends BaseActivity {
             minusBtn.setImageTintList(ColorStateList.valueOf(mode[0] == modeNormal
                     ? getColor(R.color.text_primary) : getColor(R.color.danger)));
 
+            // 白名单永久生效：隐藏的应用也照常显示，用户可在这里手动取消
             List<String> keys = new ArrayList<>(whitelistSet());
             Collections.sort(keys, (a, b) -> labelFor(a).compareToIgnoreCase(labelFor(b)));
             syncNeutral.accept(keys.size());
@@ -15253,13 +16241,47 @@ public class FreezeListActivity extends BaseActivity {
         return settingsPanelCardWidth > 0 ? settingsPanelCardWidth : defaultDialogWidth();
     }
 
-    /** 「界面透明度」组内的条目文案：一律不带「透明度」三个字，只显示百分比。 */
+    /** 「界面调节」组内的条目文案：名称后统一带「透明度」。 */
     private String settingsSurfaceText(int p) {
-        return "设置页：" + p + "%";
+        return "设置页透明度：" + p + "%";
     }
 
     private String iconAlphaText(int p) {
-        return "列表图标：" + p + "%";
+        return "列表图标透明度：" + p + "%";
+    }
+
+    /** 设置页字体缩放百分比（80–130），默认 100。 */
+    private int settingsFontPct() {
+        return clampInt(prefs().getInt(KEY_SETTINGS_FONT, 100),
+                SETTINGS_FONT_MIN, SETTINGS_FONT_MAX);
+    }
+
+    /**
+     * 把设置页字体按百分比缩放：首次遇到某个 TextView 时记下原始字号，
+     * 之后重复调用都从原始字号重算，滑块来回拖不会叠加放大或缩小。
+     */
+    private void applySettingsFontScale(View root, int pct) {
+        if (root == null) {
+            return;
+        }
+        float scale = pct / 100f;
+        if (root instanceof TextView) {
+            TextView tv = (TextView) root;
+            Object tag = tv.getTag(TAG_BASE_TEXT_SIZE);
+            float base;
+            if (tag instanceof Float) {
+                base = (Float) tag;
+            } else {
+                base = tv.getTextSize();
+                tv.setTag(TAG_BASE_TEXT_SIZE, base);
+            }
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, base * scale);
+        } else if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                applySettingsFontScale(group.getChildAt(i), pct);
+            }
+        }
     }
 
     /** 设置页透明度：0 = 不透明，100 = 全透明；半屏/全屏各存一份。 */
@@ -16036,7 +17058,8 @@ public class FreezeListActivity extends BaseActivity {
             toast("备份内容生成失败");
             return;
         }
-        final int listCount = items.size();
+        final int listCount = items.size() - hiddenKnown.size();
+        final int hiddenCount = hiddenKnown.size();
         final int settingCount = backupSettingCount();
         final int shortcutCount = ShortcutPin.pinnedPackages(this).size();
         final int whiteCount = whitelistSet().size();
@@ -16060,9 +17083,10 @@ public class FreezeListActivity extends BaseActivity {
         });
         content.addView(optText, topMargin(6));
         ref[0] = compactCard("备份",
-                "冻结列表 " + listCount + " 个、设置 " + settingCount + " 项、桌面快捷方式 "
+                "冻结列表 " + Math.max(0, listCount) + " 个、设置 " + settingCount + " 项、桌面快捷方式 "
                         + shortcutCount + " 个、白名单 " + whiteCount + " 个、关联应用 "
-                        + pairCount + " 组，会写进同一份备份",
+                        + pairCount + " 组，会写进同一份备份"
+                        + (hiddenCount > 0 ? "\n已跳过 " + hiddenCount + " 个隐藏应用" : ""),
                 content, new String[]{"返回"}, new Runnable[]{null});
     }
 
@@ -16754,6 +17778,7 @@ public class FreezeListActivity extends BaseActivity {
         int setCount = 0;
         int listCount = 0;
         int missing = 0;
+        int hiddenRestoreSkipped = 0;
         int shortcutTotal = 0;
         int shortcutRequested = 0;
         int whiteCount = -1;
@@ -16765,6 +17790,7 @@ public class FreezeListActivity extends BaseActivity {
             int[] r = writeBackupFreeze(data.optJSONObject("freeze"));
             listCount = r[0];
             missing = r[1];
+            hiddenRestoreSkipped = r.length > 2 ? r[2] : 0;
         }
         if (doWhitelist) {
             JSONObject obj = data.optJSONObject("whitelist");
@@ -16797,6 +17823,9 @@ public class FreezeListActivity extends BaseActivity {
             msg.append("冻结列表 ").append(listCount).append(" 个");
             if (missing > 0) {
                 msg.append("（跳过未安装 ").append(missing).append(" 个）");
+            }
+            if (hiddenRestoreSkipped > 0) {
+                msg.append("（跳过已隐藏 ").append(hiddenRestoreSkipped).append(" 个）");
             }
         }
         if (doWhitelist) {
@@ -16926,17 +17955,24 @@ public class FreezeListActivity extends BaseActivity {
             Set<String> put = new HashSet<>();
             JSONArray pkgsArr = new JSONArray();
             for (Item it : items) {
-                if (cur.contains(it.pkg) && put.add(it.pkg)) {
+                // 隐藏应用不进备份：恢复时它们仍应保持隐藏，不能把隐藏状态写进冻结列表
+                if (cur.contains(it.pkg) && !it.hidden && put.add(it.pkg)) {
                     pkgsArr.put(it.pkg);
                 }
             }
             for (String p : cur) {
+                if (hiddenKnown.contains(p)) {
+                    continue;
+                }
                 if (put.add(p)) {
                     pkgsArr.put(p);
                 }
             }
             JSONArray orderArr = new JSONArray();
             for (String p : savedOrder()) {
+                if (hiddenKnown.contains(p)) {
+                    continue;
+                }
                 orderArr.put(p);
             }
             JSONObject freeze = new JSONObject();
@@ -17290,10 +18326,17 @@ public class FreezeListActivity extends BaseActivity {
         PackageManager pm = getPackageManager();
         Set<String> next = new HashSet<>();
         int missing = 0;
+        int hiddenSkipped = 0;
         if (arr != null) {
             for (int i = 0; i < arr.length(); i++) {
                 String p = arr.optString(i, "");
                 if (p.isEmpty()) {
+                    continue;
+                }
+                // 本机当前已隐藏的应用：恢复时跳过，不能把它当成普通冻结项写回列表
+                if (hiddenKnown.contains(p) || Boolean.TRUE.equals(
+                        HideSupport.hiddenOne(this, packagePart(p), userIdPart(p)))) {
+                    hiddenSkipped++;
                     continue;
                 }
                 int userId = userIdPart(p);
@@ -17339,7 +18382,7 @@ public class FreezeListActivity extends BaseActivity {
             e.putBoolean(KEY_HIDE_TAB_ROW, freeze.optBoolean("tab_bar_hidden", false));
         }
         e.apply();
-        return new int[]{next.size(), missing};
+        return new int[]{next.size(), missing, hiddenSkipped};
     }
 
     private static void putString(SharedPreferences.Editor e, JSONObject o, String src, String key) {
@@ -17552,27 +18595,10 @@ public class FreezeListActivity extends BaseActivity {
 
     // ---------------- 权限 ----------------
 
-    /** 布局设置顶部的权限行：显示 root / Shizuku 状态，未授权时可点开授权。 */
-    /** 标题整句：「设置（冻结权限：Root）」，括号内小一号、次要色、非加粗。 */
+    /** 设置标题右侧的权限段：「（当前权限：Root）」，点击刷新、长按重置。 */
     private void bindPrivilegeTitle(TextView view) {
         final Runnable[] refresh = new Runnable[1];
-        refresh[0] = () -> {
-            String head = "设置";
-            String tail = "（当前权限：" + privilegeValue() + "）";
-            android.text.SpannableStringBuilder sb =
-                    new android.text.SpannableStringBuilder(head + tail);
-            int start = head.length();
-            int end = sb.length();
-            sb.setSpan(new android.text.style.RelativeSizeSpan(0.73f), start, end,
-                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            sb.setSpan(new android.text.style.ForegroundColorSpan(
-                            getColor(R.color.text_secondary)), start, end,
-                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            sb.setSpan(new android.text.style.StyleSpan(
-                            android.graphics.Typeface.NORMAL), start, end,
-                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            view.setText(sb);
-        };
+        refresh[0] = () -> view.setText("（当前权限：" + privilegeValue() + "）");
         refresh[0].run();
         privTitleRefresh = refresh[0];
         // 探测 LSPosed：设置页发 ping，system_server 里的模块回 pong；
@@ -17588,10 +18614,17 @@ public class FreezeListActivity extends BaseActivity {
             }
         }, 800);
         IO.execute(() -> {
+            // Dhizuku 可能在它的应用里被撤销授权：先按服务端真值校正，再探测 root/Shizuku
+            DhizukuGate.refresh(this);
             PrivShell.mode();
             main.post(refresh[0]);
         });
         view.setOnClickListener(v -> handlePrivilegeClick(refresh[0]));
+        // 长按权限标题：重置权限缓存 / 重新发起 Shizuku、Dhizuku 授权
+        view.setOnLongClickListener(v -> {
+            showPrivilegeResetDialog(refresh[0]);
+            return true;
+        });
     }
 
     /** 权限值：Root、Root+LSPosed、仅 LSPosed（仍需 Root）、Shizuku、未授权，检测中单独一档。 */
@@ -17604,12 +18637,14 @@ public class FreezeListActivity extends BaseActivity {
         if (mode == PrivShell.Mode.ROOT) {
             return lsposed ? "Root、LSPosed" : "Root";
         }
+        // 以当前真正拿到并能执行的权限为准：Shizuku 优先于「仅 LSPosed」的提示，
+        // 否则撤掉 root 改授权 Shizuku 后会一直显示「LSPosed，仍需Root权限」
+        if (mode == PrivShell.Mode.SHIZUKU) {
+            return lsposed ? "Shizuku、LSPosed" : "Shizuku";
+        }
         if (lsposed) {
             // LSPosed 只能挂 Hook，冻结仍要 Root 才能写 /data/system
             return "LSPosed，仍需Root权限";
-        }
-        if (mode == PrivShell.Mode.SHIZUKU) {
-            return "Shizuku";
         }
         if (DhizukuGate.installed(this) && DhizukuGate.authorized(this)) {
             return "Dhizuku";
@@ -17618,40 +18653,154 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private void handlePrivilegeClick(Runnable refresh) {
+        // 点击权限标题 = 刷新当前授权：强制重新探测（用户可能刚在 root / Shizuku 之间切换），
+        // 再按最新结果更新标题；仍未授权才走申请流程
+        IO.execute(() -> {
+            DhizukuGate.refresh(this);
+            PrivShell.reset();
+            PrivShell.mode(true);
+            main.post(() -> {
+                if (refresh != null) {
+                    refresh.run();
+                }
+                handlePrivilegeClickOnMain(refresh);
+            });
+        });
+    }
+
+    private void handlePrivilegeClickOnMain(Runnable refresh) {
         PrivShell.Mode mode = PrivShell.peek();
         if (mode == PrivShell.Mode.ROOT) {
-            toast("已通过 root 执行");
+            toast("当前权限：Root（已刷新）");
             return;
         }
         if (mode == PrivShell.Mode.SHIZUKU) {
-            toast("已通过 Shizuku 执行");
+            toast("当前权限：Shizuku（已刷新）");
             return;
         }
-        if (DhizukuGate.installed(this) && DhizukuGate.authorized(this)) {
-            toast("已通过 Dhizuku 执行（仅暂停）");
+        // 没有 root / Shizuku：优先请求 Shizuku（即使 Dhizuku 已授权，也允许切换过来）
+        if (ShizukuGate.installed(this)) {
+            ShizukuGate.requestAnyway(() -> {
+                PrivShell.reset();
+                recheckPrivilegeAsync(true, false, this::fallbackToDhizuku);
+            });
             return;
         }
-        if (!ShizukuGate.installed(this)) {
-            if (DhizukuGate.installed(this)) {
-                DhizukuGate.requestAnyway(() -> {
-                    PrivShell.reset();
-                    IO.execute(() -> {
-                        PrivShell.mode();
-                        main.post(refresh);
-                    });
-                });
-                return;
-            }
-            showPrivilegeMissingDialog();
+        fallbackToDhizuku();
+    }
+
+    /** Shizuku 不可用或被拒绝时的兜底：还有 Dhizuku 就请求它，否则弹未授权提示。 */
+    private void fallbackToDhizuku() {
+        if (DhizukuGate.installed(this)) {
+            DhizukuGate.requestAnyway(() -> {
+                PrivShell.reset();
+                recheckPrivilegeAsync(true, false, this::showPrivilegeMissingDialog);
+            });
             return;
         }
-        ShizukuGate.requestAnyway(() -> {
+        showPrivilegeMissingDialog();
+    }
+
+    /**
+     * 长按「设置（当前权限：X）」：重置权限缓存并重新发起授权。
+     * 场景：用户在 Dhizuku 里撤销授权、改开 Shizuku 后，凚还停在旧的 Dhizuku 记录上，
+     * 单点只会提示「已通过 Dhizuku 执行」，这里给一个显式的重置入口。
+     */
+    private void showPrivilegeResetDialog(Runnable refresh) {
+        final java.util.List<String> items = new ArrayList<>();
+        final java.util.List<Runnable> actions = new ArrayList<>();
+        items.add("重新检测权限");
+        actions.add(() -> {
             PrivShell.reset();
+            DhizukuGate.refresh(this);
             IO.execute(() -> {
-                PrivShell.mode();
+                PrivShell.mode(true);
                 main.post(refresh);
             });
+            toast("已重新检测权限");
         });
+        if (ShizukuGate.installed(this)) {
+            items.add("重新授权 Shizuku");
+            actions.add(() -> {
+                PrivShell.reset();
+                ShizukuGate.requestAnyway(() -> recheckPrivilegeAsync(true, true, null));
+            });
+            items.add("打开 Shizuku 应用");
+            actions.add(() -> openPackage(ShizukuGate.PKG));
+        }
+        if (DhizukuGate.installed(this)) {
+            items.add("重新授权 Dhizuku");
+            actions.add(() -> {
+                DhizukuGate.forget(this);
+                DhizukuGate.requestAnyway(() -> recheckPrivilegeAsync(true, true, null));
+            });
+            items.add("打开 Dhizuku 应用");
+            actions.add(() -> openPackage(DhizukuGate.PKG));
+        }
+        // 圆角紧凑卡片：宽度比设置面板更窄，选项逐行列出
+        int padH = Ui.dp(this, 16);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        Ui.applyDialogBg(card);
+        card.setPadding(padH, Ui.dp(this, 14), padH, Ui.dp(this, 6));
+        card.addView(Ui.text(this, "重置权限", 15, Ui.TEXT_PRIMARY, true));
+
+        final AlertDialog d = new AlertDialog.Builder(this).setView(card).create();
+        for (int i = 0; i < items.size(); i++) {
+            final Runnable action = actions.get(i);
+            TextView row = Ui.text(this, items.get(i), 13, Ui.BLUE, false);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setSingleLine(true);
+            row.setPadding(Ui.dp(this, 2), Ui.dp(this, 11), Ui.dp(this, 2), Ui.dp(this, 11));
+            TypedValue ripple = new TypedValue();
+            if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)) {
+                row.setBackgroundResource(ripple.resourceId);
+            }
+            row.setOnClickListener(v -> {
+                d.dismiss();
+                action.run();
+            });
+            card.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = cardButton("取消");
+        cancel.setOnClickListener(v -> d.dismiss());
+        btnRow.addView(cancel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(this, 30)));
+        card.addView(btnRow, topMargin(4));
+
+        disableDialogWindowAnimation(d);
+        d.show();
+        android.view.Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawableResource(android.R.color.transparent);
+            // 比设置面板更窄：屏幕 72%，上限 280dp
+            int width = Math.min(Math.round(
+                    getResources().getDisplayMetrics().widthPixels * 0.72f), Ui.dp(this, 280));
+            int pad = applySettingsDialogShadow(d);
+            w.setLayout(width + pad * 2, ViewGroup.LayoutParams.WRAP_CONTENT);
+            android.view.WindowManager.LayoutParams lp = w.getAttributes();
+            lp.x = 0;
+            lp.gravity = Gravity.CENTER;
+            w.setAttributes(lp);
+            applySettingsSurfaceAlpha(d);
+            applyPanelBottomLimit(d);
+            Ui.autoHideSettings(d);
+            hideUntilPositioned(d);
+        }
+    }
+
+    /** 按包名打开对应应用（Shizuku / Dhizuku 自身）。 */
+    private void openPackage(String pkg) {
+        Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+        if (i != null) {
+            startActivity(i);
+        } else {
+            toast("未安装或没有可启动的界面");
+        }
     }
 
     /**
@@ -17788,6 +18937,8 @@ public class FreezeListActivity extends BaseActivity {
     private void checkPrivilegeOnStart(int attempt) {
         IO.execute(() -> {
             PrivShell.Mode mode = PrivShell.mode();
+            // Dhizuku 授权可能已在它自己的应用里被撤销：按服务端真值校正后再判断
+            DhizukuGate.refresh(this);
             if (mode == PrivShell.Mode.ROOT || mode == PrivShell.Mode.SHIZUKU) {
                 return;
             }
@@ -17842,6 +18993,7 @@ public class FreezeListActivity extends BaseActivity {
                                        Runnable onStillNone) {
         IO.execute(() -> {
             PrivShell.Mode mode = PrivShell.mode(force);
+            DhizukuGate.refresh(this);
             // Dhizuku 不提供 shell，mode 仍是 NONE，但授权后照样可用
             boolean dhizuku = mode == PrivShell.Mode.NONE && DhizukuGate.only(this);
             main.post(() -> {
@@ -17852,6 +19004,8 @@ public class FreezeListActivity extends BaseActivity {
                     if (privTitleRefresh != null) {
                         privTitleRefresh.run();
                     }
+                    // 授权后通道可能从 Shizuku 变成 root（或反过来），补一次变化检测
+                    checkChannelChangeAsync();
                     return;
                 }
                 if (onStillNone != null) {
@@ -17866,9 +19020,21 @@ public class FreezeListActivity extends BaseActivity {
             return;
         }
         final List<Item> targets = new ArrayList<>();
+        /** 用户标记为隐藏、但为了打开临时取消过系统隐藏位的：一键冻结时恢复隐藏，而不是冻结。 */
+        final List<Item> rehide = new ArrayList<>();
         int skippedCount = 0;
         int whiteSkipped = 0;
         for (Item it : shown) {
+            // 隐藏与冻结相互独立：冻结入口不碰隐藏项；解冻也不动隐藏项
+            if (it.hidden) {
+                // 白名单应用任何入口都不隐藏/不冻结
+                if (freeze && !it.hiddenOn && !isWhitelisted(it.pkg)) {
+                    rehide.add(it);
+                } else {
+                    skippedCount++;
+                }
+                continue;
+            }
             // 已经到位的直接跳过，不发起 pm 调用，也不算失败
             if (freeze == it.frozen) {
                 skippedCount++;
@@ -17908,7 +19074,7 @@ public class FreezeListActivity extends BaseActivity {
             targets.addAll(extra);
         }
         final int skippedFinal = skippedCount;
-        if (targets.isEmpty()) {
+        if (targets.isEmpty() && rehide.isEmpty()) {
             if (freeze) {
                 // 一键冻结没有可处理的目标（名单为空 / 全部已冻结 / 全部在冻结白名单）：
                 // 用和「已冻结」完全同一套自绘提示，只换文案
@@ -17934,9 +19100,57 @@ public class FreezeListActivity extends BaseActivity {
         }
         render();
         if (count != null) {
-            count.setText((freeze ? "正在冻结 " : "正在解冻 ") + targets.size() + " 个应用…");
+            if (freeze && targets.isEmpty()) {
+                count.setText("正在恢复隐藏 " + rehide.size() + " 个应用…");
+            } else {
+                count.setText((freeze ? "正在冻结 " : "正在解冻 ") + targets.size() + " 个应用…");
+            }
         }
         IO.execute(() -> {
+            // 先处理「打开过、临时取消隐藏」的项：一键冻结时恢复隐藏，而不是冻结
+            int rehided = 0;
+            for (Item it : rehide) {
+                if (HideSupport.hide(this, packagePart(it.pkg), it.userId).ok) {
+                    rehided++;
+                }
+            }
+            final int rehideN = rehided;
+            if (targets.isEmpty()) {
+                main.post(() -> {
+                    working = false;
+                    stopFreezeSpin();
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    reload();
+                    FrozenTip.show(this, "已恢复隐藏 " + rehideN + " 个应用");
+                });
+                return;
+            }
+            // 系统真值兜底：即使列表里的 hidden 标记是旧的，也绝不让冻结/解冻碰到隐藏项
+            //（隐藏与冻结相互独立：隐藏的保持隐藏，只有「取消隐藏」才改它）
+            List<Item> stillHidden = new ArrayList<>();
+            for (Item it : targets) {
+                Boolean hidden = HideSupport.hiddenOne(this, packagePart(it.pkg), it.userId);
+                if (Boolean.TRUE.equals(hidden)) {
+                    stillHidden.add(it);
+                }
+            }
+            if (!stillHidden.isEmpty()) {
+                targets.removeAll(stillHidden);
+                if (targets.isEmpty()) {
+                    main.post(() -> {
+                        working = false;
+                        stopFreezeSpin();
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
+                        reload();
+                        FrozenTip.show(this, freeze ? "无需冻结" : "无需解冻");
+                    });
+                    return;
+                }
+            }
             final boolean dhizuku = DhizukuGate.only(this);
             // 只开一次 su、一条脚本跑完全部包；处理完统一回读一次状态
             long startedAt = System.currentTimeMillis();
@@ -17980,10 +19194,30 @@ public class FreezeListActivity extends BaseActivity {
                     }
                 }
             }
+            // 分身逐个带 --user 执行（主用户已在上面整批处理）
             for (Item it : targets) {
                 if (it.userId == 0) continue;
                 PrivShell.Result r = execPm(it.pkg, it.userId, freeze);
                 outputs.put(it.pkg, r == null || r.out == null ? "" : r.out);
+            }
+            // 解冻时主用户的暂停多是 CLI（suspender=com.android.shell）建的，pm unsuspend 不生效；
+            // 先按真值真正撤销，再走下面的「是否已退出暂停」判定
+            if (!freeze && !zeroKeys.isEmpty()) {
+                Set<String> cachedNow = SuspendSupport.cached(this);
+                Set<String> suspendNames = new LinkedHashSet<>();
+                for (String key : zeroKeys) {
+                    String n = packagePart(key);
+                    if (cachedNow.contains(n)) {
+                        suspendNames.add(n);
+                    }
+                }
+                if (!suspendNames.isEmpty()) {
+                    Set<String> left = SuspendSupport.unsuspendBatch(this, suspendNames);
+                    Set<String> next = SuspendSupport.cached(this);
+                    next.removeAll(suspendNames);
+                    next.addAll(left);
+                    SuspendSupport.replace(this, next);
+                }
             }
             // 批量只回读一次系统真值，逐包按「是否已在目标状态」判成败；读不到才退回文本判断
             Set<String> truth = disabledPackages();
@@ -18074,7 +19308,11 @@ public class FreezeListActivity extends BaseActivity {
                 if (fails.isEmpty()) {
                     if (freeze) {
                         if (!hideToasts) {
-                            FrozenTip.show(this);
+                            if (rehideN > 0) {
+                                FrozenTip.show(this, "已恢复隐藏 " + rehideN + " 个应用");
+                            } else {
+                                FrozenTip.show(this);
+                            }
                         }
                     } else if (!hideToasts) {
                         FrozenTip.show(this, "已解冻");
@@ -18119,6 +19357,20 @@ public class FreezeListActivity extends BaseActivity {
             }
             recordDiagOp("dhizuku:setPackagesSuspended",
                     "setPackagesSuspended(*, true) × " + pkgs.size(), null);
+            return result;
+        }
+        // root：一条命令、一个进程处理整份名单（每个包仍带自己的弹窗文案）。
+        // 逐个起 app_process 在名单长时会很慢，表现成「切换停不下来/转不过去」。
+        Map<String, String> labels = new HashMap<>();
+        for (String pkg : pkgs) {
+            labels.put(pkg, labelOf(pkg));
+        }
+        Map<String, Boolean> batch = SuspendSupport.cliBatch(this, pkgs, labels, true);
+        if (batch != null) {
+            for (String pkg : pkgs) {
+                result.put(pkg, Boolean.TRUE.equals(batch.get(pkg)) ? "" : "suspend failed");
+            }
+            recordDiagOp("批量暂停", "setPackagesSuspended × " + pkgs.size(), null);
             return result;
         }
         for (String pkg : pkgs) {
@@ -18182,6 +19434,10 @@ public class FreezeListActivity extends BaseActivity {
         if (working) {
             return;
         }
+        if (it.hidden) {
+            openHidden(it);
+            return;
+        }
         // 主应用配了副应用：正常打开主应用，同时在后台顺带解冻副应用
         final String subKey = subOf(it.pkg);
         working = true;
@@ -18191,6 +19447,10 @@ public class FreezeListActivity extends BaseActivity {
             // 点开应用走快速判定：pm 返回成功即认为解冻完成，不再跑 pm list / dumpsys 复核
             //（这两次查询要 200ms 以上），真值由随后的 reload 在后台校正
             boolean ok = isPmOk(r);
+            if (ok) {
+                // 暂停态要等系统真正撤销后再拉起，否则仍会被暂停确认框拦一下（二次确认）
+                waitSuspendCleared(it);
+            }
             // 撤销暂停失败时单独给一句，不落到通用的「启用未生效」
             final String failReason = !ok && SuspendSupport.cached(this).contains(it.pkg)
                     && Boolean.TRUE.equals(SuspendSupport.suspendedOne(it.pkg))
@@ -18223,6 +19483,60 @@ public class FreezeListActivity extends BaseActivity {
                 reload();
             });
         });
+    }
+
+    /** 系统侧解析启动组件（cmd package resolve-activity --brief），输出形如「包名/类名」。 */
+    private String resolveLauncherComponent(String pkg, int userId) {
+        PrivShell.Result r = PrivShell.exec("cmd package resolve-activity --brief --user " + userId
+                + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER " + pkg, 10);
+        if (r == null || r.timeout || r.out == null) {
+            return null;
+        }
+        String[] lines = r.out.trim().split("\\r?\\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            int slash = line.indexOf('/');
+            if (slash > 0 && line.startsWith(pkg)) {
+                return line;
+            }
+        }
+        return null;
+    }
+
+    /** am start -n 组件；返回是否已成功发出启动。 */
+    private boolean amStartComponent(String comp, int userId) {
+        PrivShell.Result r = PrivShell.exec("am start --user " + userId + " -n " + comp, 15);
+        return r != null && !r.timeout && r.out != null && !r.out.contains("Error");
+    }
+
+    /** am start 直接按包名 + MAIN/LAUNCHER 启动，不依赖本进程 PM 解析。 */
+    private boolean amStartLauncher(String pkg, int userId) {
+        PrivShell.Result r = PrivShell.exec("am start --user " + userId
+                + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p " + pkg, 15);
+        return r != null && !r.timeout && r.out != null && !r.out.contains("Error");
+    }
+
+    /**
+     * 暂停态应用点开后：等系统真正撤销暂停再拉起。
+     * 否则启动请求会命中 PMS 的暂停记录，先弹系统「已被暂停」确认框（二次确认）才放行；
+     * pm 撤不掉（暂停由别的身份发起）时按候选 suspender 再用 CLI 撤一次。
+     */
+    private void waitSuspendCleared(Item it) {
+        if (it.userId != 0) {
+            return;
+        }
+        String pkg = packagePart(it.pkg);
+        if (!it.suspended && !SuspendSupport.cached(this).contains(pkg)) {
+            return;
+        }
+        long deadline = android.os.SystemClock.elapsedRealtime() + 1200;
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            if (!Boolean.TRUE.equals(SuspendSupport.suspendedOne(pkg))) {
+                return;
+            }
+            android.os.SystemClock.sleep(80);
+        }
+        SuspendSupport.clearForeignSuspension(pkg);
     }
 
     private void launch(Item it) {

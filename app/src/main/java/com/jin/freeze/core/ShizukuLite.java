@@ -177,12 +177,15 @@ public final class ShizukuLite {
         boolean swipeOn = enabled(app);
         boolean lockOn = lockEnabled(app);
         int delay = lockDelaySeconds(app);
+        // 用户标记隐藏的实例键：划卡/锁屏不再冻结它们
+        Set<String> hidden = HideSupport.hiddenIntentKeys(app);
 
         IJinLite s = service;
         if (s != null) {
             try {
                 s.syncConfig(swipe.toArray(new String[0]), lock.toArray(new String[0]),
-                        whitelist.toArray(new String[0]), swipeOn, lockOn, delay, suspend);
+                        whitelist.toArray(new String[0]), hidden.toArray(new String[0]),
+                        swipeOn, lockOn, delay, suspend);
                 lastError = "";
                 stopDaemon();
             } catch (Throwable t) {
@@ -191,7 +194,7 @@ public final class ShizukuLite {
             return;
         }
         // UserService 没连上：配置写到 /data/local/tmp，交给 app_process 守护
-        writeDaemonConfig(app, swipe, lock, whitelist, swipeOn, lockOn, delay, suspend);
+        writeDaemonConfig(app, swipe, lock, whitelist, hidden, swipeOn, lockOn, delay, suspend);
         boolean on = swipeOn || lockOn;
         if (!on) {
             stopDaemon();
@@ -207,13 +210,15 @@ public final class ShizukuLite {
     // ---------------- app_process 守护（UserService 起不来时的载体） ----------------
 
     private static void writeDaemonConfig(Context app, Set<String> swipe, Set<String> lock,
-                                          Set<String> whitelist, boolean swipeOn, boolean lockOn,
+                                          Set<String> whitelist, Set<String> hidden,
+                                          boolean swipeOn, boolean lockOn,
                                           int delay, boolean suspend) {
         try {
             org.json.JSONObject root = new org.json.JSONObject();
             root.put("swipe", new org.json.JSONArray(swipe));
             root.put("lock", new org.json.JSONArray(lock));
             root.put("white", new org.json.JSONArray(whitelist));
+            root.put("hidden", new org.json.JSONArray(hidden));
             root.put("swipeOn", swipeOn);
             root.put("lockOn", lockOn);
             root.put("delay", delay);
@@ -229,13 +234,22 @@ public final class ShizukuLite {
 
     private static void ensureDaemon(Context app) {
         try {
+            final String vc = String.valueOf(versionCode(app));
             if (daemonRunning()) {
-                return;
+                // 守护进程把 dex 加载在内存里，应用升级后它仍在跑旧逻辑（例如不认识隐藏名单）：
+                // 版本不一致就重启它，否则划卡/锁屏会一直按旧代码冻结
+                PrivShell.Result v = PrivShell.exec(
+                        "cat /data/local/tmp/jin_lite/version 2>/dev/null", 4);
+                if (v.out != null && vc.equals(v.out.trim())) {
+                    return;
+                }
+                stopDaemon();
             }
             String apk = app.getPackageCodePath();
             String cmd = "CLASSPATH=" + apk
                     + " nohup app_process /system/bin --nice-name=jin_lite"
-                    + " com.jin.freeze.lite.LiteDaemon >/dev/null 2>&1 &";
+                    + " com.jin.freeze.lite.LiteDaemon >/dev/null 2>&1 &"
+                    + " echo " + vc + " > /data/local/tmp/jin_lite/version";
             daemonLauncher = Shizuku.newProcess(new String[]{"sh", "-c", cmd}, null, null);
         } catch (Throwable t) {
             lastError = "启动守护失败:" + t;

@@ -7,10 +7,15 @@ import android.util.Base64;
 import android.util.Log;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -27,6 +32,11 @@ public final class SuspendSupport {
     private static final String PREFS = "freeze_list";
     /** 本机通过降级通道暂停过的包，仅用于后续查真值与展示。 */
     private static final String KEY_SUSPENDED = "suspended_pkgs";
+    /** 旧版 suspender=root 的暂停记录已经重建过（一次性迁移标记，v2 兼容旧标记）。 */
+    private static final String KEY_SUSPENDER_REPAIRED = "suspender_shell_repaired_v2";
+    /** 迁移尝试次数：失败也不无限重试，最多 3 次。 */
+    private static final String KEY_SUSPENDER_TRIES = "suspender_shell_tries";
+    private static volatile boolean repairing;
 
     private static Context appCtx;
 
@@ -49,19 +59,28 @@ public final class SuspendSupport {
      * 暂停一个包，并尽量把系统暂停提示框换成凚自己的文案。
      *
      * 通道选择与「之后怎么撤销」绑定：系统只允许 suspendingPackage 匹配的调用撤销暂停，
-     * 所以 root 模式统一走 app_process CLI（suspender=root，和 pm 命令身份一致），
-     * 只有没有 root 时才走 Shizuku 的 SuspendDialogInfo（suspender=com.android.shell）。
+     * 所以 root 模式统一走 app_process CLI（suspender=com.android.shell，与 pm 命令身份一致），
+     * 只有没有 root 时才走 Shizuku 的 SuspendDialogInfo（suspender 同样是 com.android.shell）。
+     * suspender 绝不能写 "root"：系统的暂停弹窗会拿它当包名取资源与上报交互，
+     * 不存在的包名会让系统界面进程崩溃（Package root does not exist!）。
      */
     public static PrivShell.Result suspend(Context c, String pkg, String label) {
         if (DhizukuGate.only(c)) {
             return DhizukuGate.suspend(c, pkg, label);
         }
-        if (PrivShell.mode() == PrivShell.Mode.ROOT && rootSuspend(c, pkg, label)) {
+        if (PrivShell.rootLike() && rootSuspend(c, pkg, label)) {
             return new PrivShell.Result(0, "", false);
         }
         if (SuspendDialog.suspend(c, pkg, label)) {
             // binder 转发没有 shell 输出，成败由调用方按 dumpsys 真值复核
             return new PrivShell.Result(0, "", false);
+        }
+        if (PrivShell.rootLike()) {
+            // uid 0 下 pm suspend 的身份是 root，PMS 会把 suspendingPackage 记成不存在的 "root"，
+            // 用户点灰色图标时系统界面取不到它的资源直接崩溃（Package root does not exist!）。
+            // 宁可这次失败，也绝不降级到 pm。
+            Log.w("JinPm", "root suspend failed and no dialog channel: " + pkg);
+            return new PrivShell.Result(-1, "suspend failed", false);
         }
         // 不静默降级：对话框通道失败必须留痕，便于区分「ROM 不支持」和「我们没传对」
         Log.w("JinPm", "dialog channel failed for " + pkg + ", fallback to pm suspend (message only)");
@@ -71,7 +90,7 @@ public final class SuspendSupport {
     /**
      * root 通道：app_process 以 uid 0 调 setPackagesSuspendedAsUser 并带 SuspendDialogInfo。
      * 应用名可能带空格/中文，按 Base64(UTF-8) 传参，不经过 shell 引号。
-     * suspender 用 CLI 默认值 root，和 pm 命令一致，之后 pm unsuspend 才能撤销。
+     * suspender 用 CLI 默认值 com.android.shell，和 pm 命令身份一致，之后 pm unsuspend 能撤销。
      */
     private static boolean rootSuspend(Context c, String pkg, String label) {
         try {
@@ -89,6 +108,144 @@ public final class SuspendSupport {
             Log.w("JinPm", "root suspend error: " + t);
             return false;
         }
+    }
+
+    /**
+     * root 批量暂停/撤销：一条 su 命令起一个 app_process 进程处理整份名单。
+     * 列表很长时逐个起进程太慢（每个要半秒以上），会表现成「转不过去」；
+     * 非 root 返回 null，调用方按原来的逐个通道（Shizuku/Dhizuku）处理。
+     */
+    public static Map<String, Boolean> cliBatch(Context c, Collection<String> pkgs,
+                                                Map<String, String> labels, boolean suspended) {
+        return cliBatch(c, pkgs, labels, suspended, 0);
+    }
+
+    /** 同上，指定用户：分身实例的暂停同样由 com.android.shell 建立，pm 撤不掉。 */
+    public static Map<String, Boolean> cliBatch(Context c, Collection<String> pkgs,
+                                                Map<String, String> labels, boolean suspended,
+                                                int userId) {
+        return cliBatch(c, pkgs, labels, suspended, userId, null);
+    }
+
+    /** 同上，额外指定 suspender 身份（null=com.android.shell）；调 CLI 的 uid 必须是 0。 */
+    public static Map<String, Boolean> cliBatch(Context c, Collection<String> pkgs,
+                                                Map<String, String> labels, boolean suspended,
+                                                int userId, String caller) {
+        if (c == null || pkgs == null || pkgs.isEmpty() || !PrivShell.rootLike()) {
+            return null;
+        }
+        StringBuilder payload = new StringBuilder();
+        for (String p : pkgs) {
+            String label = labels == null ? null : labels.get(p);
+            String b64 = label == null || label.isEmpty() ? "-"
+                    : Base64.encodeToString(label.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+            payload.append(p).append('|').append(b64).append('\n');
+        }
+        String arg = Base64.encodeToString(
+                payload.toString().getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+        StringBuilder cmd = new StringBuilder("CLASSPATH=")
+                .append(shellQuote(c.getApplicationInfo().sourceDir))
+                .append(" app_process /system/bin com.jin.freeze.lite.SuspendCli -b ")
+                .append(arg).append(' ').append(userId);
+        if (!suspended) {
+            cmd.append(" u");
+        }
+        if (caller != null && !caller.isEmpty()) {
+            cmd.append(' ').append(caller);
+        }
+        PrivShell.Result r = PrivShell.exec(cmd.toString(), Math.max(30, 10 + pkgs.size()));
+        String out = r == null || r.out == null ? "" : r.out;
+        Map<String, Boolean> result = new HashMap<>();
+        for (String p : pkgs) {
+            result.put(p, out.contains("JIN_SUSPEND_OK:" + p));
+        }
+        return result;
+    }
+
+    /**
+     * 批量撤销暂停（主用户），返回真值复核后仍处于暂停态的包。
+     *
+     * 关键：root 跑 pm 的身份是 root，而凚的 root 通道 / 划卡锁屏用的是
+     * suspendingPackage=com.android.shell；PMS 只允许 suspender 相同的调用撤销暂停，
+     * 所以 pm unsuspend 会打印 "new suspended state: true" 却不生效（静默失败）。
+     * 这里先批量 pm（快，覆盖 pm 自己的记录），再按真值把剩下的用一个 CLI 进程撤掉，
+     * 最后才逐个按候选 suspender 兜底。
+     */
+    public static Set<String> unsuspendBatch(Context c, Collection<String> pkgs) {
+        if (pkgs == null || pkgs.isEmpty()) {
+            return new HashSet<>();
+        }
+        if (c != null) {
+            prefs(c); // 初始化 appCtx，供 unsuspend / Dhizuku 判断使用
+        }
+        if (dhizukuOnly()) {
+            for (String p : pkgs) {
+                unsuspend(p);
+            }
+            return suspendedAmong(pkgs);
+        }
+        List<String> list = new ArrayList<>();
+        StringBuilder script = new StringBuilder();
+        for (String p : pkgs) {
+            if (p == null || !p.matches("[A-Za-z0-9._]+")) {
+                continue;
+            }
+            list.add(p);
+            script.append("pm unsuspend --user 0 ").append(p).append(" >/dev/null 2>&1; ");
+        }
+        if (list.isEmpty()) {
+            return new HashSet<>();
+        }
+        PrivShell.exec(script.toString(), Math.max(30, 8 + list.size() * 3));
+        Set<String> left = suspendedTruth(list);
+        if (left != null && left.isEmpty()) {
+            return left;
+        }
+        if (left == null) {
+            left = new LinkedHashSet<>(list);
+        }
+        // 一个进程批量撤销（处理 com.android.shell 身份的暂停）
+        Map<String, Boolean> cli = cliBatch(c, left, null, false);
+        Set<String> still = suspendedTruth(new ArrayList<>(left));
+        if (still != null) {
+            left = still;
+        } else if (cli != null) {
+            Set<String> remain = new LinkedHashSet<>();
+            for (String p : left) {
+                if (!Boolean.TRUE.equals(cli.get(p))) {
+                    remain.add(p);
+                }
+            }
+            left = remain;
+        }
+        if (!left.isEmpty() && cli != null) {
+            // Shizuku 以 root 身份运行时，暂停记的是本应用包名（com.jin.freeze），
+            // 用同一个 CLI 再按这个 suspender 撤一次
+            Map<String, Boolean> jin = cliBatch(c, left, null, false, 0, "com.jin.freeze");
+            Set<String> afterJin = suspendedTruth(new ArrayList<>(left));
+            if (afterJin != null) {
+                left = afterJin;
+            } else if (jin != null) {
+                Set<String> remain = new LinkedHashSet<>();
+                for (String p : left) {
+                    if (!Boolean.TRUE.equals(jin.get(p))) {
+                        remain.add(p);
+                    }
+                }
+                left = remain;
+            }
+        }
+        // 还有残留（hook/旧版本用了别的 suspender）：逐个按候选身份再撤一次
+        if (!left.isEmpty()) {
+            for (String p : new ArrayList<>(left)) {
+                clearForeignSuspension(p);
+            }
+            Set<String> after = suspendedTruth(new ArrayList<>(left));
+            if (after != null) {
+                left = after;
+            }
+        }
+        return left;
     }
 
     /**
@@ -167,10 +324,139 @@ public final class SuspendSupport {
      * 只有 root 模式可用（要起 app_process）；返回是否已撤销。
      */
     public static boolean clearForeignSuspension(String pkg) {
-        if (appCtx == null || PrivShell.mode() != PrivShell.Mode.ROOT) {
+        if (appCtx == null || !PrivShell.rootLike()) {
             return false;
         }
         return rootUnsuspend(appCtx, pkg);
+    }
+
+    /**
+     * 一次性迁移：旧版本 root 通道把 suspender 写成 "root"，系统的暂停弹窗会拿它当包名
+     * 取资源、上报点击交互，点「确定」后系统界面进程直接崩溃
+     * （Package root does not exist!）。升级后把仍在暂停的应用按新口径
+     * （suspender=com.android.shell）重建一遍，状态保持不变。
+     *
+     * 关键：只有在真正处理完一轮后才落标记。之前「先落标记再判断 root」，
+     * 开机时 su 还没就绪就会永久跳过，旧记录留着重演崩溃。
+     */
+    public static void repairLegacyRootSuspender(Context c) {
+        if (c == null || repairing) {
+            return;
+        }
+        SharedPreferences p = prefs(c);
+        if (p.getBoolean(KEY_SUSPENDER_REPAIRED, false)
+                || p.getInt(KEY_SUSPENDER_TRIES, 0) >= 3) {
+            return;
+        }
+        Set<String> cached = cached(c);
+        // 关键：按整机真值找 suspender=root 的暂停记录，纯靠本地缓存会漏
+        //（用户清过数据 / 缓存丢过，系统里仍留着旧记录，点灰色图标还会崩）
+        Set<String> legacy = findLegacyRootSuspended();
+        if (legacy == null) {
+            legacy = cached;
+        }
+        if (legacy.isEmpty()) {
+            p.edit().putBoolean(KEY_SUSPENDER_REPAIRED, true).apply();
+            return;
+        }
+        // 只有 root 通道才会写出不存在的 suspender；su 还没就绪就下次再试，不落标记
+        if (PrivShell.mode() != PrivShell.Mode.ROOT) {
+            return;
+        }
+        repairing = true;
+        try {
+            p.edit().putInt(KEY_SUSPENDER_TRIES, p.getInt(KEY_SUSPENDER_TRIES, 0) + 1).apply();
+            boolean allDone = true;
+            for (String pkg : legacy) {
+                try {
+                    if (!Boolean.TRUE.equals(suspendedOne(pkg))) {
+                        continue;
+                    }
+                    if (!unsuspendAnyCaller(c, pkg)) {
+                        allDone = false;
+                        continue;
+                    }
+                    String label = labelOf(c, pkg);
+                    boolean ok = rootSuspend(c, pkg, label);
+                    if (!ok) {
+                        PrivShell.exec(suspendCommand(pkg, label), 20);
+                        ok = Boolean.TRUE.equals(suspendedOne(pkg));
+                    }
+                    if (!ok) {
+                        allDone = false;
+                        continue;
+                    }
+                    Log.w("JinPm", "暂停身份已重建为 shell: " + pkg);
+                } catch (Throwable t) {
+                    allDone = false;
+                    Log.w("JinPm", "重建暂停身份失败 " + pkg + ": " + t);
+                }
+            }
+            if (allDone) {
+                p.edit().putBoolean(KEY_SUSPENDER_REPAIRED, true).apply();
+            }
+        } finally {
+            repairing = false;
+        }
+    }
+
+    /**
+     * 从整机 dumpsys 里找出 suspender 写成 "root" 的暂停记录。
+     * dumpsys 片段：Package [pkg] (hash): … Suspend params:
+     *   suspendingPackage=&lt;0&gt;root dialogInfo=null …
+     * 读不到返回 null（调用方退回本地缓存）。
+     */
+    private static Set<String> findLegacyRootSuspended() {
+        PrivShell.Result r = PrivShell.exec("dumpsys package", 90);
+        if (r == null || r.timeout || r.out == null) {
+            return null;
+        }
+        Set<String> out = new HashSet<>();
+        String current = null;
+        for (String line : r.out.split("\n")) {
+            String t = line.trim();
+            if (t.startsWith("Package [")) {
+                int end = t.indexOf(']');
+                current = end > 9 ? t.substring(9, end) : null;
+                continue;
+            }
+            if (current == null || !t.startsWith("suspendingPackage=")) {
+                continue;
+            }
+            String v = t.substring("suspendingPackage=".length()).trim();
+            int gt = v.indexOf('>');
+            String pkg = gt >= 0 ? v.substring(gt + 1) : v;
+            int space = pkg.indexOf(' ');
+            if (space > 0) {
+                pkg = pkg.substring(0, space);
+            }
+            if (pkg.isEmpty() || "root".equals(pkg)) {
+                out.add(current);
+            }
+        }
+        return out;
+    }
+
+    /** 按候选 suspender 逐个尝试撤销，直到真值变 false。 */
+    private static boolean unsuspendAnyCaller(Context c, String pkg) {
+        for (String caller : new String[]{"root", "com.android.shell", "com.jin.freeze"}) {
+            PrivShell.Result r = PrivShell.exec(cliCommand(c, pkg, "", "u", caller), 20);
+            if (r.code == 0 && r.out != null && r.out.contains("JIN_SUSPEND_OK")
+                    && !Boolean.TRUE.equals(suspendedOne(pkg))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 应用名：暂停弹窗正文用；读不到就退回包名。 */
+    private static String labelOf(Context c, String pkg) {
+        try {
+            android.content.pm.PackageManager pm = c.getPackageManager();
+            return pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString();
+        } catch (Throwable t) {
+            return pkg;
+        }
     }
 
     public static Set<String> cached(Context c) {
@@ -242,7 +528,8 @@ public final class SuspendSupport {
         if (script == null) {
             return new HashSet<>();
         }
-        PrivShell.Result r = PrivShell.exec(script, 30);
+        // 名单长时逐个 dumpsys 会超过固定 30s，按包数放宽，否则会被截断成「没暂停」
+        PrivShell.Result r = PrivShell.exec(script, Math.max(30, 8 + pkgs.size() * 2));
         if (r.out == null) {
             return new HashSet<>();
         }
@@ -264,7 +551,8 @@ public final class SuspendSupport {
         if (script == null) {
             return new HashSet<>();
         }
-        PrivShell.Result r = PrivShell.exec(script + "echo __JIN_DONE__", 30);
+        PrivShell.Result r = PrivShell.exec(script + "echo __JIN_DONE__",
+                Math.max(30, 8 + pkgs.size() * 2));
         if (r == null || r.timeout || r.out == null || !r.out.contains("__JIN_DONE__")) {
             return null;
         }

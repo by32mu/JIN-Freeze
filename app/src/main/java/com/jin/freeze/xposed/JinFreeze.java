@@ -1,5 +1,6 @@
 package com.jin.freeze.xposed;
 
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 
 import java.io.File;
@@ -64,6 +65,7 @@ final class JinFreeze {
                         || SELF_PKG.equals(instance.pkg) || "android".equals(instance.pkg)) {
                     continue;
                 }
+                // 状态保持由 freezeOne 统一判断：已隐藏/已冻结的保持原状态
                 String key = instance.key();
                 if (!IN_FLIGHT.add(key)) {
                     continue;
@@ -115,6 +117,20 @@ final class JinFreeze {
      * 划卡/锁屏和列表必须同一种冻结方式，否则桌面图标会被停用摘掉。
      */
     private static boolean freezeOne(String pkg, int userId) {
+        // 用户标记隐藏的应用：划卡/锁屏也走隐藏，不再冻结（隐藏与冻结相互独立）
+        if (JinHookConfig.hiddenIntent(pkg, userId)) {
+            boolean ok = setHidden(pkg, userId, true);
+            forceStop(pkg, userId);
+            return ok;
+        }
+        // 已隐藏的应用保持隐藏，不改成停用/暂停
+        if (isHiddenNow(pkg, userId)) {
+            return true;
+        }
+        // 已经冻结（停用或暂停）的应用保持原状态，不重复处理
+        if (isFrozenNow(pkg, userId)) {
+            return true;
+        }
         if (!JinHookConfig.suspendMode()) {
             return setDisabledUser(pkg, userId);
         }
@@ -122,6 +138,80 @@ final class JinFreeze {
         // suspend 不会结束已有进程，补一次 force-stop 让冻结立即生效
         forceStop(pkg, userId);
         return ok;
+    }
+
+    /** IPackageManager.setApplicationHiddenSettingAsUser(pkg, hidden, userId)。 */
+    private static boolean setHidden(String pkg, int userId, boolean hidden) {
+        Object manager = packageManager();
+        if (manager == null) {
+            return false;
+        }
+        try {
+            Method method = manager.getClass().getMethod(
+                    "setApplicationHiddenSettingAsUser", String.class, boolean.class, int.class);
+            Object result = method.invoke(manager, pkg, hidden, userId);
+            return !Boolean.FALSE.equals(result);
+        } catch (Throwable t) {
+            android.util.Log.w("JinSwipeFreeze", "setHidden(" + pkg + ") 失败: " + t);
+            return false;
+        }
+    }
+
+    /** ApplicationInfo.PRIVATE_FLAG_HIDDEN：系统隐藏位。 */
+    private static final int PRIVATE_FLAG_HIDDEN = 1;
+
+    /** 读系统真值：该实例当前是否处于「系统隐藏」状态（privateFlags & 1）。 */
+    private static boolean isHiddenNow(String pkg, int userId) {
+        ApplicationInfo info = appInfo(pkg, userId);
+        return info != null && (readInt(info, "privateFlags") & PRIVATE_FLAG_HIDDEN) != 0;
+    }
+
+    /** privateFlags 是隐藏字段，编译期不能直读，用反射取。 */
+    private static int readInt(Object target, String name) {
+        try {
+            java.lang.reflect.Field field = target.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            return field.getInt(target);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 读系统真值：该实例当前是否已经冻结（停用或暂停）。 */
+    private static boolean isFrozenNow(String pkg, int userId) {
+        ApplicationInfo info = appInfo(pkg, userId);
+        if (info != null && (info.flags & ApplicationInfo.FLAG_SUSPENDED) != 0) {
+            return true;
+        }
+        Object manager = packageManager();
+        if (manager == null) {
+            return false;
+        }
+        try {
+            Method method = manager.getClass()
+                    .getMethod("getApplicationEnabledSetting", String.class, int.class);
+            int state = (Integer) method.invoke(manager, pkg, userId);
+            return state != PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                    && state != PackageManager.COMPONENT_ENABLED_STATE_DEFAULT;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 查 ApplicationInfo：必须带 MATCH_UNINSTALLED_PACKAGES，否则被隐藏的应用查不到。 */
+    private static ApplicationInfo appInfo(String pkg, int userId) {
+        Object manager = packageManager();
+        if (manager == null) {
+            return null;
+        }
+        try {
+            Method method = manager.getClass().getMethod("getApplicationInfo",
+                    String.class, long.class, int.class);
+            return (ApplicationInfo) method.invoke(
+                    manager, pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES, userId);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 暂停不会杀进程，冻结后补一刀（IActivityManager.forceStopPackage）。 */
@@ -220,6 +310,11 @@ final class JinFreeze {
             return false;
         }
         try {
+            // 状态恢复：不管是停用、暂停还是隐藏，点开前都恢复成可用状态
+            // （隐藏的应用先取消隐藏，否则系统仍判定为不可见）
+            if (isHiddenNow(pkg, userId)) {
+                setHidden(pkg, userId, false);
+            }
             boolean enabled = setState(pkg, userId, PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
             // 保留桌面图标（suspend 冻结）时还要把挂起状态解除，否则启动仍会被系统拦下。
             // 优先走 system_server 内部的 PackageManagerInternal（不受 suspender 包名限制），

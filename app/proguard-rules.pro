@@ -1,6 +1,13 @@
 # 凚 R8/ProGuard 规则
 # 目标：开启压缩（minify + shrinkResources）后，反射加载与清单实例化的入口不被改名/删除。
 
+# ---------- 正式版去掉调试日志 ----------
+# 只裁 verbose/debug；info/warn/error 保留，诊断包仍能抓到来龙去脉
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+}
+
 # ---------- 基础属性 ----------
 -keepattributes Signature,InnerClasses,EnclosingMethod
 -keepattributes RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations,AnnotationDefault

@@ -2,6 +2,7 @@ Marking dimen:item_touch_helper_swipe_escape_velocity:2131099804 reachable: refe
 Marking dimen:item_touch_helper_swipe_escape_max_velocity:2131099803 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking animator:mtrl_fab_show_motion_spec:2130837535 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking animator:mtrl_fab_hide_motion_spec:2130837534 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_launcher:2131165376 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:visible_removing_fragment_view_tag:2131231240 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking attr:state_with_icon:2130903984 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking attr:materialSwitchStyle:2130903764 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -36,26 +37,6 @@ Marking dimen:mtrl_progress_track_thickness:2131100385 reachable: referenced fro
 Marking attr:colorPrimary:2130903292 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking dimen:m3_back_progress_main_container_min_edge_gap:2131099823 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking dimen:m3_back_progress_main_container_max_translation_y:2131099822 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:bg_menu_item:2131165322 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking id:design_bottom_sheet:2131230862 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking color:divider:2131034209 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_tag:2131165352 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking color:text_primary:2131034904 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_check_badge:2131165364 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:bg_dialog:2131165317 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking dimen:prompt_radius:2131100449 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_run:2131165351 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_sc_unfreeze:2131165414 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_sc_freeze:2131165412 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_move:2131165350 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_edit:2131165348 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_app_info:2131165344 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_home:2131165349 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_whitelist_off:2131165354 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_whitelist:2131165353 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_batch_remove:2131165345 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_minus:2131165382 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_action_circle_unlock:2131165346 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:transition_pause_alpha:2131231223 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:save_overlay_view:2131231108 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking dimen:tooltip_precise_anchor_threshold:2131100454 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -147,6 +128,7 @@ Marking dimen:design_snackbar_padding_vertical:2131099782 reachable: referenced 
 Marking id:row_index_key:2131231102 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:text_secondary:2131034905 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:accent_surface_stroke:2131034140 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking color:text_primary:2131034904 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:soft_bg:2131034892 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:panel_scrim:2131231064 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:btn_freeze:2131230814 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -162,6 +144,8 @@ Marking color:accent_surface_bg:2131034139 reachable: referenced from C:\Users\A
 Marking color:accent_surface_stroke_soft:2131034141 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:bg_sheet:2131165325 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:page_root:2131231057 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:bg_menu_item:2131165322 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_sc_freeze:2131165412 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:panel_bottom_bar:2131231060 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:fab_group:2131230902 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:bg_remove_badge:2131165324 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -176,6 +160,7 @@ Marking drawable:ic_action_delete:2131165347 reachable: referenced from C:\Users
 Marking drawable:ic_star_filled:2131165423 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_star_outline:2131165424 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:star_default:2131034893 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_edit:2131165348 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_drag_handle:2131165373 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:bg_check_on:2131165316 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:bg_check_off:2131165315 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -196,26 +181,37 @@ Marking id:title:2131231207 reachable: referenced from C:\Users\Administrator\Do
 Marking id:panel_bar_blank:2131231059 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:panel_empty:2131231061 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:empty_add:2131230892 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_tag:2131165352 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_settings:2131165418 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_hold:2131165394 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_collapse:2131165388 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_eye_off:2131165390 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking drawable:ic_launcher:2131165376 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_circle_unlock:2131165346 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_recents:2131165406 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_app_info:2131165344 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_close:2131165370 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_link:2131165398 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_recents_off:2131165407 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_half:2131165393 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_full:2131165391 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_lock:2131165399 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_check_badge:2131165364 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_run:2131165351 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_download:2131165372 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_hold_bar:2131165395 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_whitelist:2131165353 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_home:2131165349 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_name:2131165402 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_pause:2131165404 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_cross_badge:2131165371 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:page_bg:2131034875 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:btn_move_done:2131230816 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:btn_unfreeze_fab:2131230820 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_minus:2131165382 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking color:divider:2131034209 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:bg_dialog:2131165317 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking dimen:prompt_radius:2131100449 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_sc_unfreeze:2131165414 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_back:2131165357 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking raw:changelog:2131623936 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:card_bg:2131034161 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -228,6 +224,7 @@ Marking drawable:ic_qp_wallpaper:2131165410 reachable: referenced from C:\Users\
 Marking drawable:ic_qp_opacity:2131165403 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_qp_info:2131165397 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_add:2131165355 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_move:2131165350 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking style:Theme_Jin_Alert:2131755565 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:design_fab_stroke_top_outer_color:2131034202 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking color:design_fab_stroke_top_inner_color:2131034201 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -237,6 +234,9 @@ Marking layout:abc_tooltip:2131427355 reachable: referenced from C:\Users\Admini
 Marking id:message:2131230987 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking style:Animation_AppCompat_Tooltip:2131755012 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking attr:actionBarTabStyle:2130903047 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking id:design_bottom_sheet:2131230862 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_whitelist_off:2131165354 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking drawable:ic_action_batch_remove:2131165345 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking attr:autoCompleteTextViewStyle:2130903098 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking style:Widget_AppCompat_AutoCompleteTextView:2131755772 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking layout:mtrl_auto_complete_simple_item:2131427420 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -275,6 +275,7 @@ Marking dimen:mtrl_navigation_bar_item_default_margin:2131100356 reachable: refe
 Marking string:item_view_role_description:2131689526 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking integer:material_motion_duration_long_1:2131296294 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking style:Widget_MaterialComponents_Chip_Action:2131756055 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
+Marking layout:abc_list_menu_item_layout:2131427344 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking id:motion_base:2131230997 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking string:sc_freeze_all:2131689633 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking drawable:ic_shortcut_freeze:2131165420 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -523,7 +524,6 @@ Marking attr:textAppearanceButton:2130904048 reachable: referenced from C:\Users
 Marking style:TextAppearance_Design_Tab:2131755479 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking dimen:design_tab_text_size_2line:2131099788 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking dimen:design_tab_scrollable_min_width:2131099786 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
-Marking layout:abc_list_menu_item_layout:2131427344 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking attr:bottomNavigationStyle:2130903155 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking style:Widget_Design_BottomNavigationView:2131755838 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
 Marking string:mtrl_picker_toggle_to_year_selection:2131689616 reachable: referenced from C:\Users\Administrator\Documents\Trae-CN\temp_20261114_03\jin179\app\build\intermediates\dex\release\minifyReleaseWithR8\classes.dex
@@ -811,6 +811,7 @@ ro.build.
 show_name
 java.lang.Integer
 root_force
+hide_keys
 读取备份需要授权
 android:fade:transitionAlpha
 android.graphics.drawable.ColorStateL...
@@ -825,6 +826,7 @@ ACTION_PRESS_AND_HOLD
 mime_type
 left
 KeyPosition
+MANAGE_USERS
 removeItemAt
 keep_launcher_icon
 setNextSelectedPositionInt
@@ -838,8 +840,8 @@ transformPivotX
 H
 blur
 app_freeze
-panel_grid_icon_manual
 L
+panel_grid_icon_manual
 paddingStart
 已从列表移除
 TITLE_TEXT_RES_ID_KEY
@@ -889,6 +891,7 @@ KeyTimeCycle
 isTagEnabled
 anyTaskForId
 /system/bin/su
+cmdline
 artMethod
 drawableLeft
 android:style
@@ -932,6 +935,7 @@ jin_icons3
 确认
 android.view.View$AttachInfo
 java.lang.Float
+无需取消隐藏
 labelOpacity
 POSITIVE_BUTTON_CONTENT_DESCRIPTION_KEY
 androidx.profileinstaller.action.SAVE...
@@ -951,6 +955,7 @@ byte
 诊断包已导出
 dismiss
 cls
+隐藏
 attrs
 onBackInvoked
 CENTER_Y
@@ -1029,12 +1034,15 @@ KeyCycle
 重命名应用
 凚
 elevation
+隐藏失败
 lock_freeze_tags
+隐藏应用模式
 android.intent.action.SEARCH
 BITMAP
 diag_last_at
 SwitchAccess
 newConfig
+没有运行中的应用需要隐藏
 android.intent.action.MAIN
 intrface
 yMMMM
@@ -1090,8 +1098,8 @@ android.support.v13.view.inputmethod....
 GRID_SELECTOR_KEY
 当前标签下没有未冻结的应用
 Motion
-gradient
 checkOpNoThrow
+gradient
 运行
 childrenAlpha
 androidx.lifecycle.ViewModelProvider....
@@ -1176,6 +1184,7 @@ ACTION_SHOW_ON_SCREEN
 fullscreen_open
 prestartup_fixed
 keep_icon
+结果
 CheckedTextView
 /system/xbin/su
 transitionPathRotate
@@ -1202,6 +1211,7 @@ unknown
 ro.mi.os.version.code
 分钟
 粘贴的文本
+setApplicationHiddenSettingAsUser
 INITIALIZED
 op_outer
 android.support.v13.view.inputmethod....
@@ -1334,8 +1344,8 @@ hide_status_bar
 right
 full_fab_seed_39
 android.os.SystemProperties
-冻结
 com.android.shell
+冻结
 取消
 取消闹钟失败
 com.rosan.dhizuku.aidl.IDhizukuReques...
@@ -1414,6 +1424,7 @@ DeclaredMethods
 EditText
 Root
 primary.prof
+已关闭隐藏应用模式
 KeyAttribute
 getLayoutAlignment
 translationX
@@ -1451,6 +1462,7 @@ EmojiCompat.MetadataRepo.create
 添加到白名单
 RESUMED
 instance
+已取消隐藏
 KEY_COMPONENT_ACTIVITY_PENDING_RESULT
 main
 mDrawableCache
@@ -1511,8 +1523,8 @@ mOnKeyListener
 ACTION_PASTE
 android.graphics.FontFamily
 00
-底部按钮仅冻/解当前列表
 xiaomi
+底部按钮仅冻/解当前列表
 sheet_wallpaper_bg
 隐藏最近任务卡片
 单次暂停
@@ -1586,6 +1598,7 @@ swipeOn
 android.app.ActivityManager
 清除关联
 StartActivityForResult
+/proc
 gesture
 BottomSheetBehavior
 /data/local/tmp/jin_lite/status.txt
@@ -1606,6 +1619,7 @@ layout
 标签排序
 op_settings
 java.lang.Object
+取消隐藏
 应用已被凚冻结
 dexopt/baseline.profm
 /data/system/jin_freeze_ops.log
@@ -1646,6 +1660,7 @@ fab_dx
 MotionLayout
 mViewFlags
 只恢复配置
+Error:
 MotionSpec
 Guideline
 PENDING
@@ -1671,6 +1686,7 @@ MultiAutoCompleteTextView
 TOGGLE_BUTTON_TAG
 右上灰
 android.permission.POST_NOTIFICATIONS
+系统未接受隐藏状态变更
 NAVIGATION_NEXT_TAG
 mRecentTasks
 android.speech.extra.PROMPT
@@ -1715,6 +1731,7 @@ androidx.activity.result.contract.act...
 主副应用关联
 exception
 wallpaper_blur
+系统拒绝了这次操作
 persist.sys.
 suggest_intent_data
 androidx.core.view.extra.INPUT_CONTEN...
@@ -1768,6 +1785,7 @@ INPUT_MODE_KEY
 Startup
 settings_sp_collapsed
 com.android.server.wm.ActivityTaskMan...
+privateFlags
 mUserId
 androidx.profileinstaller.action.SKIP...
 startColor
@@ -1947,8 +1965,8 @@ tab_swipe
 suggest_flags
 0/0
 emojiCompat
-deriveConstraintsFrom
 android.intent.extra.shortcut.NAME
+deriveConstraintsFrom
 暂停
 moe.shizuku.server.IShizukuService
 解析
@@ -2041,8 +2059,8 @@ swipe_freeze_tags
 androidx.view.accessibility.Accessibi...
 /storage/emulated/0/Download/凚
 moe.shizuku.api.action.BINDER_RECEIVED
-androidx.appcompat.app.AppLocalesMeta...
 android:view_state
+androidx.appcompat.app.AppLocalesMeta...
 SOURCE_CLIPBOARD
 XA
 XB
@@ -2095,6 +2113,7 @@ enabled
 选择主应用
 androidx$core$app$unusedapprestrictio...
 android.permission.ACCESS_FINE_LOCATION
+com.android.systemui
 sheet_dx_panel
 getActivityType
 mContentInsets
@@ -2127,8 +2146,8 @@ ro.product.
 android.view.View
 java.lang.Byte
 android.view.accessibility.action.ARG...
-visible
 package
+visible
 updateEnabledCallbacks
 MOVING
 全选
@@ -2142,6 +2161,7 @@ kotlin.collections.Iterator
 res/
 fallback
 rebase
+已隐藏
 panel_height_dp
 freeze_actions.txt
 移除
@@ -2149,8 +2169,8 @@ shortcuts
 android:menu:action_views
 getSystemContext
 JinLite
-no_launch_bg
 search_surface
+no_launch_bg
 kotlin.Enum
 backEvent
 fillType
@@ -2188,6 +2208,7 @@ android.intent.extra.shortcut.ICON
 FLAG_CONVERT_TO_PLAIN_TEXT
 SOURCE_PROCESS_TEXT
 其他
+包名为空
 getprop
 ReceiveContent
 traceCounter
@@ -2198,6 +2219,7 @@ settings_wallpaper_collapsed
 web_search
 kotlin.jvm.internal.StringCompanionOb...
 c:
+白名单应用不隐藏
 gesture_group
 ACTION_CLICK
 TITLE_TEXT_KEY
@@ -2213,6 +2235,7 @@ ImageButton
 先勾选要移出的应用
 white_pos
 StateSet
+hide_mode
 %02x
 ToggleButton
 androidx.view.accessibility.Accessibi...
@@ -2281,8 +2304,8 @@ false
 左右偏移
 panel_hide_status_bar
 settings_pair_collapsed
-快面板
 android.content.pm.SuspendDialogInfo$...
+快面板
 DeclaredConstructors
 ACTION_MOVE_WINDOW
 android.support.text.emoji.emojiCompa...
@@ -2327,6 +2350,7 @@ mServedView
 com.jin.freeze.lite.IJinLite
 translationYLinear
 off
+hide
 com.android.internal.view.menu.MenuBu...
 mH
 Transform
@@ -2347,8 +2371,8 @@ panel_fab_dy
 limit
 android.resource://
 strokeColor
-kotlin.Number
 该应用
+kotlin.Number
 SHOWING
 waveOffset
 NULL
@@ -2375,6 +2399,7 @@ ViewUtils
 ClickableViewAccessibility
 选中项已全部在这些标签里
 inParcel
+android.app.admin.DevicePolicyManager
 ACTION_SCROLL_LEFT
 com.android.server.wm.PreStartupWindo...
 kotlin.Comparable
@@ -2383,10 +2408,11 @@ on
 白名单
 批量暂停
 android.app.ActivityThread
+error:
 COROUTINE_SUSPENDED
 config_viewMinRotaryEncoderFlingVelocity
-当前列表为空
 com.jin.freeze.action.LAUNCH
+当前列表为空
 MenuItemImpl
 已
 declined
@@ -2397,8 +2423,8 @@ initializers
 _LifecycleAdapter
 ENABLED
 thumbPos
-选择图片
 android.intent.extra.shortcut.INTENT
+选择图片
 AutoCompleteTextView
 suggest_icon_1
 completeEndFraction
@@ -2446,6 +2472,7 @@ sh
 animationFraction
 ACTION_SCROLL_TO_POSITION
 audio
+取消隐藏失败
 sp
 key
 animator_duration_scale
@@ -2453,9 +2480,9 @@ kotlin.Enum.Companion
 RESOURCE
 com.jin.freeze.action.STATUS_PONG
 profileinstaller_profileWrittenFor_la...
+备份文件路径
 su
 silent
-备份文件路径
 android:target_state
 返回继续操作
 sz
@@ -2476,6 +2503,7 @@ forceStopPackage
 compressed
 to
 android.os.action.POWER_SAVE_MODE_CHA...
+setApplicationHidden
 没有
 冻结列表是空的
 冻结列表里没有可加入的应用
@@ -3502,6 +3530,15 @@ Marking layout:select_dialog_singlechoice_material:2131427454 used because it ma
 Marking id:motion_base:2131230997 used because it matches string pool constant motion_base
 Marking attr:offsetAlignmentMode:2130903844 used because it matches string pool constant off
 Marking id:off:2131231037 used because it matches string pool constant off
+Marking attr:hideAnimationBehavior:2130903548 used because it matches string pool constant hide
+Marking attr:hideMotionSpec:2130903549 used because it matches string pool constant hide
+Marking attr:hideNavigationIcon:2130903550 used because it matches string pool constant hide
+Marking attr:hideOnContentScroll:2130903551 used because it matches string pool constant hide
+Marking attr:hideOnScroll:2130903552 used because it matches string pool constant hide
+Marking id:hide_ime_id:2131230930 used because it matches string pool constant hide
+Marking id:hideable:2131230931 used because it matches string pool constant hide
+Marking integer:hide_password_duration:2131296264 used because it matches string pool constant hide
+Marking string:hide_bottom_view_on_scroll_behavior:2131689524 used because it matches string pool constant hide
 Marking attr:tintMode:2130904120 used because it matches string pool constant tintMode
 Marking attr:limitBoundsTo:2130903695 used because it matches string pool constant limit
 Marking attr:strokeColor:2130903988 used because it matches string pool constant strokeColor
@@ -4583,11 +4620,11 @@ Marking layout:fragment_framework:2131427389 used because it matches string pool
 @attr/helperTextEnabled : reachable=false
 @attr/helperTextTextAppearance : reachable=false
 @attr/helperTextTextColor : reachable=false
-@attr/hideAnimationBehavior : reachable=false
-@attr/hideMotionSpec : reachable=false
-@attr/hideNavigationIcon : reachable=false
-@attr/hideOnContentScroll : reachable=false
-@attr/hideOnScroll : reachable=false
+@attr/hideAnimationBehavior : reachable=true
+@attr/hideMotionSpec : reachable=true
+@attr/hideNavigationIcon : reachable=true
+@attr/hideOnContentScroll : reachable=true
+@attr/hideOnScroll : reachable=true
 @attr/hintAnimationEnabled : reachable=false
 @attr/hintEnabled : reachable=false
 @attr/hintTextAppearance : reachable=false
@@ -8712,8 +8749,8 @@ Marking layout:fragment_framework:2131427389 used because it matches string pool
 @id/group_divider : reachable=true
 @id/groups : reachable=true
 @id/header_title : reachable=true
-@id/hide_ime_id : reachable=false
-@id/hideable : reachable=false
+@id/hide_ime_id : reachable=true
+@id/hideable : reachable=true
 @id/home : reachable=false
 @id/homeAsUp : reachable=false
 @id/honorRequest : reachable=false
@@ -9037,7 +9074,7 @@ Marking layout:fragment_framework:2131427389 used because it matches string pool
 @integer/config_tooltipAnimTime : reachable=false
 @integer/design_snackbar_text_max_lines : reachable=false
 @integer/design_tab_indicator_anim_duration_ms : reachable=false
-@integer/hide_password_duration : reachable=false
+@integer/hide_password_duration : reachable=true
 @integer/m3_badge_max_number : reachable=false
 @integer/m3_btn_anim_delay_ms : reachable=false
 @integer/m3_btn_anim_duration_ms : reachable=false
@@ -9871,7 +9908,7 @@ Marking layout:fragment_framework:2131427389 used because it matches string pool
 @string/exposed_dropdown_menu_content_description : reachable=true
 @string/fab_transformation_scrim_behavior : reachable=false
 @string/fab_transformation_sheet_behavior : reachable=false
-@string/hide_bottom_view_on_scroll_behavior : reachable=false
+@string/hide_bottom_view_on_scroll_behavior : reachable=true
 @string/icon_content_description : reachable=true
 @string/item_view_role_description : reachable=true
 @string/m3_exceed_max_badge_text_suffix : reachable=true
@@ -19179,6 +19216,11 @@ The root reachable resources are:
  attr:gestureInsetBottomIgnored:2130903538
  attr:headerLayout:2130903542
  attr:height:2130903543
+ attr:hideAnimationBehavior:2130903548
+ attr:hideMotionSpec:2130903549
+ attr:hideNavigationIcon:2130903550
+ attr:hideOnContentScroll:2130903551
+ attr:hideOnScroll:2130903552
  attr:icon:2130903562
  attr:iconEndPadding:2130903563
  attr:iconGravity:2130903564
@@ -19990,6 +20032,8 @@ The root reachable resources are:
  id:group_divider:2131230927
  id:groups:2131230928
  id:header_title:2131230929
+ id:hide_ime_id:2131230930
+ id:hideable:2131230931
  id:icon:2131230935
  id:icon_group:2131230936
  id:image:2131230940
@@ -20182,6 +20226,7 @@ The root reachable resources are:
  id:visible_removing_fragment_view_tag:2131231240
  integer:app_bar_elevation_anim_duration:2131296258
  integer:bottom_sheet_slide_duration:2131296259
+ integer:hide_password_duration:2131296264
  integer:material_motion_duration_long_1:2131296294
  integer:mtrl_calendar_year_selector_span:2131296306
  integer:show_password_duration:2131296322
@@ -20300,6 +20345,7 @@ The root reachable resources are:
  string:error_a11y_label:2131689519
  string:error_icon_content_description:2131689520
  string:exposed_dropdown_menu_content_description:2131689521
+ string:hide_bottom_view_on_scroll_behavior:2131689524
  string:icon_content_description:2131689525
  string:item_view_role_description:2131689526
  string:m3_exceed_max_badge_text_suffix:2131689527
@@ -21743,8 +21789,6 @@ Unused resources are:
  id:gone:2131230923
  id:graph:2131230924
  id:graph_wrap:2131230925
- id:hide_ime_id:2131230930
- id:hideable:2131230931
  id:home:2131230932
  id:homeAsUp:2131230933
  id:honorRequest:2131230934
@@ -21939,7 +21983,6 @@ Unused resources are:
  string:call_notification_screening_text:2131689514
  string:fab_transformation_scrim_behavior:2131689522
  string:fab_transformation_sheet_behavior:2131689523
- string:hide_bottom_view_on_scroll_behavior:2131689524
  string:m3_ref_typeface_brand_medium:2131689528
  string:m3_sys_motion_easing_emphasized:2131689532
  string:m3_sys_motion_easing_emphasized_accelerate:2131689533

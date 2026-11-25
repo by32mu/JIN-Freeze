@@ -36,6 +36,9 @@ public class JinApp extends Application {
     public void onCreate() {
         super.onCreate();
         ShortcutSync.publish(this);
+        // 旧版 root 通道的暂停记录 suspender 写成 "root"，系统暂停弹窗点确定会让系统界面崩溃：
+        // 升级后一次性按 shell 身份重建（只跑一次，没有暂停记录或不是 root 时直接跳过）
+        IO.execute(() -> com.jin.freeze.core.SuspendSupport.repairLegacyRootSuspender(this));
         // MIUIOP(10017) 是 MIUI 的「桌面快捷方式」：只在小米设备且尚未允许时补授。
         // 不再让非小米设备、已授权设备以及每次快捷方式冷启动都白跑一次 su。
         if ("xiaomi".equalsIgnoreCase(android.os.Build.MANUFACTURER)

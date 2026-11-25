@@ -17849,6 +17849,14 @@ com.jin.freeze.core.DhizukuGate:
     private static final java.lang.String PREFS
     private static final java.lang.String TAG
     private void <init>()
+com.jin.freeze.core.HideSupport:
+    private static final java.lang.String DESC
+    public static final java.lang.String KEY_KEYS
+    public static final java.lang.String KEY_MODE
+    public static final java.lang.String PREFS
+    private static final int PRIVATE_FLAG_HIDDEN
+    private static final java.lang.String STUB
+    private void <init>()
 com.jin.freeze.core.LaunchTarget$Target:
     public void <init>(java.lang.String,java.lang.String,java.lang.String)
     public static com.jin.freeze.core.LaunchTarget$Target page(java.lang.String,java.lang.String,java.lang.String)
@@ -33977,6 +33985,9 @@ com.jin.freeze.core.AppIconCache:
     public static final int MAX_KB
 com.jin.freeze.core.DhizukuGate:
     public static boolean hasPackageAccessScope(java.lang.String[])
+com.jin.freeze.core.HideSupport:
+    public static java.lang.String key(java.lang.String,int)
+    public static java.lang.String pkgOf(java.lang.String)
 com.jin.freeze.core.LaunchTarget$Target:
     public final java.lang.String label
     public final boolean shell()
@@ -34029,7 +34040,7 @@ com.jin.freeze.ui.AppFreezeActivity-IA
 com.jin.freeze.ui.BaseActivity:
     public static androidx.core.view.WindowInsetsCompat lambda$onCreate$0()
     public static synthetic void lambda$onCreate$1()
-com.jin.freeze.ui.FreezeListActivity$$InternalSyntheticLambda$1$866355f193d5a6a094a36d4167d478422713ad7eeba273a427ee48195f9d5e81$48
+com.jin.freeze.ui.FreezeListActivity$$InternalSyntheticLambda$1$866355f193d5a6a094a36d4167d478422713ad7eeba273a427ee48195f9d5e81$49
 com.jin.freeze.ui.FreezeListActivity$$InternalSyntheticLambda$1$a5e13fe50a4711e2fb886b2aa26d0202f5e99b7705ebc1ef96ea743a121da0ea$2:
     public final synthetic int f$2
 com.jin.freeze.ui.FreezeListActivity$$InternalSyntheticLambda$1$f37e69093b8b28b084874a34e65bf64f5d35062ea2d9c01af58d8787370e9f01$0:

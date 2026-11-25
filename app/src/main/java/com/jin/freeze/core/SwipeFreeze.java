@@ -340,6 +340,8 @@ public final class SwipeFreeze {
             root.put("silent_open", silentOpenEnabled(context));
             // 保留桌面图标（转暂停）：划卡/锁屏冻结也必须用 suspend，不能 disable
             root.put("suspend", keepLauncherIcon(context));
+            // 用户标记隐藏的实例键：划卡/锁屏遇到它们改走「隐藏」，不再做冻结
+            root.put("hidden", new JSONArray(HideSupport.hiddenIntentKeys(context)));
             root.put("packages", new JSONArray(pkgs));
 
             JSONObject tagsObj = new JSONObject();

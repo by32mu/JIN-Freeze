@@ -111,12 +111,15 @@ public class QuickLaunchActivity extends Activity {
         return 0;
     }
 
-    /** 解冻主用户的一个包：有 shell 走 pm，Dhizuku-only 走取消暂停（做不到 enable）。 */
+    /** 解冻主用户的一个包：走 SuspendSupport（pm + CLI 兜底），Dhizuku-only 走取消暂停。 */
     private void thawMain(String pkg) {
         if (DhizukuGate.only(this)) {
             SuspendSupport.unsuspend(pkg);
         } else {
-            PrivShell.exec("pm unsuspend --user 0 " + pkg + "; pm enable --user 0 " + pkg, 30);
+            // pm unsuspend 只能撤 pm 自己建的暂停；凚的 root 通道/锁屏/划卡建的是
+            // suspender=com.android.shell，必须由 SuspendSupport 按真值再用 CLI 撤一次
+            SuspendSupport.unsuspend(pkg);
+            PrivShell.exec("pm enable --user 0 " + pkg, 30);
         }
     }
 
@@ -166,6 +169,8 @@ public class QuickLaunchActivity extends Activity {
                 });
                 return;
             }
+            // 分身被暂停时同样记在 com.android.shell 名下，pm 撤不掉：先按 CLI 真撤一次
+            SuspendSupport.cliBatch(this, java.util.Collections.singletonList(pkg), null, false, userId);
             PrivShell.exec("pm unsuspend --user " + userId + " " + pkg
                     + "; pm enable --user " + userId + " " + pkg, 30);
             // 主应用被冻结时 getLaunchIntentForPackage 会返回 null，不能作为分身能否启动的依据：
@@ -285,6 +290,8 @@ public class QuickLaunchActivity extends Activity {
         SharedPreferences sp = getSharedPreferences("freeze_list", MODE_PRIVATE);
         Set<String> pkgs = new HashSet<>(sp.getStringSet("pkgs", new HashSet<>()));
         boolean keepIcon = sp.getBoolean("keep_launcher_icon", false);
+        // 用户标记隐藏的实例键：快捷方式冻结/解冻都不动它们；冻结时改走隐藏
+        Set<String> hiddenKeys = com.jin.freeze.core.HideSupport.hiddenIntentKeys(this);
         PackageManager pm = getPackageManager();
         List<String> mainPkgs = new ArrayList<>();
         List<String> cloneTodo = new ArrayList<>(); // 分身实例键 pkg@N
@@ -304,6 +311,13 @@ public class QuickLaunchActivity extends Activity {
         Set<String> suspendedBefore = SuspendSupport.suspendedAmong(mainPkgs);
         List<String> todo = new ArrayList<>();      // 主用户包名
         for (String pkg : mainPkgs) {
+            if (hiddenKeys.contains(pkg)) {
+                // 隐藏项：冻结时恢复隐藏（不再停用/暂停），解冻时保持不动
+                if (freeze) {
+                    com.jin.freeze.core.HideSupport.hide(this, pkg, 0);
+                }
+                continue;
+            }
             boolean suspended = suspendedBefore.contains(pkg);
             // 已经是目标状态的不再执行 pm：重复整批调用是原来耗时的主要来源之一
             Boolean enabled = enabledOf(pm, pkg);
@@ -317,6 +331,12 @@ public class QuickLaunchActivity extends Activity {
         Map<String, boolean[]> cloneBefore = cloneStates(cloneTodo);
         List<String> cloneRun = new ArrayList<>();
         for (String key : cloneTodo) {
+            if (hiddenKeys.contains(key)) {
+                if (freeze) {
+                    com.jin.freeze.core.HideSupport.hide(this, packagePart(key), userIdPart(key));
+                }
+                continue;
+            }
             boolean[] st = cloneBefore.get(key);
             if (st != null) {
                 boolean installed = st[0];
@@ -343,7 +363,10 @@ public class QuickLaunchActivity extends Activity {
         // 一次 su + 限并发跑完整批：pm 每条都要拉起一个 app_process，
         // 串行几十条是秒级；并发 8 路能把整批压到一秒左右
         StringBuilder cmd = new StringBuilder();
-        if (!todo.isEmpty() && !dhizuku) {
+        // 保留桌面图标时暂停必须走 CLI（suspender=com.android.shell）：
+        // root 下 pm suspend 的身份是 root，会把暂停记成不存在的包名，点灰图标时系统界面崩溃
+        boolean cliSuspend = freeze && keepIcon && PrivShell.mode() == PrivShell.Mode.ROOT;
+        if (!todo.isEmpty() && !dhizuku && !cliSuspend) {
             cmd.append("i=0; for p in");
             for (String p : todo) {
                 cmd.append(" '").append(p).append("'");
@@ -372,7 +395,35 @@ public class QuickLaunchActivity extends Activity {
         if (!cloneRun.isEmpty()) {
             cmd.append("wait");
         }
+        // 保留桌面图标 + root：整批交给同一个 CLI 进程暂停（一个进程处理完整份名单）
+        if (cliSuspend) {
+            java.util.Map<String, String> labels = new java.util.HashMap<>();
+            for (String p : todo) {
+                labels.put(p, labelOf(pm, p));
+            }
+            SuspendSupport.cliBatch(this, todo, labels, true);
+        }
         PrivShell.Result result = cmd.length() == 0 ? null : PrivShell.exec(cmd.toString(), 120);
+        if (!freeze && !todo.isEmpty()) {
+            // 主用户暂停是 com.android.shell 身份，pm unsuspend 静默失败，按真值再用 CLI 撤一次
+            SuspendSupport.unsuspendBatch(this, todo);
+        }
+        if (!freeze && !cloneRun.isEmpty()) {
+            // 分身同理：按各自的用户用一个 CLI 进程撤销暂停
+            java.util.Map<Integer, List<String>> byUser = new java.util.HashMap<>();
+            for (String key : cloneRun) {
+                int uid = userIdPart(key);
+                List<String> group = byUser.get(uid);
+                if (group == null) {
+                    group = new ArrayList<>();
+                    byUser.put(uid, group);
+                }
+                group.add(packagePart(key));
+            }
+            for (java.util.Map.Entry<Integer, List<String>> e : byUser.entrySet()) {
+                SuspendSupport.cliBatch(this, e.getValue(), null, false, e.getKey());
+            }
+        }
         if (dhizuku) {
             // 没有 shell：主用户逐包走 Dhizuku 暂停/取消暂停
             for (String p : todo) {

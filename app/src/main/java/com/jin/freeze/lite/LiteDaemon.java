@@ -88,7 +88,8 @@ public final class LiteDaemon {
             String[] swipe = readArray(root, "swipe");
             String[] lock = readArray(root, "lock");
             String[] white = readArray(root, "white");
-            core.syncConfig(swipe, lock, white,
+            String[] hidden = readArray(root, "hidden");
+            core.syncConfig(swipe, lock, white, hidden,
                     root.optBoolean("swipeOn", false),
                     root.optBoolean("lockOn", false),
                     root.optInt("delay", 0),

@@ -91,15 +91,16 @@ public final class PrivShell {
         return mode(false);
     }
 
-    /** force=true：忽略失败缓存立即重测；已通过的结果不会重复探测。 */
+    /** force=true：忽略已有结果立即重测（用户撤销 root / 改授权后用）。 */
     public static Mode mode(boolean force) {
         Mode m = cached;
-        if (m == Mode.ROOT || m == Mode.SHIZUKU) {
+        // force 必须重新探测：否则用户撤掉 root 改授权 Shizuku 后，界面会一直停在 Root
+        if (!force && (m == Mode.ROOT || m == Mode.SHIZUKU)) {
             return m;
         }
         synchronized (LOCK) {
             m = cached;
-            if (m == Mode.ROOT || m == Mode.SHIZUKU) {
+            if (!force && (m == Mode.ROOT || m == Mode.SHIZUKU)) {
                 return m;
             }
             if (!force && m == Mode.NONE
@@ -128,6 +129,26 @@ public final class PrivShell {
     public static boolean available() {
         Mode m = mode();
         return m != Mode.NONE;
+    }
+
+    /**
+     * 当前特权通道是否以 uid 0 执行：root，或「以 root 身份运行的 Shizuku」。
+     * 这两种情况下 pm suspend 会把 suspendingPackage 记成 root（或本应用包名），
+     * 必须改走 app_process CLI 才能保证暂停身份可撤销。
+     */
+    public static boolean rootLike() {
+        Mode m = mode();
+        if (m == Mode.ROOT) {
+            return true;
+        }
+        if (m != Mode.SHIZUKU) {
+            return false;
+        }
+        try {
+            return Shizuku.getUid() == 0;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     public static String label() {

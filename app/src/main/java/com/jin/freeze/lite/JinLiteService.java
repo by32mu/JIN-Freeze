@@ -60,6 +60,8 @@ public class JinLiteService extends IJinLite.Stub {
     private volatile boolean lockEnabled;
     private volatile int lockDelaySeconds;
     private volatile boolean useSuspend;
+    /** 用户标记为隐藏的实例键：划卡/锁屏不冻结它们（隐藏与冻结相互独立）。 */
+    private volatile Set<String> hiddenPkgs = Collections.emptySet();
 
     private volatile String screenStatus = "未注册";
     private volatile String listenerStatus = "未注册";
@@ -99,11 +101,13 @@ public class JinLiteService extends IJinLite.Stub {
 
     @Override
     public void syncConfig(String[] swipePkgs, String[] lockPkgs, String[] whitelist,
+                           String[] hiddenPkgs,
                            boolean swipeEnabled, boolean lockEnabled, int lockDelaySeconds,
                            boolean useSuspend) {
         this.swipePkgs = toSet(swipePkgs);
         this.lockPkgs = toSet(lockPkgs);
         this.whitelist = toSet(whitelist);
+        this.hiddenPkgs = toSet(hiddenPkgs);
         this.swipeEnabled = swipeEnabled;
         this.lockEnabled = lockEnabled;
         this.lockDelaySeconds = Math.max(0, Math.min(300, lockDelaySeconds));
@@ -270,6 +274,14 @@ public class JinLiteService extends IJinLite.Stub {
             for (String key : targets) {
                 int userId = userId(key);
                 String pkg = packagePart(key);
+                // 隐藏与冻结相互独立：用户标记隐藏的应用，划卡/锁屏不改它
+                if (hiddenPkgs.contains(key) || hiddenPkgs.contains(pkg)) {
+                    continue;
+                }
+                // 状态保持：已隐藏/暂停/停用的应用各按原状态，冻结入口不改变它们
+                if (alreadyFrozen(pkg, userId)) {
+                    continue;
+                }
                 android.util.Log.i("JinLite", "freeze pkg=" + pkg + " user=" + userId
                         + " suspend=" + (suspend && userId == 0));
                 if (suspend && userId == 0) {
@@ -281,6 +293,63 @@ public class JinLiteService extends IJinLite.Stub {
             }
         });
     }
+
+    /** 已隐藏 / 已暂停 / 已停用：都属于「已经冻住」，划卡/锁屏不再重复处理。 */
+    private boolean alreadyFrozen(String pkg, int userId) {
+        try {
+            Object pm = packageManager();
+            Method info = findMethod(pm, "getApplicationInfo", 2, 3);
+            Method state = findMethod(pm, "getApplicationEnabledSetting", 2, 3);
+            if (info == null || state == null) {
+                return false;
+            }
+            Object app = info.invoke(pm, adapt(new Object[]{pkg, MATCH_UNINSTALLED, userId},
+                    info.getParameterTypes()));
+            if (app == null) {
+                return true; // 查不到说明已经不在可用状态，跳过
+            }
+            int enabled = (Integer) state.invoke(pm, adapt(new Object[]{pkg, userId},
+                    state.getParameterTypes()));
+            if (enabled != PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                    && enabled != PackageManager.COMPONENT_ENABLED_STATE_DEFAULT) {
+                return true;
+            }
+            int flags = readInt(app, "flags");
+            if ((flags & FLAG_SUSPENDED) != 0) {
+                return true;
+            }
+            return (readInt(app, "privateFlags") & FLAG_HIDDEN) != 0;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** ApplicationInfo 的 int 字段（privateFlags 是隐藏字段，先找 public 字段再退到 getter）。 */
+    private static int readInt(Object app, String name) {
+        try {
+            return app.getClass().getField(name).getInt(app);
+        } catch (Throwable ignored) {
+        }
+        try {
+            java.lang.reflect.Field field = app.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            return field.getInt(app);
+        } catch (Throwable ignored) {
+        }
+        try {
+            String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+            return (Integer) app.getClass().getMethod(getter).invoke(app);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 隐藏应用模式的系统隐藏位（ApplicationInfo.privateFlags & 1）。 */
+    private static final int FLAG_HIDDEN = 1;
+    /** ApplicationInfo.FLAG_SUSPENDED：暂停冻结。 */
+    private static final int FLAG_SUSPENDED = 1 << 30;
+    /** 查隐藏应用必须带 MATCH_UNINSTALLED_PACKAGES，否则系统查不到被隐藏的包。 */
+    private static final long MATCH_UNINSTALLED = 0x00002000L;
 
     /** IPackageManager.setApplicationEnabledSetting(pkg, state, 0, userId, callingPackage, 0)。 */
     private void setEnabled(String pkg, int userId, boolean enabled) {

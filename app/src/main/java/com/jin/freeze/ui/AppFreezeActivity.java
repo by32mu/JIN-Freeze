@@ -1891,7 +1891,15 @@ public class AppFreezeActivity extends BaseActivity {
                 ? "pm disable-user --user " + userId + " " + pkg
                 : "pm unsuspend --user " + userId + " " + pkg
                 + "; pm enable --user " + userId + " " + pkg;
-        return PrivShell.exec(cmd, 30);
+        PrivShell.Result r = PrivShell.exec(cmd, 30);
+        // pm 只能撤销 pm 自己建的暂停：凚的 root 通道/锁屏/划卡建的是 suspender=com.android.shell，
+        // 遇到这种暂停 pm 会打印 true 却不生效，这里按候选 suspender 用 CLI 再撤一次
+        if (!freeze && userId == 0 && r.out != null
+                && r.out.contains("new suspended state: true")
+                && SuspendSupport.clearForeignSuspension(pkg)) {
+            r = PrivShell.exec("pm enable --user 0 " + pkg, 30);
+        }
+        return r;
     }
 
     /**

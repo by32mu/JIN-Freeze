@@ -59,7 +59,6 @@ final class DoLHook {
         if (!JinHookConfig.dolEnabled() && !JinHookConfig.silentOpenEnabled()) {
             return;
         }
-        boolean silent = JinHookConfig.silentOpenEnabled();
         Object request = args[0];
         Intent intent = (Intent) getField(request, "intent");
         if (intent == null || intent.getComponent() == null) {
@@ -75,10 +74,11 @@ final class DoLHook {
         if (activityInfo != null && activityInfo.applicationInfo != null) {
             ApplicationInfo app = activityInfo.applicationInfo;
             if ((app.flags & FLAG_SUSPENDED) != 0) {
-                // 只放行这一次：清掉启动用的 suspend 标记
+                // 只清启动用的 suspend 标记，不在 system_server 主线程里做解暂停的重活
+                // （在 ActivityStarter 里同步调 PMS 可能卡死主线程，触发 Watchdog 重启系统）
                 app.flags &= ~FLAG_SUSPENDED;
                 kit.log("DoL 清除 suspend 标记: " + pkg);
-                if (silent) {
+                if (JinHookConfig.silentOpenEnabled()) {
                     // 静默打开：真正取消暂停，应用回后台也不会再自动暂停
                     int targetUser = users.contains(userId) ? userId : users.get(0);
                     JinFreeze.unfreezeNow(pkg, targetUser);

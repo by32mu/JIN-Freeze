@@ -106,6 +106,20 @@ public final class AppActionSheet {
             return false;
         }
 
+        /** 隐藏应用模式：冻结入口显示成「隐藏 / 取消隐藏」。 */
+        default boolean hideMode() {
+            return false;
+        }
+
+        /** 当前是否真的处于系统隐藏态（区别于普通冻结）。 */
+        default boolean hidden() {
+            return false;
+        }
+
+        /** 隐藏 / 取消隐藏：与冻结、解冻相互独立。 */
+        default void toggleHide() {
+        }
+
         /** 重命名列表中的应用（只改显示名，不动包名与系统设置）。 */
         default void renameApp() {
             // 默认空实现：不支持重命名的页面不用 override
@@ -198,8 +212,15 @@ public final class AppActionSheet {
         divider(c, content, 18, lineColor);
 
         addItem(c, content, sheet, R.drawable.ic_action_run, "运行", actions::run, fg, iconFg);
+        boolean hidden = actions.hidden();
         addItem(c, content, sheet, frozen ? R.drawable.ic_sc_unfreeze : R.drawable.ic_sc_freeze,
                 frozen ? "解冻" : "冻结", actions::toggleFreeze, fg, iconFg);
+        // 隐藏与冻结/解冻相互独立：开了隐藏模式，或当前就是隐藏态时，额外给一行
+        if (actions.hideMode() || hidden) {
+            addItem(c, content, sheet,
+                    hidden ? R.drawable.ic_qp_eye : R.drawable.ic_qp_eye_off,
+                    hidden ? "取消隐藏" : "隐藏", actions::toggleHide, fg, iconFg);
+        }
         divider(c, content, 18, lineColor);
         if (actions.tagMoveEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_action_tag, "更改标签页", actions::moveTab, fg, iconFg);

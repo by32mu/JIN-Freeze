@@ -8,6 +8,7 @@ interface IJinLite {
      * whitelist 里的键任何情况下都不冻结。
      */
     void syncConfig(in String[] swipePkgs, in String[] lockPkgs, in String[] whitelist,
+            in String[] hiddenPkgs,
             boolean swipeEnabled, boolean lockEnabled, int lockDelaySeconds,
             boolean useSuspend) = 1;
 
