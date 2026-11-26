@@ -46,6 +46,7 @@ public class BaseActivity extends AppCompatActivity {
                 target = v;
             }
             target.setPadding(bars.left, bars.top, bars.right, bottom);
+            applyImeState(insets.isVisible(WindowInsetsCompat.Type.ime()));
             return insets;
         });
         applyBarIconAppearance(window);
@@ -56,6 +57,45 @@ public class BaseActivity extends AppCompatActivity {
                 applyBarIconAppearance(window);
             }
         });
+    }
+
+    /** 键盘当前是否可见（由上面的 insets 监听随时更新）。 */
+    private boolean imeVisible;
+    /** 需要「只在键盘弹出时显示光标」的输入框。 */
+    private android.widget.EditText imeCursorTarget;
+
+    /**
+     * 输入框光标跟随输入法：键盘没拉起时隐藏光标，拉起后且输入框有焦点才显示。
+     * 全屏冻结列表与选择应用页的搜索框共用这一份实现。
+     */
+    protected void bindCursorToIme(final android.widget.EditText field) {
+        if (field == null) {
+            return;
+        }
+        imeCursorTarget = field;
+        field.setCursorVisible(false);
+        field.setOnFocusChangeListener((v, hasFocus) -> {
+            if (!hasFocus) {
+                field.setCursorVisible(false);
+            }
+        });
+        applyImeCursor();
+    }
+
+    /** 子类如果自己接管了 insets 监听（如全屏冻结列表），要在里面回调这里同步键盘状态。 */
+    protected void applyImeState(boolean imeShown) {
+        imeVisible = imeShown;
+        // 键盘收起后让搜索框退出聚焦态，描边恢复成刚进入页面时的样子
+        if (!imeShown && imeCursorTarget != null && imeCursorTarget.hasFocus()) {
+            imeCursorTarget.clearFocus();
+        }
+        applyImeCursor();
+    }
+
+    private void applyImeCursor() {
+        if (imeCursorTarget != null) {
+            imeCursorTarget.setCursorVisible(imeVisible && imeCursorTarget.hasFocus());
+        }
     }
 
     /** 过渡期间子类会临时把状态栏图标切成白色，此时不要再被上面的补挂覆盖。 */

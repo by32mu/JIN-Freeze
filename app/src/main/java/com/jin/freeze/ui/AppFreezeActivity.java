@@ -123,7 +123,10 @@ public class AppFreezeActivity extends BaseActivity {
     private TextView rootState;
     private View rootStateRow;
     private TextView rootStateDismiss;
-    private ImageView viewModeBtn;    private TextView batchBtn;
+    private ImageView viewModeBtn;
+    /** 状态分段那一行（列表/宫格标识与它同一行、靠右端）。 */
+    private FrameLayout viewModeRow;
+    private TextView batchBtn;
     private ImageButton pickDoneBtn;
     private LinearLayout batchBar;
     /** 选择应用页顶部的已选图标条：按行铺满，可折行显示全部已选应用。 */
@@ -186,6 +189,8 @@ public class AppFreezeActivity extends BaseActivity {
         });
         grid = findViewById(R.id.grid);
         search = findViewById(R.id.search);
+        // 光标只在键盘弹出时显示
+        bindCursorToIme(search);
         filterUser = findViewById(R.id.filter_user);
         filterSystem = findViewById(R.id.filter_system);
         stateAll = findViewById(R.id.state_all);
@@ -234,7 +239,11 @@ public class AppFreezeActivity extends BaseActivity {
         loadFreezeListKeys();
         applyStateFilterStyle();
 
+        viewModeRow = findViewById(R.id.view_mode_row);
         viewModeBtn = findViewById(R.id.view_mode);
+        // 状态分段那一行始终显示；列表/宫格标识等名单和图标读完再出现（由 render 控制），
+        // 勾选应用后也不收起
+        viewModeBtn.setVisibility(View.GONE);
         // 列表/宫格切换用标识代替文字：当前是列表就显示宫格标识（点了切宫格），反之亦然
         applyViewModeIcon();
         viewModeBtn.setOnClickListener(v -> {
@@ -324,7 +333,7 @@ public class AppFreezeActivity extends BaseActivity {
         }
         // 搜索框：填充与描边一起按「搜索框颜色」档位缩放，和全屏列表同一算法
         if (search != null) {
-            int pct = Math.max(0, Math.min(100, fl.getInt("search_surface", 30)));
+            int pct = Math.max(0, Math.min(100, fl.getInt("search_surface", 20)));
             int radius = Ui.dp(this, 16);
             int fill = scaleAlpha(getColor(R.color.accent_surface_bg), pct);
 
@@ -378,6 +387,18 @@ public class AppFreezeActivity extends BaseActivity {
         }
         if (batchMode) {
             setBatchMode(false);
+            return true;
+        }
+        // 选择应用：有勾选时先清空勾选，回到刚进入选择页的初始界面；再返回才退出页面
+        if (pickMode && !selected.isEmpty()) {
+            selected.clear();
+            for (App a : all) {
+                Cell cell = cells.get(instanceKey(a.pkg, a.userId));
+                if (cell != null) {
+                    bindCell(a, cell);
+                }
+            }
+            updateBatchBar();
             return true;
         }
         return false;
@@ -981,8 +1002,25 @@ public class AppFreezeActivity extends BaseActivity {
         // 列表行铺满容器；宫格每格自带 4dp 外边距，容器两侧各少 4dp，卡片边才落回同一条线。
         // 选择应用页把顶部间距收窄（提示语与图标的距离和设计稿一致），其余页面保持 10dp。
         boolean list = listView();
-        grid.setPadding(Ui.dp(this, list ? 26 : 22), Ui.dp(this, pickMode ? 4 : 10),
+        // 列表模式补 4dp：宫格第一排卡片上沿 = 容器上内边距 + 行间距 + 格子外边距，
+        // 列表卡片上沿只有容器上内边距 + 行间距，补上这 4dp 让第一个应用最上沿对齐。
+        int topPad = (pickMode ? 4 : 10) + (list ? 4 : 0);
+        grid.setPadding(Ui.dp(this, list ? 26 : 22), Ui.dp(this, topPad),
                 Ui.dp(this, list ? 27 : 23), Ui.dp(this, 16));
+        // 列表/宫格标识：列表界面沿用宫格界面那一处位置，始终按宫格最后一列图标右缘对齐。
+        // 这一行本身带 14dp 父级内边距，按钮 32dp 且有 8dp 内边距，故右侧留白要减掉这 22dp。
+        if (viewModeRow != null) {
+            int availRow = getResources().getDisplayMetrics().widthPixels
+                    - Ui.dp(this, 22) - Ui.dp(this, 23);
+            int cellW = availRow / COLUMNS;
+            int inset = Ui.dp(this, 23) + Ui.dp(this, 4)
+                    + Math.max(0, (cellW - Ui.dp(this, 8) - Ui.dp(this, 46)) / 2);
+            viewModeRow.setPadding(0, 0, Math.max(0, inset - Ui.dp(this, 22)), 0);
+        }
+        // 名单与图标还没读完时先不显示切换标识，加载完成后再出现
+        if (viewModeBtn != null) {
+            viewModeBtn.setVisibility(pickMode && loaded ? View.VISIBLE : View.GONE);
+        }
         grid.removeAllViews();
         cells.clear();
         if (!loaded || (loading && all.isEmpty())) {
@@ -1038,27 +1076,8 @@ public class AppFreezeActivity extends BaseActivity {
             int cmp = String.CASE_INSENSITIVE_ORDER.compare(x.label, y.label);
             return cmp != 0 ? cmp : String.CASE_INSENSITIVE_ORDER.compare(x.pkg, y.pkg);
         });
-        // 勾选只随标签/冻结筛选收紧：搜索只影响显示，不能把用户已经勾好的应用取消掉
-        Set<String> allowed = new HashSet<>();
-        for (App a : all) {
-            if (a.system != showSystem) {
-                continue;
-            }
-            if (stateFilter == 1 && !a.frozen) {
-                continue;
-            }
-            if (stateFilter == 2 && a.frozen) {
-                continue;
-            }
-            if (stateFilter == 3 && !inFreezeList(a)) {
-                continue;
-            }
-            if (stateFilter == 4 && inFreezeList(a)) {
-                continue;
-            }
-            allowed.add(instanceKey(a.pkg, a.userId));
-        }
-        selected.retainAll(allowed);
+        // 切换标签、切换状态筛选都保留已选应用：不再按当前可见范围收缩 selected，
+        // 顶部已选图标条始终展示全部勾选项。
         updateBatchBar();
         if (listView()) {
             for (int i = 0; i < shown.size(); i++) {
@@ -1686,13 +1705,11 @@ public class AppFreezeActivity extends BaseActivity {
 
     private void updateBatchBar() {
         if (pickMode) {
-            // 勾选到应用后：列表/宫格标识收起，右上角显示打勾的「确定」
+            // 勾选到应用后：右上角显示打勾的「确定」；列表/宫格标识固定在状态分段行，
+            // 不再随勾选隐藏
             boolean has = !selected.isEmpty();
             if (pickDoneBtn != null) {
                 pickDoneBtn.setVisibility(has ? View.VISIBLE : View.GONE);
-            }
-            if (viewModeBtn != null) {
-                viewModeBtn.setVisibility(has ? View.GONE : View.VISIBLE);
             }
             refreshPickStrip();
             return;
@@ -1759,6 +1776,14 @@ public class AppFreezeActivity extends BaseActivity {
                         android.R.drawable.sym_def_app_icon));
                 iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
                 iv.setContentDescription(a.label);
+                // 跟随当前页面的图标状态：已冻结灰化压暗，未冻结保持彩色
+                if (a.frozen) {
+                    iv.setColorFilter(GRAY);
+                    iv.setAlpha(0.45f);
+                } else {
+                    iv.clearColorFilter();
+                    iv.setAlpha(1f);
+                }
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
                 if (!full && k < end - 1) {
                     lp.rightMargin = fullGap;

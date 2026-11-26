@@ -3,6 +3,7 @@ package com.jin.freeze.ui;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Typeface;
@@ -303,6 +304,13 @@ public final class Ui {
         if (decor == null) {
             return;
         }
+        // 只处理同一页面内的二级弹窗：选择应用等另一个页面里的弹窗不能去恢复
+        // 别处登记的设置页（宿主窗口 token 已失效，host.show() 会抛 BadTokenException 闪退）
+        Activity hostActivity = unwrapActivity(host.getContext());
+        Activity childActivity = unwrapActivity(child.getContext());
+        if (hostActivity == null || childActivity == null || hostActivity != childActivity) {
+            return;
+        }
         synchronized (autoHideTracked) {
             if (autoHideTracked.put(decor, Boolean.TRUE) != null) {
                 return;
@@ -340,16 +348,29 @@ public final class Ui {
                 if (settingsHost != host || settingsChildCount > 0 || host.isShowing()) {
                     return;
                 }
-                Context c = host.getContext();
-                if (c instanceof Activity) {
-                    Activity a = (Activity) c;
-                    if (a.isFinishing() || (Build.VERSION.SDK_INT >= 17 && a.isDestroyed())) {
-                        return;
-                    }
+                Activity a = unwrapActivity(host.getContext());
+                if (a == null || a.isFinishing()
+                        || (Build.VERSION.SDK_INT >= 17 && a.isDestroyed())) {
+                    return;
                 }
-                host.show();
+                try {
+                    host.show();
+                } catch (Exception ignored) {
+                    // 页面刚好在销毁途中时窗口 token 可能已失效，恢复失败不影响后续使用
+                }
             }
         });
+    }
+
+    /** 从 Context / ContextThemeWrapper 里取出宿主 Activity。 */
+    private static Activity unwrapActivity(Context c) {
+        while (c instanceof ContextWrapper) {
+            if (c instanceof Activity) {
+                return (Activity) c;
+            }
+            c = ((ContextWrapper) c).getBaseContext();
+        }
+        return null;
     }
 
     /** 直接指定宽度（px）的版本，给需要收窄的小弹窗用。 */

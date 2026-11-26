@@ -38,7 +38,7 @@
             android:text="应用冻结" />
 
         <!-- 右上角：与全屏页「加号」同一位置（14dp 内边距 + 44dp 触摸区）；
-             列表/宫格标识跟加号同色，打勾确定保持蓝色，两者共用最右那个位置 -->
+             勾选应用后显示打勾确定。列表/宫格标识移到状态分段那一行右端 -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="match_parent"
@@ -46,15 +46,6 @@
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingEnd="14dp">
-
-            <ImageButton
-                android:id="@+id/view_mode"
-                style="@style/PageHeaderActionIcon"
-                android:layout_marginEnd="0dp"
-                android:contentDescription="切换列表 / 宫格"
-                android:padding="13dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_qp_grid" />
 
             <ImageButton
                 android:id="@+id/pick_done"
@@ -141,87 +132,113 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <LinearLayout
+        <!-- 状态分段 + 列表/宫格标识：标识与这一行同高、靠右端，宫格模式下右缘对齐第一排最后一个图标 -->
+        <FrameLayout
+            android:id="@+id/view_mode_row"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal"
-            android:paddingStart="12dp">
+            android:layout_marginTop="8dp">
 
-            <TextView
-                android:id="@+id/state_all"
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="start|center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp">
+
+                <TextView
+                    android:id="@+id/state_all"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:background="@drawable/bg_btn_blue_soft"
-                android:paddingLeft="14dp"
-                android:paddingTop="6dp"
-                android:paddingRight="14dp"
-                android:paddingBottom="6dp"
+                android:gravity="center"
+                android:paddingLeft="10dp"
+                android:paddingTop="5dp"
+                android:paddingRight="10dp"
+                android:paddingBottom="5dp"
+                android:singleLine="true"
                 android:text="全部"
                 android:textColor="@color/tab_selected_text"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+                android:textSize="12sp" />
 
             <TextView
                 android:id="@+id/state_frozen"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="5dp"
                 android:background="@drawable/bg_btn_white"
-                android:paddingLeft="14dp"
-                android:paddingTop="6dp"
-                android:paddingRight="14dp"
-                android:paddingBottom="6dp"
+                android:gravity="center"
+                android:paddingLeft="10dp"
+                android:paddingTop="5dp"
+                android:paddingRight="10dp"
+                android:paddingBottom="5dp"
+                android:singleLine="true"
                 android:text="已冻结"
                 android:textColor="@color/blue"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+                android:textSize="12sp" />
 
             <TextView
                 android:id="@+id/state_unfrozen"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="5dp"
                 android:background="@drawable/bg_btn_white"
-                android:paddingLeft="14dp"
-                android:paddingTop="6dp"
-                android:paddingRight="14dp"
-                android:paddingBottom="6dp"
+                android:gravity="center"
+                android:paddingLeft="10dp"
+                android:paddingTop="5dp"
+                android:paddingRight="10dp"
+                android:paddingBottom="5dp"
+                android:singleLine="true"
                 android:text="未冻结"
                 android:textColor="@color/blue"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+                android:textSize="12sp" />
 
             <TextView
                 android:id="@+id/state_in_list"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="5dp"
                 android:background="@drawable/bg_btn_white"
-                android:paddingLeft="14dp"
-                android:paddingTop="6dp"
-                android:paddingRight="14dp"
-                android:paddingBottom="6dp"
+                android:gravity="center"
+                android:paddingLeft="10dp"
+                android:paddingTop="5dp"
+                android:paddingRight="10dp"
+                android:paddingBottom="5dp"
+                android:singleLine="true"
                 android:text="已添加"
                 android:textColor="@color/blue"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+                android:textSize="12sp" />
 
             <TextView
                 android:id="@+id/state_not_in_list"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="5dp"
                 android:background="@drawable/bg_btn_white"
-                android:paddingLeft="14dp"
-                android:paddingTop="6dp"
-                android:paddingRight="14dp"
-                android:paddingBottom="6dp"
+                android:gravity="center"
+                android:paddingLeft="10dp"
+                android:paddingTop="5dp"
+                android:paddingRight="10dp"
+                android:paddingBottom="5dp"
+                android:singleLine="true"
                 android:text="未添加"
                 android:textColor="@color/blue"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-        </LinearLayout>
+                android:textSize="12sp" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/view_mode"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_gravity="end|center_vertical"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="切换列表 / 宫格"
+                android:focusable="false"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_qp_grid"
+                android:visibility="gone" />
+        </FrameLayout>
 
         <LinearLayout
             android:id="@+id/sys_hint_row"

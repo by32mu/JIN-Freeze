@@ -1043,8 +1043,12 @@ public class FreezeListActivity extends BaseActivity {
                     // 面板底部对齐、高度按屏幕算固定值，少这条 padding 也不会往上跑。
                     int top = panelMode && statusBarHidden
                             ? 0 : Math.max(bars.top, statusBarReservePx);
-                    insetTarget.setPadding(bars.left, top, bars.right,
-                            Math.max(bars.bottom, ime.bottom));
+                    // 全屏列表不为键盘让位：底栏和冻结按钮保持原位，键盘直接盖在上面；
+                    // 半屏浮层仍按键盘高度让位，避免搜索框被挡住。
+                    int bottom = panelMode ? Math.max(bars.bottom, ime.bottom) : bars.bottom;
+                    insetTarget.setPadding(bars.left, top, bars.right, bottom);
+                    // 本类接管了 insets 监听，键盘可见性要回传给 BaseActivity 控制搜索框光标
+                    applyImeState(insets.isVisible(WindowInsetsCompat.Type.ime()));
                     // 全屏页的悬浮冻结按钮直接挂在 page_root 上，不跟着内层 padding 走：
                     // 经典三键导航时底部要再让出一块，否则按钮会被导航栏压住（半屏面板自身已避让）
                     if (!panelMode) {
@@ -1091,6 +1095,8 @@ public class FreezeListActivity extends BaseActivity {
         }
         fabGroup = findViewById(R.id.fab_group);
         search = findViewById(R.id.search);
+        // 光标只在键盘弹出时显示
+        bindCursorToIme(search);
         tabBar = findViewById(R.id.tab_bar);
         sysHint = findViewById(R.id.sys_hint);
         sysHintRow = findViewById(R.id.sys_hint_row);
@@ -1931,9 +1937,9 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 搜索框透明度当前档位：只用于全屏，默认 30%；已存过值的用户沿用自己的值。 */
+    /** 搜索框不透明度当前档位：只用于全屏，默认 20%（即界面调节里显示 80% 透明）；已存过值的用户沿用自己的值。 */
     private int searchPct() {
-        int def = panelMode ? SURFACE_SOLID : 30;
+        int def = panelMode ? SURFACE_SOLID : 20;
         return Math.max(0, Math.min(100,
                 prefs().getInt(lk(KEY_SEARCH_SURFACE), def)));
     }
@@ -9235,6 +9241,17 @@ public class FreezeListActivity extends BaseActivity {
             introStatusView.animate().cancel();
         }
         stopFreezeSpin();
+        // 页面销毁时把设置页登记一起清掉：否则静态宿主残留到选择应用等其他页面，
+        // 那里的二级弹窗关闭时会去恢复这个已失效的窗口，抛 BadTokenException 闪退
+        if (settingsDialog != null) {
+            android.app.Dialog d = settingsDialog;
+            settingsDialog = null;
+            Ui.clearSettingsHost(d);
+            try {
+                d.dismiss();
+            } catch (Throwable ignored) {
+            }
+        }
         try {
             unregisterReceiver(statusReceiver);
         } catch (Throwable ignored) {
@@ -11714,15 +11731,14 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         // 弹窗外层留出阴影绘制空间：圆角 outline + elevation，阴影跟着圆角走
-        final int shadowPad = Ui.dp(this, 16);
+        final int shadowPad = Ui.dp(this, 12);
         boolean night = (getResources().getConfiguration().uiMode
                 & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
                 == android.content.res.Configuration.UI_MODE_NIGHT_YES;
-        root.setElevation(Ui.dp(this, night ? 20 : 12));
-        // 保留一层柔和的落向阴影：设置页默认带透明度，只剩环境光时几乎看不出面板浮在列表之上
+        root.setElevation(Ui.dp(this, night ? 18 : 10));
+        // 只保留四周淡淡的环境阴影，去掉主要落在下方的点光源阴影（底部不留阴影）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            root.setOutlineSpotShadowColor(0x4D000000);
-            root.setOutlineAmbientShadowColor(0x26000000);
+            root.setOutlineSpotShadowColor(android.graphics.Color.TRANSPARENT);
         }
         settingsSurfaceRoot = root;
 
