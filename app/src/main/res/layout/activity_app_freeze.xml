@@ -52,6 +52,8 @@
                 style="@style/PageHeaderActionIcon"
                 android:layout_marginEnd="0dp"
                 android:contentDescription="切换列表 / 宫格"
+                android:padding="13dp"
+                android:scaleType="fitCenter"
                 android:src="@drawable/ic_qp_grid" />
 
             <ImageButton
@@ -60,7 +62,7 @@
                 android:layout_marginEnd="0dp"
                 android:contentDescription="完成添加至列表"
                 android:src="@drawable/ic_pick_done"
-                android:tint="@null"
+                android:tint="@color/blue"
                 android:visibility="gone" />
 
             <TextView
@@ -228,7 +230,8 @@
             android:layout_marginTop="8dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="8dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="13dp"
             android:visibility="gone">
 
             <TextView
@@ -246,7 +249,6 @@
                 android:layout_height="wrap_content"
                 android:paddingStart="8dp"
                 android:paddingTop="2dp"
-                android:paddingEnd="2dp"
                 android:paddingBottom="2dp"
                 android:text="不再提示"
                 android:textColor="@color/blue"
@@ -260,7 +262,8 @@
             android:layout_marginTop="8dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="8dp">
+            android:paddingStart="12dp"
+            android:paddingEnd="13dp">
 
             <TextView
                 android:id="@+id/root_state"
@@ -284,6 +287,15 @@
                 android:visibility="gone" />
         </LinearLayout>
     </LinearLayout>
+
+    <!-- 选择应用：已选图标条，与下方大图标同列宽、左右边缘对齐，可折行 -->
+    <LinearLayout
+        android:id="@+id/pick_strip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="vertical"
+        android:visibility="gone" />
 
     <ScrollView
         android:layout_width="match_parent"

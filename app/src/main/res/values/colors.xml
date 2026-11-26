@@ -9,6 +9,8 @@
     <color name="blue_light">#5B8DEF</color>
     <color name="page_bg">#F4F6FA</color>
     <color name="card_bg">#FFFFFF</color>
+    <!-- 选择应用 / 批量多选时的卡片选中底色：浅色浅蓝，深色走 values-night 的深蓝灰 -->
+    <color name="card_selected_bg">#E3EDFF</color>
     <color name="status_bg">#E8F0FA</color>
     <color name="text_primary">#1F2329</color>
     <color name="text_secondary">#8A9099</color>

@@ -103,7 +103,7 @@ public class AppFreezeActivity extends BaseActivity {
 
     private final List<App> all = new ArrayList<>();
     private final Map<String, Cell> cells = new HashMap<>();
-    private final Set<String> selected = new HashSet<>();
+    private final Set<String> selected = new java.util.LinkedHashSet<>();
 
     private LinearLayout grid;
     private EditText search;
@@ -126,6 +126,8 @@ public class AppFreezeActivity extends BaseActivity {
     private ImageView viewModeBtn;    private TextView batchBtn;
     private ImageButton pickDoneBtn;
     private LinearLayout batchBar;
+    /** 选择应用页顶部的已选图标条：按行铺满，可折行显示全部已选应用。 */
+    private LinearLayout pickStrip;
     private TextView freezeBtn;
     private TextView unfreezeBtn;
 
@@ -211,6 +213,7 @@ public class AppFreezeActivity extends BaseActivity {
         }
         batchBtn = findViewById(R.id.batch);
         batchBar = findViewById(R.id.batch_bar);
+        pickStrip = findViewById(R.id.pick_strip);
         freezeBtn = findViewById(R.id.btn_freeze);
         unfreezeBtn = findViewById(R.id.btn_unfreeze);
 
@@ -832,7 +835,7 @@ public class AppFreezeActivity extends BaseActivity {
                 // 说明文字统一左对齐
                 rootState.setGravity(android.view.Gravity.START);
                 rootState.setText(pickMode
-                        ? "点击应用后右上角确定"
+                        ? "点击应用可单/多选，右上角☑️完成添加至列表"
                         : hasPriv
                         ? "已通过 " + PrivShell.label() + " 执行：点击图标打开应用，长按冻结/解冻"
                         : dhizuku
@@ -976,8 +979,9 @@ public class AppFreezeActivity extends BaseActivity {
         }
         // 列表卡与宫格卡都跟搜索框左右对齐：搜索框在 26dp / 27dp 处。
         // 列表行铺满容器；宫格每格自带 4dp 外边距，容器两侧各少 4dp，卡片边才落回同一条线。
+        // 选择应用页把顶部间距收窄（提示语与图标的距离和设计稿一致），其余页面保持 10dp。
         boolean list = listView();
-        grid.setPadding(Ui.dp(this, list ? 26 : 22), Ui.dp(this, 10),
+        grid.setPadding(Ui.dp(this, list ? 26 : 22), Ui.dp(this, pickMode ? 4 : 10),
                 Ui.dp(this, list ? 27 : 23), Ui.dp(this, 16));
         grid.removeAllViews();
         cells.clear();
@@ -1057,8 +1061,12 @@ public class AppFreezeActivity extends BaseActivity {
         selected.retainAll(allowed);
         updateBatchBar();
         if (listView()) {
-            for (App a : shown) {
-                grid.addView(buildRow(a));
+            for (int i = 0; i < shown.size(); i++) {
+                View r = buildRow(shown.get(i));
+                if (pickMode && i == 0 && r.getLayoutParams() instanceof LinearLayout.LayoutParams) {
+                    ((LinearLayout.LayoutParams) r.getLayoutParams()).topMargin = 0;
+                }
+                grid.addView(r);
             }
             return;
         }
@@ -1069,7 +1077,10 @@ public class AppFreezeActivity extends BaseActivity {
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                rlp.topMargin = Ui.dp(this, 6);
+                // 选择应用页第一排不留额外间距：提示语到卡片上沿的距离按设计稿收紧
+                if (!(pickMode && i == 0)) {
+                    rlp.topMargin = Ui.dp(this, 6);
+                }
                 row.setLayoutParams(rlp);
                 grid.addView(row);
             }
@@ -1107,9 +1118,12 @@ public class AppFreezeActivity extends BaseActivity {
         box.setGravity(Gravity.CENTER);
         box.setPadding(Ui.dp(this, 6), Ui.dp(this, 12), Ui.dp(this, 6), Ui.dp(this, 10));
         box.setBackgroundResource(R.drawable.bg_card);
-        TypedValue tv = new TypedValue();
-        getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
-        box.setForeground(getDrawable(tv.resourceId));
+        // 选择应用页点一下只留选中高亮，不再叠按压水波纹（避免看起来像一层阴影）
+        if (!pickMode) {
+            TypedValue tv = new TypedValue();
+            getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+            box.setForeground(getDrawable(tv.resourceId));
+        }
         box.setClickable(true);
         box.setLongClickable(true);
 
@@ -1180,9 +1194,12 @@ public class AppFreezeActivity extends BaseActivity {
         rlp.topMargin = Ui.dp(this, 6);
         row.setLayoutParams(rlp);
         row.setBackgroundResource(R.drawable.bg_card);
-        TypedValue tv = new TypedValue();
-        getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
-        row.setForeground(getDrawable(tv.resourceId));
+        // 选择应用页只保留选中高亮，不叠按压水波纹
+        if (!pickMode) {
+            TypedValue tv = new TypedValue();
+            getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+            row.setForeground(getDrawable(tv.resourceId));
+        }
         row.setClickable(true);
         row.setLongClickable(true);
 
@@ -1677,6 +1694,7 @@ public class AppFreezeActivity extends BaseActivity {
             if (viewModeBtn != null) {
                 viewModeBtn.setVisibility(has ? View.GONE : View.VISIBLE);
             }
+            refreshPickStrip();
             return;
         }
         boolean has = !selected.isEmpty() && !working;
@@ -1684,6 +1702,72 @@ public class AppFreezeActivity extends BaseActivity {
         freezeBtn.setAlpha(has ? 1f : 0.4f);
         unfreezeBtn.setEnabled(has);
         unfreezeBtn.setAlpha(has ? 1f : 0.4f);
+    }
+
+    /**
+     * 选择应用页顶部的已选图标条：与全屏列表多选时的图标条同一套密度（30dp 图标 + 6dp 间距），
+     * 左缘对齐下方大图标/搜索框的 26dp；一行放不下自动折行，显示全部已选。
+     */
+    private void refreshPickStrip() {
+        if (pickStrip == null) {
+            return;
+        }
+        pickStrip.removeAllViews();
+        if (!pickMode) {
+            pickStrip.setVisibility(View.GONE);
+            return;
+        }
+        List<App> picked = new ArrayList<>();
+        for (App a : all) {
+            if (selected.contains(instanceKey(a.pkg, a.userId))) {
+                picked.add(a);
+            }
+        }
+        if (picked.isEmpty()) {
+            pickStrip.setVisibility(View.GONE);
+            return;
+        }
+        int padStart = Ui.dp(this, 26);
+        int padEnd = Ui.dp(this, 27);
+        int sz = Ui.dp(this, 30);
+        int gap = Ui.dp(this, 6);
+        int avail = getResources().getDisplayMetrics().widthPixels - padStart - padEnd;
+        int perRow = Math.max(1, (avail + gap) / (sz + gap));
+        // 满行用等宽弹簧撑开：第一个贴左边缘、最后一个贴右边缘，与下方大图标两侧对齐
+        int fullGap = perRow > 1 ? Math.max(gap, (avail - perRow * sz) / (perRow - 1)) : gap;
+        for (int i = 0; i < picked.size(); i += perRow) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(padStart, 0, padEnd, 0);
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp.bottomMargin = Ui.dp(this, 6);
+            row.setLayoutParams(rlp);
+            int end = Math.min(i + perRow, picked.size());
+            boolean full = end - i == perRow;
+            for (int k = i; k < end; k++) {
+                App a = picked.get(k);
+                if (k > i) {
+                    if (full) {
+                        row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+                    }
+                }
+                ImageView iv = new ImageView(this);
+                iv.setImageDrawable(a.icon != null ? a.icon
+                        : androidx.core.content.ContextCompat.getDrawable(this,
+                        android.R.drawable.sym_def_app_icon));
+                iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                iv.setContentDescription(a.label);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
+                if (!full && k < end - 1) {
+                    lp.rightMargin = fullGap;
+                }
+                row.addView(iv, lp);
+            }
+            pickStrip.addView(row);
+        }
+        pickStrip.setVisibility(View.VISIBLE);
     }
 
     /** 冻结/解冻失败时按 root → Shizuku → Dhizuku 补申请一次权限；已有通道时静默跳过。 */

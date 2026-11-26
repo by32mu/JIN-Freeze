@@ -626,9 +626,8 @@ public class FreezeListActivity extends BaseActivity {
     private final Set<String> selectedPkgs = new HashSet<>();
     /** 批量操作的目标快照：弹窗打开那一刻定格，退出多选清空选中后仍能执行。 */
     private final List<Item> batchTargets = new ArrayList<>();
-    /** 多选态顶部已选图标横排（懒加载），选中增减时刷新。 */
-    private HorizontalScrollView selectStrip;
-    private LinearLayout selectStripRow;
+    /** 多选态顶部已选图标条（懒加载），选中增减时刷新。 */
+    private LinearLayout selectStrip;
     /** 半屏面板可拖高度范围（px），随拖动实时夹紧；只约束内容区，不含把手。 */
     private int panelMinHpx;
     private int panelMaxHpx;
@@ -4312,16 +4311,19 @@ public class FreezeListActivity extends BaseActivity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), Ui.dp(this, 4));
+        // 右缘 26dp = 标题行 paddingEnd 6dp + 关闭按钮内边距 16dp + 叉号图元自身留白 4dp，
+        // 这样「不再提示」的视觉右缘与右上角 × 的笔画右缘对齐
+        row.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 26), Ui.dp(this, 4));
         TextView body = new TextView(this);
         body.setText(prefix);
-        body.setTextSize(11);
+        // 与标题右侧「（当前权限：X）」同字号：12sp × 0.8 = 9.6sp
+        body.setTextSize(9.6f);
         body.setTextColor(getColor(R.color.text_secondary));
         row.addView(body, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView never = new TextView(this);
         never.setText("不再提示");
-        never.setTextSize(11);
+        never.setTextSize(9.6f);
         never.setTextColor(getColor(R.color.blue));
         never.setOnClickListener(v -> {
             prefs().edit().putBoolean(hideKey, true).apply();
@@ -5644,6 +5646,7 @@ public class FreezeListActivity extends BaseActivity {
         if (emptyState != null) {
             // 当前标签（叠加搜索）为空就显示居中空态卡片；全屏与半屏口径一致
             emptyState.setVisibility(loadedOnce && shown.isEmpty() ? View.VISIBLE : View.GONE);
+            centerEmptyStateInList();
         }
         syncSpanCount();
         if (gridAdapter != null) {
@@ -5653,6 +5656,40 @@ public class FreezeListActivity extends BaseActivity {
         // render 之后 cell 都绑定好了；如果还在多选态，补上抖动和选中圈
         refreshAllCellSelection();
         refreshSelectStrip();
+    }
+
+    /**
+     * 全屏空态：把「名单为空」整块在列表可视区里垂直居中。
+     * 列表可视区 = 宫格容器去掉底部 54dp 底栏，而不是整屏，避免看起来偏高。
+     */
+    private void centerEmptyStateInList() {
+        if (emptyState == null) {
+            return;
+        }
+        if (panelMode || grid == null || !(grid.getParent() instanceof View)) {
+            // 半屏布局里空态本来就在宫格容器内居中，不需要偏移
+            emptyState.setTranslationY(0);
+            return;
+        }
+        View listBox = (View) grid.getParent();
+        View root = (View) emptyState.getParent();
+        if (root == null) {
+            return;
+        }
+        int[] loc = new int[2];
+        root.getLocationInWindow(loc);
+        int rootTop = loc[1];
+        int rootH = root.getHeight();
+        if (rootH <= 0 || listBox.getHeight() <= 0) {
+            // 首次 render 可能还没完成布局，等这一帧结束再算一次
+            emptyState.post(this::centerEmptyStateInList);
+            return;
+        }
+        listBox.getLocationInWindow(loc);
+        int top = loc[1] - rootTop;
+        int bottom = top + listBox.getHeight() - Ui.dp(this, 54);
+        int listCenter = (top + bottom) / 2;
+        emptyState.setTranslationY(listCenter - rootH / 2f);
     }
 
     private void updateCount(List<Item> shown) {
@@ -6416,7 +6453,7 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 面板顶部的已选图标横排：懒加载插入在列表上方，选中增减时实时重建。 */
+    /** 多选态顶部的已选图标条：懒加载插入在列表上方，选中增减时实时重建。 */
     private void ensureSelectStrip() {
         if (selectStrip != null && selectStrip.getParent() != null) return;
         if (grid == null || !(grid.getParent() instanceof ViewGroup)) return;
@@ -6436,53 +6473,88 @@ public class FreezeListActivity extends BaseActivity {
             idx = holder.indexOfChild(grid);
         }
 
-        HorizontalScrollView hsv = new HorizontalScrollView(this);
-        hsv.setHorizontalScrollBarEnabled(false);
-        hsv.setClipToPadding(false);
-        hsv.setVisibility(View.GONE);
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        int pad = Ui.dp(this, 14);
-        row.setPadding(pad, Ui.dp(this, 6), pad, Ui.dp(this, 6));
-        hsv.addView(row, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.VERTICAL);
+        strip.setVisibility(View.GONE);
+        strip.setPadding(0, Ui.dp(this, 6), 0, 0);
 
         int idx2 = idx < 0 ? host.getChildCount() : idx;
         if (host instanceof LinearLayout) {
-            host.addView(hsv, idx2, new LinearLayout.LayoutParams(
+            host.addView(strip, idx2, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         } else {
-            host.addView(hsv, idx2);
+            host.addView(strip, idx2);
         }
-        selectStrip = hsv;
-        selectStripRow = row;
+        selectStrip = strip;
     }
 
-    /** 按当前选中集合重建顶部图标条；退出多选时整条隐藏。 */
+    /**
+     * 按当前选中集合重建顶部图标条：与下方宫格大图标同一套左右边缘——
+     * 第一个小图标贴首个大图标左缘，满行最后一个贴末列大图标右缘，放不下自动折行。
+     */
     private void refreshSelectStrip() {
         if (selectMode) ensureSelectStrip();
-        if (selectStrip == null || selectStripRow == null) return;
-        selectStripRow.removeAllViews();
+        if (selectStrip == null) return;
+        selectStrip.removeAllViews();
         if (!selectMode) {
             selectStrip.setVisibility(View.GONE);
             return;
         }
+        java.util.List<Item> picked = new ArrayList<>();
+        for (Item it : items) {
+            if (selectedPkgs.contains(it.pkg)) picked.add(it);
+        }
+        if (picked.isEmpty()) {
+            selectStrip.setVisibility(View.GONE);
+            return;
+        }
+        // 大图标在格子里居中：左右各留 (格宽 - 图标宽)/2，小图标条按同样的留白缩进
+        int gridW = grid != null ? grid.getWidth() : 0;
+        int padL = grid != null ? grid.getPaddingStart() : Ui.dp(this, 14);
+        int padR = grid != null ? grid.getPaddingEnd() : Ui.dp(this, 14);
+        if (gridW <= 0) {
+            gridW = getResources().getDisplayMetrics().widthPixels;
+            padL = Ui.dp(this, 14);
+            padR = Ui.dp(this, 14);
+        }
+        int cellW = (gridW - padL - padR) / Math.max(2, gridColumns);
+        int inset = Math.max(0, (cellW - computedIconPx()) / 2);
+        int padStart = padL + inset;
+        int padEnd = padR + inset;
         int sz = Ui.dp(this, 30);
         int gap = Ui.dp(this, 6);
-        for (Item it : items) {
-            if (!selectedPkgs.contains(it.pkg)) continue;
-            ImageView iv = new ImageView(this);
-            iv.setImageDrawable(it.icon != null ? it.icon
-                    : androidx.core.content.ContextCompat.getDrawable(this,
-                    android.R.drawable.sym_def_app_icon));
-            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            iv.setContentDescription(it.label);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
-            lp.rightMargin = gap;
-            selectStripRow.addView(iv, lp);
+        int avail = gridW - padStart - padEnd;
+        int perRow = Math.max(1, (avail + gap) / (sz + gap));
+        int fullGap = perRow > 1 ? Math.max(gap, (avail - perRow * sz) / (perRow - 1)) : gap;
+        for (int i = 0; i < picked.size(); i += perRow) {
+            int end = Math.min(i + perRow, picked.size());
+            boolean full = end - i == perRow;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(padStart, 0, padEnd, Ui.dp(this, 6));
+            for (int k = i; k < end; k++) {
+                if (k > i && full) {
+                    // 满行用等宽弹簧撑开，首尾正好落在两侧大图标边缘
+                    row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+                }
+                Item it = picked.get(k);
+                ImageView iv = new ImageView(this);
+                iv.setImageDrawable(it.icon != null ? it.icon
+                        : androidx.core.content.ContextCompat.getDrawable(this,
+                        android.R.drawable.sym_def_app_icon));
+                iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                iv.setContentDescription(it.label);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
+                if (!full && k < end - 1) {
+                    lp.rightMargin = fullGap;
+                }
+                row.addView(iv, lp);
+            }
+            selectStrip.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
-        selectStrip.setVisibility(selectStripRow.getChildCount() == 0 ? View.GONE : View.VISIBLE);
+        selectStrip.setVisibility(View.VISIBLE);
     }
 
     /** 多选态下点击 cell 切换选中圈。 */
