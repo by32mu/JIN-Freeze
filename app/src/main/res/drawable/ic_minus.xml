@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 减号：参考图同款细线横线 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <!-- 横线：与 ic_add 同粗同尺寸 -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M3.86,10.71h16.28v2.58h-16.28z" />
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M6,12 L18,12" />
 </vector>

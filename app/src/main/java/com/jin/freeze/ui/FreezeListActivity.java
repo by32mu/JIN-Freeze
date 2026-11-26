@@ -370,8 +370,10 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_FULL_BLUR = "full_blur";
     /** 全屏里的雪花按钮底板档位：单独记忆，不和半屏共用。 */
     private static final String KEY_FULL_FAB_SURFACE = "full_fab_surface";
-    /** 全屏顶栏（横幅）背景档位：单独记忆；没设过时跟随「全屏背景」，升级后观感不变。 */
+    /** 全屏顶栏（横幅）背景档位：单独记忆；默认全透明（「横幅透明度」100%）。 */
     private static final String KEY_HEADER_SURFACE = "header_surface";
+    /** 横幅默认改全透明的一次性迁移标记。 */
+    private static final String KEY_HEADER_CLEAR_SEED = "header_clear_seed_41";
     /** 全屏标签页胶囊整体档位：单独记忆，默认实心。 */
     private static final String KEY_TAB_SURFACE = "tab_surface";
     /** 搜索框颜色档位：独立记忆，与全屏/半屏背景都解耦。 */
@@ -382,6 +384,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final int SURFACE_SOLID = 100;
     /** 全屏悬浮冻结按钮底板默认档位：与半屏一致，「透明度」40%（100 = 实心）。 */
     private static final int FULL_FAB_SURFACE_DEFAULT = 60;
+    /** 全屏顶栏（横幅）默认档位：0 = 完全透明，即「横幅透明度」默认 100%。 */
+    private static final int HEADER_SURFACE_DEFAULT = 0;
     private static final String TAB_USER = "user";
     private static final String TAB_SYSTEM = "system";
     /** 图标长按出操作单的判定时长：350–450ms 档，比系统默认 500ms 短，按住一秒内稳出。 */
@@ -1460,11 +1464,22 @@ public class FreezeListActivity extends BaseActivity {
         prefs().edit().putBoolean(KEY_FULL_FAB_SEED_40, true).apply();
     }
 
-    /** 横幅档位从「跟随全屏背景」改为独立记忆：首次升级按当前全屏背景落一次盘。 */
+    /**
+     * 全屏顶栏（横幅）档位：独立记忆，默认全透明（「横幅透明度」100%）。
+     * 老版本落过盘且仍是实心的，按新默认换掉一次；手动调过的档位保留。
+     */
     private void seedHeaderSurface() {
         if (!prefs().contains(KEY_HEADER_SURFACE)) {
-            prefs().edit().putInt(KEY_HEADER_SURFACE, fullSurfacePct()).apply();
+            prefs().edit().putInt(KEY_HEADER_SURFACE, HEADER_SURFACE_DEFAULT).apply();
+            return;
         }
+        if (prefs().getBoolean(KEY_HEADER_CLEAR_SEED, false)) {
+            return;
+        }
+        if (prefs().getInt(KEY_HEADER_SURFACE, HEADER_SURFACE_DEFAULT) == SURFACE_SOLID) {
+            prefs().edit().putInt(KEY_HEADER_SURFACE, HEADER_SURFACE_DEFAULT).apply();
+        }
+        prefs().edit().putBoolean(KEY_HEADER_CLEAR_SEED, true).apply();
     }
 
     /** 设置栏目「默认折叠」升级：老版本默认展开的存量状态一次性收起，让「默认折叠」立刻生效。 */
@@ -1723,9 +1738,10 @@ public class FreezeListActivity extends BaseActivity {
                 handle.getBackground().mutate().setTint(fg2);
             }
             if (search != null) {
+                // 搜索框文字与设置页条目同一种次要灰
                 search.setTextColor(pageOnWallpaper()
-                        ? wpPageFg(getColor(R.color.text_primary))
-                        : getColor(R.color.text_primary));
+                        ? wpPageFgSecondary(getColor(R.color.text_secondary))
+                        : getColor(R.color.text_secondary));
                 search.setHintTextColor(pageOnWallpaper()
                         ? wpPageFgSecondary(getColor(R.color.text_secondary))
                         : getColor(R.color.text_secondary));
@@ -1754,11 +1770,11 @@ public class FreezeListActivity extends BaseActivity {
 
     /**
      * 全屏顶栏（横幅）档位：独立记忆，不再跟随「全屏背景」。
-     * 第一次升级时用当前全屏背景档位落一次盘，保证横幅观感不变且之后互不影响。
+     * 默认 HEADER_SURFACE_DEFAULT（0 = 全透明，即「横幅透明度」100%）。
      */
     private int headerSurfacePct() {
         return Math.max(0, Math.min(100,
-                prefs().getInt(KEY_HEADER_SURFACE, SURFACE_SOLID)));
+                prefs().getInt(KEY_HEADER_SURFACE, HEADER_SURFACE_DEFAULT)));
     }
 
     /** 全屏标签页胶囊整体档位：默认实心，与页面背景互不影响。 */
@@ -2029,7 +2045,8 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         if (search != null) {
-            search.setHintTextColor(color);
+            // 占位文字跟设置页条目同一种次要灰
+            search.setHintTextColor(getColor(R.color.text_secondary));
         }
     }
 
@@ -5763,7 +5780,7 @@ public class FreezeListActivity extends BaseActivity {
         nameRow.setOrientation(LinearLayout.HORIZONTAL);
         nameRow.setGravity(Gravity.CENTER);
         ImageView snow = new ImageView(this);
-        snow.setImageResource(R.drawable.ic_sc_freeze);
+        snow.setImageResource(R.drawable.ic_sc_fab_freeze);
         snow.setVisibility(View.GONE);
         nameRow.addView(snow, new LinearLayout.LayoutParams(Ui.dp(this, 10), Ui.dp(this, 10)));
         nameRow.addView(name, new LinearLayout.LayoutParams(
@@ -6138,7 +6155,7 @@ public class FreezeListActivity extends BaseActivity {
         if (cell.snow != null) {
             // 全彩：冻结时名称左侧显示雪花；白名单标识在图标左下角，两者互不冲突
             boolean showRow = it.frozen && splitStyle == 0;
-            cell.snow.setImageResource(R.drawable.ic_sc_freeze);
+            cell.snow.setImageResource(R.drawable.ic_sc_fab_freeze);
             cell.snow.setVisibility(showRow ? View.VISIBLE : View.GONE);
         }
         if (cell.whiteBadge != null) {
@@ -6790,7 +6807,7 @@ public class FreezeListActivity extends BaseActivity {
                 unfrozenCnt++;
             }
         }
-        batchItem(R.drawable.ic_sc_freeze, "冻结（" + unfrozenCnt + "）",
+        batchItem(R.drawable.ic_sc_fab_freeze, "冻结（" + unfrozenCnt + "）",
                 () -> batchFreeze(), sheet, fg, iconFg, content, true);
         batchItem(R.drawable.ic_sc_unfreeze, "解冻（" + frozenCnt + "）",
                 () -> batchUnfreeze(), sheet, fg, iconFg, content, true);
@@ -10538,7 +10555,7 @@ public class FreezeListActivity extends BaseActivity {
         fabBody.addView(yValue);
         fabBody.addView(yBar);
         final LinearLayout fabHead = collapsibleHead(fabTitle, fabBody,
-                KEY_SETTINGS_FAB_COLLAPSED, null, null, R.drawable.ic_sc_freeze);
+                KEY_SETTINGS_FAB_COLLAPSED, null, null, R.drawable.ic_sc_fab_freeze);
         box.addView(fabHead);
         box.addView(fabBody);
 
@@ -11534,6 +11551,8 @@ public class FreezeListActivity extends BaseActivity {
                 prefs().edit().putInt(KEY_SETTINGS_FONT, pct).apply();
                 fontLabel.setText("设置页字体：" + pct + "%");
                 applySettingsFontScale(settingsSurfaceRoot, pct);
+                // 勾选框方块是按字号算出来的固定尺寸，字号变了必须跟着重算，否则文字变大框不变
+                refreshCheckBoxMetrics(settingsSurfaceRoot, pct);
             }
 
             @Override
@@ -12010,8 +12029,8 @@ public class FreezeListActivity extends BaseActivity {
         });
         // 设置页字体：按用户设定的百分比缩放（首次记录原始字号，之后不会叠加）
         applySettingsFontScale(root, settingsFontPct());
-        // 只把勾选框里的方块画小一点：字体、行距、文字位置都保持原样
-        shrinkCheckBoxes(box);
+        // 勾选框方块按当前字号重算：字号放大时框也跟着放大，行高仍由文字撑开
+        refreshCheckBoxMetrics(box, settingsFontPct());
         dialog.show();
         if (expandLayoutOnShow) {
             expandLayoutOnShow = false;
@@ -12033,18 +12052,31 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /**
-     * 设置面板里带方框的选项：文字略放大，方块画小一圈；方块沿用原布局尺寸，
-     * 所以行高、行距、文字起始位置都不变。
+     * 设置面板里带方框的选项：文字略放大，方块按「原始字号 × 缩放」重算。
+     * 字体滑块每动一次都会重走这里，从 tag 里的原始字号起算，不会叠加放大。
      */
-    private void shrinkCheckBoxes(View v) {
+    private void refreshCheckBoxMetrics(View v, int pct) {
+        if (v == null) {
+            return;
+        }
         if (v instanceof CheckBox) {
-            styleSettingCheckBox((CheckBox) v);
+            CheckBox cb = (CheckBox) v;
+            Object tag = cb.getTag(TAG_BASE_TEXT_SIZE);
+            float base;
+            if (tag instanceof Float) {
+                base = (Float) tag;
+            } else {
+                base = cb.getTextSize();
+                cb.setTag(TAG_BASE_TEXT_SIZE, base);
+            }
+            cb.setTextSize(TypedValue.COMPLEX_UNIT_PX, base * 1.02f * (pct / 100f));
+            shrinkCheckBox(cb);
             return;
         }
         if (v instanceof ViewGroup) {
             ViewGroup g = (ViewGroup) v;
             for (int i = 0; i < g.getChildCount(); i++) {
-                shrinkCheckBoxes(g.getChildAt(i));
+                refreshCheckBoxMetrics(g.getChildAt(i), pct);
             }
         }
     }
@@ -12058,6 +12090,10 @@ public class FreezeListActivity extends BaseActivity {
     /** 单个勾选框的缩小处理；标签列表这种动态重建的勾选框也要单独调用，避免删标签后恢复成大方块。 */
     private void shrinkCheckBox(CheckBox cb) {
         Drawable d = cb.getButtonDrawable();
+        // 字体滑块会反复重算：先拆回原始图案，否则会一层套一层、尺寸越算越旧
+        if (d instanceof SquareCheckDrawable) {
+            d = ((SquareCheckDrawable) d).getDrawable();
+        }
         if (d == null) {
             return;
         }
@@ -12068,7 +12104,8 @@ public class FreezeListActivity extends BaseActivity {
         // 方块比文字略大一点（矢量图自带 1/6 透明边），后面留 3dp 小间距，别贴太紧
         int side = Math.round(cb.getTextSize() * 1.55f);
         int slot = side + Ui.dp(this, 3);
-        cb.setButtonDrawable(new SquareCheckDrawable(d, side, slot, h));
+        // 槽位高度跟着方块走：字号放大后不会把方块裁掉一半
+        cb.setButtonDrawable(new SquareCheckDrawable(d, side, slot, Math.max(h, side + Ui.dp(this, 2))));
     }
 
     /** 布局宽 = 方块宽 + 小间距（文字与方块保持一点距离），高度沿用原图案（行高不变）。 */
@@ -14106,7 +14143,7 @@ public class FreezeListActivity extends BaseActivity {
             case "whitelist":
                 return R.drawable.ic_action_whitelist;
             case "hidden":
-                return R.drawable.ic_qp_eye_off;
+                return R.drawable.ic_qp_robot_off;
             case "pair":
                 return R.drawable.ic_qp_link;
             case "select":

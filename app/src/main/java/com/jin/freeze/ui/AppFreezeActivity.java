@@ -8,6 +8,8 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,6 +22,7 @@ import android.view.ViewGroup;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -120,7 +123,8 @@ public class AppFreezeActivity extends BaseActivity {
     private TextView rootState;
     private View rootStateRow;
     private TextView rootStateDismiss;
-    private TextView viewModeBtn;    private TextView batchBtn;
+    private ImageView viewModeBtn;    private TextView batchBtn;
+    private ImageButton pickDoneBtn;
     private LinearLayout batchBar;
     private TextView freezeBtn;
     private TextView unfreezeBtn;
@@ -228,23 +232,28 @@ public class AppFreezeActivity extends BaseActivity {
         applyStateFilterStyle();
 
         viewModeBtn = findViewById(R.id.view_mode);
-        viewModeBtn.setText(listView() ? "网格" : "列表");
+        // 列表/宫格切换用标识代替文字：当前是列表就显示宫格标识（点了切宫格），反之亦然
+        applyViewModeIcon();
         viewModeBtn.setOnClickListener(v -> {
             prefs().edit().putBoolean(KEY_LIST_VIEW, !listView()).apply();
-            viewModeBtn.setText(listView() ? "网格" : "列表");
+            applyViewModeIcon();
             render(search.getText().toString().trim());
         });
 
-        batchBtn.setText(pickMode ? "确定" : "批量");
-        batchBtn.setVisibility(View.VISIBLE);
+        // 选择应用页：右上角默认是列表/宫格标识，勾选应用后换成打勾的「确定」
+        pickDoneBtn = findViewById(R.id.pick_done);
+        if (pickDoneBtn != null) {
+            pickDoneBtn.setOnClickListener(v -> finishWithPicked());
+        }
+
+        batchBtn.setText("批量");
+        batchBtn.setVisibility(pickMode ? View.GONE : View.VISIBLE);
         batchBar.setVisibility(View.GONE);
-        batchBtn.setOnClickListener(v -> {
-            if (pickMode) {
-                finishWithPicked();
-            } else {
-                setBatchMode(!batchMode);
-            }
-        });
+        batchBtn.setOnClickListener(v -> setBatchMode(!batchMode));
+        applyPickSurfaces();
+        if (pickMode) {
+            updateBatchBar();
+        }
         freezeBtn.setOnClickListener(v -> {
             if (selected.isEmpty() || working) {
                 return;
@@ -287,6 +296,63 @@ public class AppFreezeActivity extends BaseActivity {
         return prefs().getBoolean(KEY_LIST_VIEW, false);
     }
 
+    /** 列表/宫格切换按钮：显示的是「点一下会切到的那种视图」的标识。 */
+    private void applyViewModeIcon() {
+        if (viewModeBtn == null) {
+            return;
+        }
+        boolean list = listView();
+        viewModeBtn.setImageResource(list ? R.drawable.ic_qp_grid : R.drawable.ic_view_list);
+        viewModeBtn.setContentDescription(list ? "切换到宫格" : "切换到列表");
+    }
+
+    /** 选择应用页：横幅与搜索框跟随全屏页的透明度档位（freeze_list 偏好里同一套键）。 */
+    private void applyPickSurfaces() {
+        if (!pickMode) {
+            return;
+        }
+        android.content.SharedPreferences fl =
+                getSharedPreferences("freeze_list", MODE_PRIVATE);
+        // 横幅：0 = 全透明，与全屏列表默认档一致
+        int headerPct = Math.max(0, Math.min(100, fl.getInt("header_surface", 0)));
+        View header = findViewById(R.id.pick_header);
+        if (header != null && header.getBackground() != null) {
+            header.getBackground().mutate().setAlpha(Math.round(255f * headerPct / 100f));
+        }
+        // 搜索框：填充与描边一起按「搜索框颜色」档位缩放，和全屏列表同一算法
+        if (search != null) {
+            int pct = Math.max(0, Math.min(100, fl.getInt("search_surface", 30)));
+            int radius = Ui.dp(this, 16);
+            int fill = scaleAlpha(getColor(R.color.accent_surface_bg), pct);
+
+            GradientDrawable normal = new GradientDrawable();
+            normal.setCornerRadius(radius);
+            normal.setColor(fill);
+            normal.setStroke(Ui.dp(this, 1),
+                    scaleAlpha(getColor(R.color.accent_surface_stroke_soft), pct));
+
+            GradientDrawable focused = new GradientDrawable();
+            focused.setCornerRadius(radius);
+            focused.setColor(fill);
+            focused.setStroke(Ui.dp(this, 2),
+                    scaleAlpha(getColor(R.color.accent_surface_stroke), pct));
+
+            StateListDrawable sld = new StateListDrawable();
+            sld.addState(new int[]{android.R.attr.state_focused}, focused);
+            sld.addState(new int[0], normal);
+            search.setBackground(sld);
+        }
+    }
+
+    /** 按百分比缩放颜色自身的 alpha，保留色相。 */
+    private static int scaleAlpha(int color, int pct) {
+        int a = Math.round(android.graphics.Color.alpha(color) * pct / 100f);
+        return android.graphics.Color.argb(a,
+                android.graphics.Color.red(color),
+                android.graphics.Color.green(color),
+                android.graphics.Color.blue(color));
+    }
+
     @Override
     public void onBackPressed() {
         if (!goBack()) {
@@ -317,6 +383,8 @@ public class AppFreezeActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 设置页可能刚调过横幅/搜索框透明度，小窗/选择页回来时重新铺一遍
+        applyPickSurfaces();
         if (loaded) {
             startPermissionWatch();
         }
@@ -833,10 +901,10 @@ public class AppFreezeActivity extends BaseActivity {
 
     private void switchFilter(boolean system) {
         showSystem = system;
-        filterUser.setBackgroundResource(system ? R.drawable.bg_btn_white : R.drawable.bg_btn_blue);
-        filterUser.setTextColor(system ? getColor(R.color.blue) : 0xFFFFFFFF);
-        filterSystem.setBackgroundResource(system ? R.drawable.bg_btn_blue : R.drawable.bg_btn_white);
-        filterSystem.setTextColor(system ? 0xFFFFFFFF : getColor(R.color.blue));
+        filterUser.setBackgroundResource(system ? R.drawable.bg_btn_white : R.drawable.bg_btn_blue_soft);
+        filterUser.setTextColor(system ? getColor(R.color.blue) : getColor(R.color.tab_selected_text));
+        filterSystem.setBackgroundResource(system ? R.drawable.bg_btn_blue_soft : R.drawable.bg_btn_white);
+        filterSystem.setTextColor(system ? getColor(R.color.tab_selected_text) : getColor(R.color.blue));
         sysHintRow.setVisibility(system && !prefs().getBoolean(KEY_SYS_HINT_HIDDEN, false)
                 ? View.VISIBLE : View.GONE);
         // 只切换标签 + 重绘：冻结状态不会因为换标签而变，没必要再跑一次 pm 真值查询
@@ -875,8 +943,8 @@ public class AppFreezeActivity extends BaseActivity {
         TextView[] views = {stateAll, stateFrozen, stateUnfrozen, stateInList, stateNotInList};
         for (int i = 0; i < views.length; i++) {
             boolean on = i == stateFilter;
-            views[i].setBackgroundResource(on ? R.drawable.bg_btn_blue : R.drawable.bg_btn_white);
-            views[i].setTextColor(on ? 0xFFFFFFFF : getColor(R.color.blue));
+            views[i].setBackgroundResource(on ? R.drawable.bg_btn_blue_soft : R.drawable.bg_btn_white);
+            views[i].setTextColor(on ? getColor(R.color.tab_selected_text) : getColor(R.color.blue));
         }
     }
 
@@ -906,6 +974,11 @@ public class AppFreezeActivity extends BaseActivity {
         if (grid == null) {
             return;
         }
+        // 列表卡与宫格卡都跟搜索框左右对齐：搜索框在 26dp / 27dp 处。
+        // 列表行铺满容器；宫格每格自带 4dp 外边距，容器两侧各少 4dp，卡片边才落回同一条线。
+        boolean list = listView();
+        grid.setPadding(Ui.dp(this, list ? 26 : 22), Ui.dp(this, 10),
+                Ui.dp(this, list ? 27 : 23), Ui.dp(this, 16));
         grid.removeAllViews();
         cells.clear();
         if (!loaded || (loading && all.isEmpty())) {
@@ -1067,7 +1140,7 @@ public class AppFreezeActivity extends BaseActivity {
         nameRow.setOrientation(LinearLayout.HORIZONTAL);
         nameRow.setGravity(Gravity.CENTER);
         ImageView snow = new ImageView(this);
-        snow.setImageResource(R.drawable.ic_sc_freeze);
+        snow.setImageResource(R.drawable.ic_sc_fab_freeze);
         snow.setVisibility(View.GONE);
         nameRow.addView(snow, new LinearLayout.LayoutParams(Ui.dp(this, 10), Ui.dp(this, 10)));
         nameRow.addView(name, new LinearLayout.LayoutParams(
@@ -1596,7 +1669,14 @@ public class AppFreezeActivity extends BaseActivity {
 
     private void updateBatchBar() {
         if (pickMode) {
-            batchBtn.setText(selected.isEmpty() ? "确定" : "确定(" + selected.size() + ")");
+            // 勾选到应用后：列表/宫格标识收起，右上角显示打勾的「确定」
+            boolean has = !selected.isEmpty();
+            if (pickDoneBtn != null) {
+                pickDoneBtn.setVisibility(has ? View.VISIBLE : View.GONE);
+            }
+            if (viewModeBtn != null) {
+                viewModeBtn.setVisibility(has ? View.GONE : View.VISIBLE);
+            }
             return;
         }
         boolean has = !selected.isEmpty() && !working;

@@ -213,7 +213,7 @@ public final class AppActionSheet {
 
         addItem(c, content, sheet, R.drawable.ic_action_run, "运行", actions::run, fg, iconFg);
         boolean hidden = actions.hidden();
-        addItem(c, content, sheet, frozen ? R.drawable.ic_sc_unfreeze : R.drawable.ic_sc_freeze,
+        addItem(c, content, sheet, frozen ? R.drawable.ic_sc_unfreeze : R.drawable.ic_sc_fab_freeze,
                 frozen ? "解冻" : "冻结", actions::toggleFreeze, fg, iconFg);
         // 隐藏与冻结/解冻相互独立：开了隐藏模式，或当前就是隐藏态时，额外给一行
         if (actions.hideMode() || hidden) {

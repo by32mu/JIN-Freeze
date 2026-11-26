@@ -34,4 +34,14 @@
     <color name="tab_selected_text">#2F5AD8</color>
     <!-- 标签设定里的默认星标：浅色用琥珀金 -->
     <color name="star_default">#FFB300</color>
+    <!-- 底部冻结悬浮按钮的雪花线条：浅色 #7C9CF5，深色走 values-night 的 #6D93F8 -->
+    <color name="fab_snowflake">#7C9CF5</color>
+    <!-- 底部冻结悬浮按钮的圆底与描边：浅色 #F1F5FF / #E2EAFB -->
+    <color name="fab_circle_bg">#F1F5FF</color>
+    <color name="fab_circle_stroke">#E2EAFB</color>
+    <!-- 移动模式「完成」勾选按钮的圆底：同款圆，但带一点透明度，不那么白 -->
+    <color name="fab_done_bg">#E6F1F5FF</color>
+    <color name="fab_done_stroke">#CCE2EAFB</color>
+    <!-- 顶栏图标按压水波纹：淡色，深色模式走 values-night -->
+    <color name="header_ripple">#0F1F2329</color>
 </resources>

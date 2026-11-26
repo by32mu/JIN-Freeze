@@ -135,7 +135,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
+                    android:layout_marginTop="11dp"
                     android:gravity="center"
                     android:text="点左下角搜索添加应用"
                     android:textColor="@color/text_secondary"
@@ -145,7 +145,7 @@
                     android:id="@+id/empty_add"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
+                    android:layout_marginTop="11dp"
                     android:gravity="center"
                     android:paddingStart="18dp"
                     android:paddingTop="9dp"
@@ -211,7 +211,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|center_horizontal"
         android:layout_marginBottom="0dp"
-        android:background="@drawable/bg_fab_group"
+        android:background="@drawable/bg_fab_freeze"
         android:clickable="true"
         android:elevation="24dp"
         android:gravity="center_vertical"
@@ -226,7 +226,7 @@
             android:contentDescription="一键冻结"
             android:padding="8dp"
             android:scaleType="fitCenter"
-            android:src="@drawable/ic_sc_freeze" />
+            android:src="@drawable/ic_sc_fab_freeze" />
     </LinearLayout>
 
     <!-- 长按冻结按钮浮出的一键解冻：贴在雪花按钮正上方，不压拖动条与底栏 -->
@@ -250,7 +250,7 @@
         android:layout_width="44dp"
         android:layout_height="44dp"
         android:layout_gravity="top|start"
-        android:background="@drawable/bg_fab_group"
+        android:background="@drawable/bg_fab_done"
         android:contentDescription="完成移动图标"
         android:elevation="25dp"
         android:padding="10dp"

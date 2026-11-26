@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 底部冻结悬浮按钮的圆底：按设计稿 52 圆（这里随按钮 48dp 等比），
+     浅色 #F1F5FF + #E2EAFB 描边，深色 #1C1F24 + #2A2E35 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/fab_circle_bg" />
+    <stroke
+        android:width="1dp"
+        android:color="@color/fab_circle_stroke" />
+</shape>

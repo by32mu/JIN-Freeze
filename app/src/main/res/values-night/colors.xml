@@ -27,4 +27,14 @@
     <color name="tab_selected_text">#A9C2F5</color>
     <!-- 标签设定里的默认星标：深色下提亮，保证在 #1C1F24 卡片上看得清 -->
     <color name="star_default">#FFCA28</color>
+    <!-- 底部冻结悬浮按钮的雪花线条：深色用夜间蓝，和设计稿深色版一致 -->
+    <color name="fab_snowflake">#6D93F8</color>
+    <!-- 底部冻结悬浮按钮的圆底与描边：深色 #1C1F24 / #2A2E35 -->
+    <color name="fab_circle_bg">#1C1F24</color>
+    <color name="fab_circle_stroke">#2A2E35</color>
+    <!-- 移动模式「完成」勾选按钮的圆底：同款圆，带一点透明度 -->
+    <color name="fab_done_bg">#E61C1F24</color>
+    <color name="fab_done_stroke">#CC2A2E35</color>
+    <!-- 顶栏图标按压水波纹：深色下用淡白 -->
+    <color name="header_ripple">#1FFFFFFF</color>
 </resources>
