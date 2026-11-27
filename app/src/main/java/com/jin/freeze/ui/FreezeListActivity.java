@@ -249,7 +249,7 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_SETTINGS_OPACITY_COLLAPSED = "settings_opacity_collapsed";
     /** 设置页及其所有二级弹窗的底板透明度：100 = 实心，0 = 全透明；半屏/全屏用 lk() 各存一份。 */
     private static final String KEY_SETTINGS_SURFACE = "settings_surface";
-    /** 设置页字体缩放百分比：80–200，默认 105；只作用于设置页内的文字。 */
+    /** 设置页与快面板字体缩放百分比：80–200，默认 105。 */
     private static final String KEY_SETTINGS_FONT = "settings_font_pct";
     private static final int SETTINGS_FONT_MIN = 80;
     private static final int SETTINGS_FONT_MAX = 200;
@@ -278,8 +278,6 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_QUICK_PANEL_ITEMS = "quick_panel_items";
     /** 长按底栏空白打开快面板的总开关：设置里「个性设置」中，默认关闭。 */
     private static final String KEY_QUICK_PANEL_ENABLED = "quick_panel_enabled";
-    /** 快面板底板透明度：0 = 不透明，越大越透明；独立于「设置页透明度」。 */
-    private static final String KEY_QUICK_PANEL_SURFACE = "quick_panel_surface";
     /** 冻结图标样式：0=全彩，1..9=半灰半彩各方向与全灰（见 HalfGrayImageView.SPLIT_*）。 */
     private static final String KEY_ICON_STYLE = "icon_style";
     /** 取图来源：0=系统默认（APK 自带图标），1=当前主题图标（启动器实际显示的图标）。 */
@@ -364,6 +362,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_SURFACE = "surface";
     /** 底部雪花按钮底板档位：与面板同一套语义，单独记忆。 */
     private static final String KEY_FAB_SURFACE = "fab_surface";
+    /** 自定义壁纸下底部冻结按钮的模糊度：0 = 不模糊且完全透明，100 = 最模糊且不透明。 */
+    private static final String KEY_FAB_WP_BLUR = "fab_wp_blur";
     /** 全屏背景档位：0=完全透明、50=模糊、100=实心；与半屏的 panel_surface 各自记忆。 */
     private static final String KEY_FULL_SURFACE = "full_surface";
     /** 全屏「外部模糊」档位：0=不模糊（外面看得清）、100=最模糊；没设过时跟随全屏背景。 */
@@ -656,7 +656,7 @@ public class FreezeListActivity extends BaseActivity {
     private Bitmap wallpaperBitmap;
     /** 壁纸自己的模糊度（0 = 完全清晰），与透明度滑块分开记忆。 */
     private int wallpaperBlur;
-    /** 自定义壁纸弹窗明暗度：0 全黑、100 原图、100–200 叠白提亮，出厂 100。 */
+    /** 弹窗壁纸明暗度：0 全黑、100 原图、100–200 叠白提亮，出厂 100。 */
     private int wallpaperBright;
     /** 布局设置里壁纸状态那一行，选图/清除后就地刷新。 */
     private TextView layoutWpState;
@@ -1094,6 +1094,11 @@ public class FreezeListActivity extends BaseActivity {
             });
         }
         fabGroup = findViewById(R.id.fab_group);
+        // 按钮大小/位置会随滑块和窗口变化，磨砂底每次都按最新位置重新对齐壁纸
+        if (fabGroup != null) {
+            fabGroup.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) ->
+                    v.post(this::applyFabBackdrop));
+        }
         search = findViewById(R.id.search);
         // 光标只在键盘弹出时显示
         bindCursorToIme(search);
@@ -1575,6 +1580,155 @@ public class FreezeListActivity extends BaseActivity {
         applySurface(unfreezeFab, pct);
     }
 
+    /** 壁纸降采样图：底部按钮底板拿它放大当磨砂底，按按钮位置做局部对齐。 */
+    private android.graphics.Bitmap fabBlurSource;
+    /** 生成 fabBlurSource 时的降采样倍数（越大越模糊）。 */
+    private int fabBlurDiv = 8;
+    /** 上一次生成磨砂底时的按钮几何，位置/尺寸没变就不重复生成，避免 layout 回调互相触发。 */
+    private int fabPlateKey;
+
+    /** 自定义壁纸下底部冻结按钮的模糊度：0 = 不模糊且完全透明，100 = 最模糊且不透明。 */
+    private int fabWpBlurPct() {
+        return clampInt(prefs().getInt(lk(KEY_FAB_WP_BLUR), 60), 0, 100);
+    }
+
+    /** 设置页里两条互斥的底部按钮档位：壁纸下用「模糊度」，没壁纸用「透明度」。 */
+    private View fabBlurSection;
+    private View fabAlphaSection;
+
+    /** 壁纸设好/清掉后立刻切换这两条的显隐，不用重建设置页。 */
+    private void refreshFabWallpaperRows() {
+        boolean wp = wallpaperBitmap != null;
+        if (fabBlurSection != null) {
+            fabBlurSection.setVisibility(wp ? View.VISIBLE : View.GONE);
+        }
+        if (fabAlphaSection != null) {
+            fabAlphaSection.setVisibility(wp ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    /** 壁纸变化/模糊度变化后重建降采样图（没有壁纸就清空）。 */
+    private void buildFabBlurSource() {
+        fabBlurSource = null;
+        fabPlateKey = 0;
+        if (wallpaperBitmap == null || wallpaperBitmap.isRecycled()) {
+            return;
+        }
+        int pct = fabWpBlurPct();
+        // 降采样倍数越大，放大回去越糊：0 档 4 倍（基本清晰），100 档 24 倍（很糊）
+        fabBlurDiv = 4 + Math.round(pct * 0.2f);
+        try {
+            fabBlurSource = android.graphics.Bitmap.createScaledBitmap(wallpaperBitmap,
+                    Math.max(1, wallpaperBitmap.getWidth() / fabBlurDiv),
+                    Math.max(1, wallpaperBitmap.getHeight() / fabBlurDiv), true);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 底部冻结/解冻按钮底板：有自定义壁纸时取按钮所在区域的壁纸降采样图放大，
+     * 得到「透出壁纸后的模糊底」；模糊度与不透明度都由「底部冻结按钮模糊度」档位控制，
+     * 0 档完全透明（只剩雪花）。没有壁纸时用原来的主题底板与透明度档位。
+     */
+    private void applyFabBackdrop() {
+        if (fabGroup == null) {
+            return;
+        }
+        if (wallpaperBitmap == null || fabBlurSource == null || fabBlurSource.isRecycled()) {
+            // -1 表示已经恢复过主题底板，避免 layout 回调反复重设
+            if (fabPlateKey != -1) {
+                fabGroup.setBackgroundResource(R.drawable.bg_fab_freeze);
+                if (unfreezeFab != null) {
+                    unfreezeFab.setBackgroundResource(R.drawable.bg_fab_group);
+                }
+                fabPlateKey = -1;
+            }
+            // 没有壁纸：底板透明度回到用户档位
+            applyFabSurface();
+            return;
+        }
+        int[] p = new int[2];
+        fabGroup.getLocationOnScreen(p);
+        int key = (p[0] * 31 + p[1]) * 31 + fabGroup.getWidth() * 31 + fabGroup.getHeight();
+        if (unfreezeFab != null && unfreezeFab.getVisibility() == View.VISIBLE) {
+            unfreezeFab.getLocationOnScreen(p);
+            key = (key * 31 + p[0]) * 31 + p[1];
+        }
+        if (fabGroup.getWidth() > 0 && key == fabPlateKey) {
+            return;
+        }
+        fabPlateKey = key;
+        android.graphics.drawable.Drawable plate = frostedFabPlate(fabGroup, true);
+        if (plate != null) {
+            fabGroup.setBackground(plate);
+        }
+        android.graphics.drawable.Drawable unfreezePlate = frostedFabPlate(unfreezeFab, false);
+        if (unfreezeFab != null && unfreezePlate != null) {
+            unfreezeFab.setBackground(unfreezePlate);
+        }
+        // 壁纸下底板的不透明度直接用模糊度档位：0 = 完全透明，100 = 不透明
+        int alpha = Math.round(255f * fabWpBlurPct() / 100f);
+        if (fabGroup.getBackground() != null) {
+            fabGroup.getBackground().mutate().setAlpha(alpha);
+        }
+        if (unfreezeFab != null && unfreezeFab.getBackground() != null) {
+            unfreezeFab.getBackground().mutate().setAlpha(alpha);
+        }
+    }
+
+    /**
+     * 把壁纸在按钮位置的那一块做成磨砂底：用降采样位图 + BitmapShader 的缩放矩阵对齐，
+     * 放大时自带平滑模糊；再叠一层很淡的白色和原来的 1dp 描边。
+     */
+    private android.graphics.drawable.Drawable frostedFabPlate(View v, boolean circle) {
+        if (v == null || wallpaperBitmap == null || fabBlurSource == null) {
+            return null;
+        }
+        View holder = findViewById(panelMode ? R.id.panel : R.id.page_root);
+        if (holder == null || holder.getWidth() <= 0 || holder.getHeight() <= 0) {
+            return null;
+        }
+        int[] hp = new int[2];
+        int[] vp = new int[2];
+        holder.getLocationOnScreen(hp);
+        v.getLocationOnScreen(vp);
+        float scale = Math.max((float) holder.getWidth() / wallpaperBitmap.getWidth(),
+                (float) holder.getHeight() / wallpaperBitmap.getHeight());
+        float drawnLeft = (holder.getWidth() - wallpaperBitmap.getWidth() * scale) / 2f;
+        float drawnTop = (holder.getHeight() - wallpaperBitmap.getHeight() * scale) / 2f;
+        android.graphics.BitmapShader shader = new android.graphics.BitmapShader(fabBlurSource,
+                android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
+        android.graphics.Matrix matrix = new android.graphics.Matrix();
+        // 降采样图与原图的 1/fabBlurDiv 关系直接并进缩放里，屏幕坐标 → 位图坐标
+        matrix.setScale(scale / fabBlurDiv, scale / fabBlurDiv);
+        matrix.postTranslate(drawnLeft - (vp[0] - hp[0]), drawnTop - (vp[1] - hp[1]));
+        shader.setLocalMatrix(matrix);
+
+        android.graphics.drawable.ShapeDrawable plate =
+                new android.graphics.drawable.ShapeDrawable(circle
+                        ? new android.graphics.drawable.shapes.OvalShape()
+                        : new android.graphics.drawable.shapes.RoundRectShape(
+                        new float[]{Ui.dp(this, 26), Ui.dp(this, 26), Ui.dp(this, 26),
+                                Ui.dp(this, 26), Ui.dp(this, 26), Ui.dp(this, 26),
+                                Ui.dp(this, 26), Ui.dp(this, 26)}, null, null));
+        plate.getPaint().setShader(shader);
+        plate.getPaint().setAntiAlias(true);
+        plate.getPaint().setFilterBitmap(true);
+
+        // 很淡的白色磨砂 + 原描边，保证按钮边界还看得出来
+        android.graphics.drawable.GradientDrawable scrim =
+                new android.graphics.drawable.GradientDrawable();
+        scrim.setShape(circle ? android.graphics.drawable.GradientDrawable.OVAL
+                : android.graphics.drawable.GradientDrawable.RECTANGLE);
+        if (!circle) {
+            scrim.setCornerRadius(Ui.dp(this, 26));
+        }
+        scrim.setColor(0x1FFFFFFF);
+        scrim.setStroke(Ui.dp(this, 1), getColor(R.color.fab_circle_stroke));
+        return new android.graphics.drawable.LayerDrawable(
+                new android.graphics.drawable.Drawable[]{plate, scrim});
+    }
+
     // ---------------- 自定义壁纸 ----------------
 
     /** 读回本形态（半屏 / 全屏各一份）的壁纸配置与原图。 */
@@ -1684,6 +1838,11 @@ public class FreezeListActivity extends BaseActivity {
         WallpaperSource.setUiMode(srcMode());
         refreshGlobalSurfaceBg();
         applyPageWallpaperTextColors();
+        // 底部按钮的磨砂底素材跟着壁纸走
+        buildFabBlurSource();
+        applyFabBackdrop();
+        // 设置页开着时，壁纸下的「模糊度 / 透明度」两条立刻切换
+        refreshFabWallpaperRows();
         if (panelMode) {
             View panel = findViewById(R.id.panel);
             if (panel == null) {
@@ -1723,7 +1882,7 @@ public class FreezeListActivity extends BaseActivity {
 
     /**
      * 主列表/面板上的文字与壁纸同步：应用名、标签、半屏底部搜索框。
-     * 全屏横幅有自己的横幅条（底板），文字保持原来的深色，不跟随壁纸。
+     * 全屏顶栏在没有实心横幅时也跟随壁纸明暗（见 applyHeaderTone）。
      */
     private void applyPageWallpaperTextColors() {
         if (panelMode) {
@@ -1757,6 +1916,37 @@ public class FreezeListActivity extends BaseActivity {
             gridAdapter.notifyDataSetChanged();
         }
         renderTabBar();
+        applyHeaderTone();
+        // 全屏搜索框的文字/提示/放大镜也跟随壁纸明暗（壁纸变更后重刷）
+        applyFullscreenTextColors();
+    }
+
+    /** 全屏顶栏文字/图标色：有壁纸且横幅不是实心时按壁纸明暗取白/黑，否则用主题主色。 */
+    private int headerFgColor() {
+        if (panelMode) {
+            return getColor(R.color.text_primary);
+        }
+        boolean onWallpaper = pageOnWallpaper() && headerSurfacePct() < 50;
+        return onWallpaper
+                ? wpPageFg(getColor(R.color.text_primary))
+                : getColor(R.color.text_primary);
+    }
+
+    /** 全屏顶栏：标题与左上/右上四个图标一起跟随壁纸明暗，保证压在壁纸上可读。 */
+    private void applyHeaderTone() {
+        if (panelMode) {
+            return;
+        }
+        int fg = headerFgColor();
+        if (titleView != null) {
+            titleView.setTextColor(fg);
+        }
+        for (int id : new int[]{R.id.back, R.id.btn_settings, R.id.edit, R.id.add}) {
+            View v = findViewById(id);
+            if (v instanceof ImageView) {
+                ((ImageView) v).setImageTintList(ColorStateList.valueOf(fg));
+            }
+        }
     }
 
     /** 当前「全屏背景」档位：0 = 整页透明，100 = 实心。半屏不参与。 */
@@ -1845,12 +2035,39 @@ public class FreezeListActivity extends BaseActivity {
             } catch (Exception ignored) {
             }
         }
-        // 状态栏/导航栏压在页面背景上：背景偏实（浅色）时用深色图标，
-        // 偏透明时页面可能压着深色壁纸，切成浅色图标保证可读；
-        // 冷启动遮罩期间页面是实心底色，图标明暗直接跟页面底色走
-        boolean lightBars = coldStartMask ? !nightMode() : pct >= 50;
+        boolean lightBars = fullBarIconsLight(coldStartMask);
         androidx.core.view.WindowInsetsControllerCompat controller =
                 androidx.core.view.WindowCompat.getInsetsController(w, w.getDecorView());
+        controller.setAppearanceLightStatusBars(lightBars);
+        controller.setAppearanceLightNavigationBars(lightBars);
+    }
+
+    /**
+     * 全屏状态栏/导航栏用不用深色图标：
+     * 有自定义壁纸时跟壁纸明暗反色（暗壁纸→白图标，亮壁纸→深色图标）；
+     * 没有壁纸按页面底色深浅判断，冷启动遮罩期间页面是实心底色，直接跟底色走。
+     */
+    private boolean fullBarIconsLight(boolean coldStartMask) {
+        if (wallpaperBitmap != null) {
+            return !Ui.wallpaperDark(wallpaperBitmap, 100);
+        }
+        if (coldStartMask) {
+            return !nightMode();
+        }
+        return fullSurfacePct() >= 50;
+    }
+
+    /**
+     * 全屏窗口重新拿到焦点时补压一次系统栏外观。
+     * 半屏会把系统栏改成它自己那套（按桌面壁纸亮度），切回全屏后这扇窗口的属性没变、
+     * 系统不会重下发，不补压就会残留半屏的图标明暗，表现为壁纸反色失效。
+     */
+    private void applyFullscreenBarIcons() {
+        if (panelMode) {
+            return;
+        }
+        boolean lightBars = fullBarIconsLight(coldStartMask);
+        WindowInsetsControllerCompat controller = statusIconsController();
         controller.setAppearanceLightStatusBars(lightBars);
         controller.setAppearanceLightNavigationBars(lightBars);
     }
@@ -1914,6 +2131,7 @@ public class FreezeListActivity extends BaseActivity {
         wallpaperBlur = 0;
         releaseWallpaper();
         WallpaperSource.drop(srcMode());
+        WallpaperSource.setLiveBlur(srcMode(), -1);
         mirrorWallpaperToOtherIfGlobal();
         applyWallpaperBackground();
     }
@@ -2024,6 +2242,8 @@ public class FreezeListActivity extends BaseActivity {
     private void applyFullscreenSurfaces(int pct) {
         // page_root 的底板已经交给窗口背景（applyWindowBackdrop），这里不再给它上第二层 alpha
         applySurface(findViewById(R.id.page_header), headerSurfacePct());
+        // 横幅档位变了，顶栏文字/图标跟着重新取色（实心横幅用主题色，透出壁纸用壁纸色）
+        applyHeaderTone();
         // 标签页胶囊整条一组：选中/未选中一起缩放，与页面背景互不影响
         if (tabBar != null) {
             int tabPct = tabSurfacePct();
@@ -2050,8 +2270,14 @@ public class FreezeListActivity extends BaseActivity {
             }
         }
         if (search != null) {
-            // 占位文字跟设置页条目同一种次要灰
-            search.setHintTextColor(getColor(R.color.text_secondary));
+            // 占位文字跟设置页条目同一种次要灰；压在壁纸上时按壁纸明暗取可读色
+            int sc = pageOnWallpaper()
+                    ? wpPageFgSecondary(getColor(R.color.text_secondary))
+                    : getColor(R.color.text_secondary);
+            search.setTextColor(sc);
+            search.setHintTextColor(sc);
+            // 左侧放大镜与占位文字同色（矢量图内置灰色，这里统一改 tint）
+            search.setCompoundDrawableTintList(ColorStateList.valueOf(sc));
         }
     }
 
@@ -2579,10 +2805,16 @@ public class FreezeListActivity extends BaseActivity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) {
+            return;
+        }
         // 窗口属性（模糊标志等）重新下发后，系统栏外观与可见性可能被重置，这里再压一次
-        if (hasFocus && panelMode) {
+        if (panelMode) {
             schedulePanelBackdrop();
             schedulePanelStatusTone();
+        } else {
+            // 从半屏切回全屏：半屏那套状态栏明暗会残留，这里按全屏壁纸重新反色
+            applyFullscreenBarIcons();
         }
     }
 
@@ -2612,6 +2844,8 @@ public class FreezeListActivity extends BaseActivity {
         // 快捷方式入口经入口壳中转，回来时系统可能重置过外观，这条路径也补齐
         if (panelMode) {
             schedulePanelStatusTone();
+        } else {
+            applyFullscreenBarIcons();
         }
     }
 
@@ -5074,9 +5308,8 @@ public class FreezeListActivity extends BaseActivity {
     private void setEditMode(boolean on, boolean unfreeze) {
         editMode = on;
         editUnfreeze = on && unfreeze;
-        // 减号只做移除模式开关，不再叠蓝色高亮
-        editBtn.setImageTintList(android.content.res.ColorStateList.valueOf(
-                getColor(R.color.text_primary)));
+        // 减号只做移除模式开关，不再叠蓝色高亮；底色有壁纸时仍用壁纸色
+        editBtn.setImageTintList(android.content.res.ColorStateList.valueOf(headerFgColor()));
         render();
         updateFabDone();
     }
@@ -8974,6 +9207,8 @@ public class FreezeListActivity extends BaseActivity {
         // 等这一轮 layout 落地后再贴解冻图标，避免用到旧的 left/top
         fabGroup.post(this::positionUnfreezeFab);
         fabGroup.post(this::positionMoveDoneFab);
+        // 位置变了，磨砂底要按新位置重新对齐壁纸
+        fabGroup.post(this::applyFabBackdrop);
     }
 
     /** 半屏形态的雪花按钮：底部居中为基准，再按各自落盘的偏移平移。 */
@@ -8996,6 +9231,8 @@ public class FreezeListActivity extends BaseActivity {
             fabGroup.setTranslationY(y);
             positionUnfreezeFab();
             positionMoveDoneFab();
+            // 平移不算 layout 变化，这里手动让磨砂底跟着新位置对齐
+            applyFabBackdrop();
         });
     }
 
@@ -9185,6 +9422,8 @@ public class FreezeListActivity extends BaseActivity {
         unfreezeFab.setVisibility(View.VISIBLE);
         unfreezeFab.post(() -> {
             positionUnfreezeFab();
+            // 显示后才有真实位置，磨砂底在这里按解冻按钮的位置对齐
+            applyFabBackdrop();
             unfreezeFab.animate().alpha(1f).scaleX(1f).scaleY(1f)
                     .setDuration(140).start();
         });
@@ -10696,8 +10935,15 @@ public class FreezeListActivity extends BaseActivity {
             }
         });
         // 按钮底板透明度也归「底部冻结按钮」这一组，跟着标题一起折叠
-        fabBody.addView(fabAlphaLabel);
-        fabBody.addView(fabAlphaBar);
+        // 透明度：紧挨「距底部」，与上面几条同一套小字样式；两种形态各自记忆。
+        // 自定义壁纸下底板改由「底部冻结按钮模糊度」控制，这一条切显隐而不是重建整页
+        LinearLayout fabAlphaRow = new LinearLayout(this);
+        fabAlphaRow.setOrientation(LinearLayout.VERTICAL);
+        fabAlphaRow.addView(fabAlphaLabel);
+        fabAlphaRow.addView(fabAlphaBar);
+        fabAlphaRow.setVisibility(wallpaperBitmap == null ? View.VISIBLE : View.GONE);
+        fabAlphaSection = fabAlphaRow;
+        fabBody.addView(fabAlphaRow);
         // 手势功能：标题可点开说明；下面是长按空白后上滑（半屏进全屏）/ 下滑（全屏回半屏）的
         // 触发距离滑块，实时生效；整块最后插到「标签」上面
         LinearLayout gestureSec = new LinearLayout(this);
@@ -11130,12 +11376,12 @@ public class FreezeListActivity extends BaseActivity {
         wpBody.addView(layoutWpGlobalEntry);
         wpBody.addView(wpRow);
 
-        // 自定义壁纸弹窗明暗度：0 = 全黑，100 = 原图，100–200 叠白提亮；出厂 100。
+        // 弹窗壁纸明暗度：0 = 全黑，100 = 原图，100–200 叠白提亮；出厂 100。
         // 放在模糊度上面，改完立刻刷新开着的设置页/快面板
         final TextView wpDimLabel = new TextView(this);
         wpDimLabel.setTextSize(11);
         wpDimLabel.setTextColor(getColor(R.color.text_secondary));
-        wpDimLabel.setText("自定义壁纸弹窗明暗度：" + wallpaperBright + "%");
+        wpDimLabel.setText("弹窗壁纸明暗度：" + wallpaperBright + "%");
         SeekBar wpDimBar = new SeekBar(this);
         wpDimBar.setMax(200);
         wpDimBar.setProgress(wallpaperBright);
@@ -11145,7 +11391,7 @@ public class FreezeListActivity extends BaseActivity {
                 if (!fromUser) {
                     return;
                 }
-                wpDimLabel.setText("自定义壁纸弹窗明暗度：" + p + "%");
+                wpDimLabel.setText("弹窗壁纸明暗度：" + p + "%");
                 wallpaperBright = Math.max(0, Math.min(200, p));
                 refreshGlobalSurfaceBg();
             }
@@ -11184,6 +11430,8 @@ public class FreezeListActivity extends BaseActivity {
                 wpBlurLabel.setText("壁纸模糊度：" + p + "%");
                 // 拖动过程中就用降采样快速模糊跟住：任何时候都是模糊图，不会回退到清晰帧
                 wallpaperBlur = Math.max(0, Math.min(100, p));
+                // 弹窗（设置页/选项框）底图也走这个实时档位，不等松手
+                WallpaperSource.setLiveBlur(srcMode(), wallpaperBlur);
                 if (wallpaperSourceBitmap != null && wallpaperUri != null) {
                     swapWallpaperBitmap(WallpaperSource.quickBlur(
                             FreezeListActivity.this, wallpaperUri, wallpaperSourceBitmap,
@@ -11201,12 +11449,61 @@ public class FreezeListActivity extends BaseActivity {
                 wallpaperBlur = Math.max(0, Math.min(100, sb.getProgress()));
                 prefs().edit().putInt(lk(KEY_WALLPAPER_BLUR), wallpaperBlur).apply();
                 mirrorWallpaperToOtherIfGlobal();
+                // 松手结束实时档位，之后弹窗底图按偏好里的精确模糊重算
+                WallpaperSource.setLiveBlur(srcMode(), -1);
                 rebuildWallpaperDrawable();
                 applyWallpaperBackground();
             }
         });
         wpBody.addView(wpBlurLabel);
         wpBody.addView(wpBlurBar);
+
+        // 底部冻结按钮模糊度：只在设了自定义壁纸时有意义。
+        // 0 = 不模糊且完全透明（只剩雪花），越大越模糊、底板越实
+        final TextView fabBlurLabel = new TextView(this);
+        fabBlurLabel.setTextSize(11);
+        fabBlurLabel.setTextColor(getColor(R.color.text_secondary));
+        fabBlurLabel.setText("底部冻结按钮模糊度：" + fabWpBlurPct() + "%");
+        SeekBar fabBlurBar = new SeekBar(this);
+        fabBlurBar.setMax(100);
+        fabBlurBar.setProgress(fabWpBlurPct());
+        fabBlurBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                fabBlurLabel.setText("底部冻结按钮模糊度：" + p + "%");
+                prefs().edit().putInt(lk(KEY_FAB_WP_BLUR), p).apply();
+                // 拖动时实时重建磨砂底并刷新按钮
+                buildFabBlurSource();
+                applyFabBackdrop();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+                int p = Math.max(0, Math.min(100, sb.getProgress()));
+                prefs().edit().putInt(lk(KEY_FAB_WP_BLUR), p).apply();
+                if (prefs().getBoolean(KEY_GLOBAL_THEME, false)) {
+                    prefs().edit().putInt(otherKey(KEY_FAB_WP_BLUR), p).apply();
+                }
+                buildFabBlurSource();
+                applyFabBackdrop();
+            }
+        });
+        // 这一条只在设了自定义壁纸时出现；没设壁纸时底部按钮照旧走「透明度」那一档。
+        // 不重建整页，只切显隐，设完壁纸立刻出现
+        LinearLayout fabBlurRow = new LinearLayout(this);
+        fabBlurRow.setOrientation(LinearLayout.VERTICAL);
+        fabBlurRow.addView(fabBlurLabel);
+        fabBlurRow.addView(fabBlurBar);
+        fabBlurRow.setVisibility(wallpaperBitmap != null ? View.VISIBLE : View.GONE);
+        fabBlurSection = fabBlurRow;
+        wpBody.addView(fabBlurRow);
 
         // 关联应用：独立一栏，放在自定义壁纸上面；点「（查看说明）」进说明，点标题折叠
         TextView pairTitle = new TextView(this);
@@ -11317,7 +11614,7 @@ public class FreezeListActivity extends BaseActivity {
                 KEY_SETTINGS_OPACITY_COLLAPSED, null, null, R.drawable.ic_qp_opacity));
         its.addView(itsBody);
 
-        // 设置页透明度：面板本身和它的所有二级弹窗一起变，半屏/全屏各记一份
+        // 设置页与快面板透明度：两边共用一档，拖动时两个区域同步变化；半屏/全屏各记一份
         final TextView settingsLabel = new TextView(this);
         settingsLabel.setTextSize(11);
         settingsLabel.setTextColor(getColor(R.color.text_secondary));
@@ -11338,6 +11635,10 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 settingsLabel.setText(settingsSurfaceText(p));
                 applySettingsSurfaceAlpha(settingsSurfaceRoot);
+                // 快面板共用同一档：开着就立刻一起变
+                if (quickPanelRootView != null) {
+                    applyQuickPanelSurfaceAlpha(quickPanelRootView);
+                }
             }
 
             @Override
@@ -11589,39 +11890,7 @@ public class FreezeListActivity extends BaseActivity {
             });
             opacityRows.put("blur", new View[]{blurLabel, blurBar});
         }
-        // 快面板透明度：独立档位，0 不透明、越大越透明；不再跟随「设置页」那条
-        final TextView qpAlphaLabel = new TextView(this);
-        qpAlphaLabel.setTextSize(11);
-        qpAlphaLabel.setTextColor(getColor(R.color.text_secondary));
-        final SeekBar qpAlphaBar = new SeekBar(this);
-        qpAlphaBar.setMax(100);
-        int qpAlphaStart = quickPanelSurfacePct();
-        qpAlphaBar.setProgress(qpAlphaStart);
-        qpAlphaLabel.setText("快面板透明度：" + qpAlphaStart + "%");
-        qpAlphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                if (!fromUser) {
-                    return;
-                }
-                prefs().edit().putInt(KEY_QUICK_PANEL_SURFACE, p).apply();
-                qpAlphaLabel.setText("快面板透明度：" + p + "%");
-                if (quickPanelDialog != null) {
-                    applyQuickPanelSurfaceAlpha(quickPanelDialog);
-                }
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar sb) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar sb) {
-            }
-        });
-        opacityRows.put("qp", new View[]{qpAlphaLabel, qpAlphaBar});
-
-        // 设置页字体：只缩放设置页里的文字，80%–200%，拖动实时预览
+        // 设置页与快面板字体：两处共用同一档缩放，80%–200%，拖动实时预览
         final TextView fontLabel = new TextView(this);
         fontLabel.setTextSize(11);
         fontLabel.setTextColor(getColor(R.color.text_secondary));
@@ -11629,7 +11898,7 @@ public class FreezeListActivity extends BaseActivity {
         fontBar.setMax(SETTINGS_FONT_MAX - SETTINGS_FONT_MIN);
         int fontStart = settingsFontPct();
         fontBar.setProgress(fontStart - SETTINGS_FONT_MIN);
-        fontLabel.setText("设置页字体：" + fontStart + "%");
+        fontLabel.setText("设置页与快面板字体调节：" + fontStart + "%");
         fontBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
@@ -11638,10 +11907,14 @@ public class FreezeListActivity extends BaseActivity {
                 }
                 int pct = SETTINGS_FONT_MIN + p;
                 prefs().edit().putInt(KEY_SETTINGS_FONT, pct).apply();
-                fontLabel.setText("设置页字体：" + pct + "%");
+                fontLabel.setText("设置页与快面板字体调节：" + pct + "%");
                 applySettingsFontScale(settingsSurfaceRoot, pct);
                 // 勾选框方块是按字号算出来的固定尺寸，字号变了必须跟着重算，否则文字变大框不变
                 refreshCheckBoxMetrics(settingsSurfaceRoot, pct);
+                // 快面板共用同一档：开着就立刻一起缩放
+                if (quickPanelRootView != null) {
+                    applySettingsFontScale(quickPanelRootView, pct);
+                }
             }
 
             @Override
@@ -11654,11 +11927,11 @@ public class FreezeListActivity extends BaseActivity {
         });
         opacityRows.put("font", new View[]{fontLabel, fontBar});
         // 统一按最终顺序铺进组体：
-        // 全屏：横幅、搜索、列表图标、全屏背景、全屏外模糊、快面板、设置页、设置页字体
-        // 半屏：列表图标、半屏面板、半屏外侧、快面板、设置页、设置页字体
+        // 全屏：横幅、搜索、列表图标、全屏背景、全屏外模糊、设置页与快面板透明度、设置页与快面板字体
+        // 半屏：列表图标、半屏面板、半屏外侧、设置页与快面板透明度、设置页与快面板字体
         String[] opacityOrder = panelMode
-                ? new String[]{"icon", "inner", "outer", "qp", "settings", "font"}
-                : new String[]{"header", "search", "icon", "bg", "blur", "qp", "settings", "font"};
+                ? new String[]{"icon", "inner", "outer", "settings", "font"}
+                : new String[]{"header", "search", "icon", "bg", "blur", "settings", "font"};
         for (String key : opacityOrder) {
             View[] row = opacityRows.get(key);
             if (row != null) {
@@ -13459,6 +13732,10 @@ public class FreezeListActivity extends BaseActivity {
                 return body;
             }
             case "fab_alpha": {
+                if (wallpaperBitmap != null) {
+                    // 自定义壁纸下底板由「底部冻结按钮模糊度」控制，这条不再显示
+                    return new LinearLayout(this);
+                }
                 final TextView fabAlphaLabel = new TextView(this);
                 fabAlphaLabel.setTextSize(11);
                 fabAlphaLabel.setTextColor(getColor(R.color.text_secondary));
@@ -13642,7 +13919,7 @@ public class FreezeListActivity extends BaseActivity {
                 final TextView wpDimLabel = new TextView(this);
                 wpDimLabel.setTextSize(11);
                 wpDimLabel.setTextColor(getColor(R.color.text_secondary));
-                wpDimLabel.setText("自定义壁纸弹窗明暗度：" + wallpaperBright + "%");
+                wpDimLabel.setText("弹窗壁纸明暗度：" + wallpaperBright + "%");
                 SeekBar wpDimBar = new SeekBar(this);
                 wpDimBar.setMax(200);
                 wpDimBar.setProgress(wallpaperBright);
@@ -13652,7 +13929,7 @@ public class FreezeListActivity extends BaseActivity {
                         if (!fromUser) {
                             return;
                         }
-                        wpDimLabel.setText("自定义壁纸弹窗明暗度：" + p + "%");
+                        wpDimLabel.setText("弹窗壁纸明暗度：" + p + "%");
                         wallpaperBright = Math.max(0, Math.min(200, p));
                         refreshGlobalSurfaceBg();
                     }
@@ -13736,6 +14013,10 @@ public class FreezeListActivity extends BaseActivity {
                         }
                         settingsLabel.setText(settingsSurfaceText(p));
                         applySettingsSurfaceAlpha(settingsSurfaceRoot);
+                        // 快面板自己也在同步这一档，改完立刻重刷自身
+                        if (quickPanelRootView != null) {
+                            applyQuickPanelSurfaceAlpha(quickPanelRootView);
+                        }
                     }
 
                     @Override
@@ -14658,7 +14939,7 @@ public class FreezeListActivity extends BaseActivity {
             });
         }
         // 部分 ROM 会在首帧后把系统对话框的窗口底板重铺回不透明：这里再压一次窗口背景并重刷，
-        // 快面板用独立的「快面板透明度」档位，不跟随设置页
+        // 快面板与设置页共用同一档透明度（「设置页与快面板透明度」）
         root.post(() -> {
             if (qw != null) {
                 qw.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
@@ -14680,11 +14961,14 @@ public class FreezeListActivity extends BaseActivity {
             empty.setGravity(Gravity.CENTER);
             quickPanelContent.addView(empty, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 120)));
+            applySettingsFontScale(quickPanelRootView, settingsFontPct());
             return;
         }
         for (String id : items) {
             quickPanelContent.addView(quickPanelRow(id));
         }
+        // 快面板字体与设置页共用同一档缩放（新建的行也要跟着缩放）
+        applySettingsFontScale(quickPanelRootView, settingsFontPct());
     }
 
     private View quickPanelRow(final String id) {
@@ -17277,9 +17561,9 @@ public class FreezeListActivity extends BaseActivity {
         return settingsPanelCardWidth > 0 ? settingsPanelCardWidth : defaultDialogWidth();
     }
 
-    /** 「界面调节」组内的条目文案：名称后统一带「透明度」。 */
+    /** 「界面调节」组内的条目文案：设置页与快面板合并成同一档。 */
     private String settingsSurfaceText(int p) {
-        return "设置页透明度：" + p + "%";
+        return "设置页与快面板透明度：" + p + "%";
     }
 
     private String iconAlphaText(int p) {
@@ -17497,9 +17781,9 @@ public class FreezeListActivity extends BaseActivity {
         }
     }
 
-    /** 快面板透明度：0 = 不透明，100 = 全透明；与「设置页透明度」完全独立。 */
+    /** 快面板透明度：与「设置页」合并成同一档，统一读设置页那份（半屏/全屏各一份）。 */
     private int quickPanelSurfacePct() {
-        return clampInt(prefs().getInt(KEY_QUICK_PANEL_SURFACE, 0), 0, 100);
+        return settingsSurfacePct();
     }
 
     /** 快面板透明度百分比换算成 drawable alpha。 */

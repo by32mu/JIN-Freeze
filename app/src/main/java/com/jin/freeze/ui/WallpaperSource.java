@@ -40,6 +40,14 @@ final class WallpaperSource {
     /** 快速模糊的降采样上限（像素）：首帧先挂这张，几十毫秒内算完，绝不露清晰原图。 */
     private static final int QUICK_MAX = 420;
 
+    /** 拖动「壁纸模糊度」时的实时档位：-1 表示没在拖，按偏好里的值走。 */
+    private static final int[] liveBlur = {-1, -1};
+
+    static synchronized void setLiveBlur(int mode, int pct) {
+        liveBlur[mode == MODE_FULL ? MODE_FULL : MODE_PANEL] =
+                pct < 0 ? -1 : Math.max(0, Math.min(100, pct));
+    }
+
     private static final String[] srcUri = new String[MODES];
     private static final Bitmap[] srcBitmap = new Bitmap[MODES];
     private static final String[] blurKey = new String[MODES];
@@ -113,6 +121,10 @@ final class WallpaperSource {
         Bitmap src = decode(c, uri, m);
         if (src == null) {
             return null;
+        }
+        // 正在拖「壁纸模糊度」：弹窗底图跟着实时档位走，用快速模糊保证跟手
+        if (liveBlur[m] >= 0) {
+            return quickBlur(c, uri, src, liveBlur[m], m);
         }
         return blurred(c, uri, src,
                 Math.max(0, Math.min(100, sp.getInt(KEY_BLUR[m], 0))), m);

@@ -221,7 +221,6 @@ public final class AppActionSheet {
                     hidden ? R.drawable.ic_qp_eye : R.drawable.ic_qp_eye_off,
                     hidden ? "取消隐藏" : "隐藏", actions::toggleHide, fg, iconFg);
         }
-        divider(c, content, 18, lineColor);
         if (actions.tagMoveEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_action_tag, "更改标签页", actions::moveTab, fg, iconFg);
         }
@@ -263,7 +262,6 @@ public final class AppActionSheet {
         if (actions.listRemoveEnabled() && actions.inList()) {
             addItem(c, content, sheet, R.drawable.ic_minus, "从列表移除",
                     actions::removeFromList, fg, iconFg);
-            divider(c, content, 18, lineColor);
             addItem(c, content, sheet, R.drawable.ic_action_circle_unlock, "移除列表并解冻",
                     actions::removeAndUnfreeze, fg, iconFg);
         }
