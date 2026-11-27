@@ -21,9 +21,9 @@ import java.util.Locale;
 import java.util.Random;
 
 /**
- * 快捷方式 / 磁贴的目标与启动。
+ * 快捷方式的目标与启动。
  * 目标有两种：page（某个应用的页面）和 shell（一条 Shell 指令）。
- * 桌面快捷方式、磁贴目标、Root启动开关各存各的 key，互不覆盖。
+ * 桌面快捷方式、Root启动开关各存各的 key，互不覆盖。
  * 快捷方式的启动 Intent 只带一个随机 key，真实目标留在应用内部，
  * 避免其他应用借本应用伪造目标做 root 启动。
  */
@@ -46,11 +46,6 @@ public final class LaunchTarget {
     private static final String SC_CLS = "shortcut_cls";
     private static final String SC_ID = "shortcut_id";
     private static final String SC_LABEL = "shortcut_label";
-    private static final String TILE_TYPE = "tile_type";
-    private static final String TILE_PKG = "tile_pkg";
-    private static final String TILE_CLS = "tile_cls";
-    private static final String TILE_ID = "tile_id";
-    private static final String TILE_LABEL = "tile_label";
     private static final String ROOT_FORCE = "root_force";
     private static final String LAUNCH_PREFIX = "launch_";
 
@@ -105,10 +100,6 @@ public final class LaunchTarget {
         return read(c, SC_TYPE, SC_PKG, SC_CLS, SC_ID, SC_LABEL);
     }
 
-    public static Target tile(Context c) {
-        return read(c, TILE_TYPE, TILE_PKG, TILE_CLS, TILE_ID, TILE_LABEL);
-    }
-
     private static Target read(Context c, String kType, String kPkg, String kCls,
                                String kId, String kLabel) {
         SharedPreferences sp = prefs(c);
@@ -128,24 +119,9 @@ public final class LaunchTarget {
                 .apply();
     }
 
-    public static void saveTile(Context c, Target t) {
-        prefs(c).edit()
-                .putString(TILE_TYPE, t.type)
-                .putString(TILE_PKG, t.pkg)
-                .putString(TILE_CLS, t.cls)
-                .putString(TILE_ID, t.id)
-                .putString(TILE_LABEL, t.label)
-                .apply();
-    }
-
     public static void clearShortcut(Context c) {
         prefs(c).edit().remove(SC_TYPE).remove(SC_PKG).remove(SC_CLS)
                 .remove(SC_ID).remove(SC_LABEL).apply();
-    }
-
-    public static void clearTile(Context c) {
-        prefs(c).edit().remove(TILE_TYPE).remove(TILE_PKG).remove(TILE_CLS)
-                .remove(TILE_ID).remove(TILE_LABEL).apply();
     }
 
     /** Root启动开关，默认关。 */

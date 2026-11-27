@@ -192,6 +192,8 @@ public class FreezeListActivity extends BaseActivity {
     private static final String KEY_LAYOUT_HINT_UNFREEZE_HIDDEN = "layout_hint_unfreeze_hidden";
     /** 「（查看说明）」后缀：说明卡片里点过「不再提示」的条目永久不再显示后缀（按条目分键）。 */
     private static final String KEY_HINT_SUFFIX_HIDDEN = "hint_suffix_hidden_";
+    /** 关于凚里的「开源项目」入口地址。 */
+    private static final String OPEN_SOURCE_URL = "https://github.com/by32mu/JIN-Freeze";
     /** 左右两侧「靠内」的边缘触发区宽度（dp，20–200），两边分开设置。 */
     private static final String KEY_GESTURE_EDGE_LEFT = "gesture_edge_left_dp";
     private static final String KEY_GESTURE_EDGE_RIGHT = "gesture_edge_right_dp";
@@ -16094,6 +16096,15 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     /** 关于凚：图标、版本与简版介绍。 */
+    /** 打开外部链接：交给系统浏览器；没有可用应用时给出提示。 */
+    private void openExternal(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception e) {
+            toast("没有可打开链接的应用");
+        }
+    }
+
     private void showAboutDialog() {
         int pad = Ui.dp(this, 18);
         LinearLayout card = new LinearLayout(this);
@@ -16143,6 +16154,12 @@ public class FreezeListActivity extends BaseActivity {
         changelogEntry.setOnClickListener(v -> showChangelogDialog());
         card.addView(changelogEntry);
 
+        TextView openSourceEntry = Ui.text(this, "开源项目", 12, getColor(R.color.blue), false);
+        openSourceEntry.setGravity(Gravity.CENTER);
+        openSourceEntry.setPadding(0, Ui.dp(this, 4), 0, 0);
+        openSourceEntry.setOnClickListener(v -> openExternal(OPEN_SOURCE_URL));
+        card.addView(openSourceEntry);
+
         TextView intro = Ui.text(this,
                 "集百家之长，合凚之美\n做最人性化的应用冻结工具",
                 13, Ui.TEXT_PRIMARY, true);
@@ -16155,9 +16172,9 @@ public class FreezeListActivity extends BaseActivity {
         featureTitle.setPadding(0, Ui.dp(this, 16), 0, 0);
         card.addView(featureTitle);
 
-        String featureText = "· 使用先知：需 root 或 shizuku、dhizuku，Root 模式可激活 LSPosed 进行功能增强，无联网，尚未开源；\n"
+        String featureText = "· 使用先知：需 root 或 shizuku、dhizuku，Root 模式可激活 LSPosed 进行功能增强，无联网；\n"
                 + "· 名单与标签：可自建、重命名、隐藏、排序并可设每次默认进入的标签页，长按标签页可重命名、排序等；\n"
-                + "· 白名单：加入白名单的应用不会被冻结，列表仍保留图标，有白名单标识；\n"
+                + "· 白名单：加入白名单的应用无法被冻结 / 隐藏，除长按桌面图标与快捷方式的一键冻结外；\n"
                 + "· 关联应用：打开主可静默解冻副，冻结主也冻结副；\n"
                 + "· 一键冻结：底部按钮默认冻住全部列表；\n"
                 + "· 一键解冻：长按底部冻结按钮，可触发解冻选项；\n"
