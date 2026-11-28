@@ -308,8 +308,10 @@ public final class SwipeFreeze {
         Set<String> lockSelected = lockSelectedTags(context);
 
         // 白名单里的实例任何冻结通道都不冻：按实例键精确剔除，主用户与分身互不牵连
-        Set<String> white = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getStringSet("freeze_whitelist", null);
+        Set<String> white = Whitelist.enabled(context)
+                ? context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getStringSet("freeze_whitelist", null)
+                : null;
         if (white != null && !white.isEmpty()) {
             pkgs.removeAll(white);
         }
@@ -391,7 +393,9 @@ public final class SwipeFreeze {
                 picked.add(t.id);
             }
         }
-        Set<String> white = prefs(context).getStringSet("freeze_whitelist", null);
+        Set<String> white = Whitelist.enabled(context)
+                ? prefs(context).getStringSet("freeze_whitelist", null)
+                : null;
         String self = context.getPackageName();
         Set<String> result = new HashSet<>();
         for (String key : raw) {

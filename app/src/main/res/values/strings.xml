@@ -11,4 +11,9 @@
     <string name="sc_freeze_all_long">冻结名单里全部应用</string>
     <string name="sc_unfreeze_all">一键解冻</string>
     <string name="sc_unfreeze_all_long">解冻名单里全部应用</string>
+    <!-- 快捷设置磁贴 -->
+    <string name="tile_whitelist">凚·白名单开关</string>
+    <string name="tile_hide_mode">凚·隐藏应用开关</string>
+    <string name="tile_freeze_all">凚·一键冻结</string>
+    <string name="tile_unfreeze_all">凚·一键解冻</string>
 </resources>

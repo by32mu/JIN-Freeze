@@ -545,6 +545,9 @@ public class AppFreezeActivity extends BaseActivity {
 
     /** 白名单与冻结列表共用 freeze_list 里的 freeze_whitelist，白名单应用不会被冻结。 */
     private boolean isWhitelisted(String pkg, int userId) {
+        if (!com.jin.freeze.core.Whitelist.enabled(this)) {
+            return false;
+        }
         Set<String> raw = getSharedPreferences("freeze_list", MODE_PRIVATE)
                 .getStringSet("freeze_whitelist", null);
         if (raw == null || raw.isEmpty()) {

@@ -230,8 +230,10 @@ public class FreezeListActivity extends BaseActivity {
     /** 标签：内置「用户应用 / 系统应用」+ 自定义；顺序、显隐、名称与每个应用的归属都落盘。 */
     private static final String KEY_TABS = "tabs";
     private static final String KEY_APP_TABS = "app_tabs";
-    /** 设置里「其他」分组的折叠状态：备份/恢复/关于凚/致谢名单/赞赏开发者只藏这一组。 */
+    /** 设置里「其他」分组的折叠状态：关于凚/更新日志/开源项目/致谢名单/赞赏开发者只藏这一组。 */
     private static final String KEY_SETTINGS_OTHER_COLLAPSED = "settings_other_collapsed";
+    /** 设置里「备份与恢复」独立分组的折叠状态。 */
+    private static final String KEY_SETTINGS_BACKUP_COLLAPSED = "settings_backup_collapsed";
     /** 设置里「手势功能 / 列表图标 / 底部冻结按钮 / 标签」几块的折叠状态。 */
     private static final String KEY_SETTINGS_GESTURE_COLLAPSED = "settings_gesture_collapsed";
     private static final String KEY_SETTINGS_ICON_COLLAPSED = "settings_icon_collapsed";
@@ -405,6 +407,8 @@ public class FreezeListActivity extends BaseActivity {
     public static final String EXTRA_ACTION = "action";
     public static final String ACTION_FREEZE = "freeze";
     public static final String ACTION_UNFREEZE = "unfreeze";
+    /** 磁贴改了白名单 / 隐藏应用开关后，通知正在打开的列表立即重刷标识。 */
+    public static final String ACTION_TILE_REFRESH = "com.jin.freeze.action.TILE_REFRESH";
     /** 桌面图标入口每次拉起都带上：singleTask 复用时也要重播同样的过渡，避免越点越快。 */
     public static final String EXTRA_PLAY_INTRO = "play_intro";
     /** 过渡三段时长（压暗 / 停留 / 淡出）：冷启动、复用拉起、收起共用同一组值。 */
@@ -516,8 +520,19 @@ public class FreezeListActivity extends BaseActivity {
             new java.util.concurrent.atomic.AtomicBoolean();
     /** 真值不一致触发的那次重刷不再复核，避免来回重复。 */
     private volatile int skipSuspendVerify;
-    private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
+    /** 磁贴切换白名单 / 隐藏应用后，列表正开着就立刻重刷标识，不用等回到前台。 */
+    private final BroadcastReceiver tileRefreshReceiver = new BroadcastReceiver() {
         @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!ACTION_TILE_REFRESH.equals(intent.getAction())) {
+                return;
+            }
+            hideMode = HideSupport.modeOn(FreezeListActivity.this)
+                    && HideSupport.available(FreezeListActivity.this);
+            reload();
+        }
+    };
+    private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {        @Override
         public void onReceive(Context context, Intent intent) {
             if (!SwipeFreeze.ACTION_STATUS_PONG.equals(intent.getAction())) {
                 return;
@@ -1005,6 +1020,10 @@ public class FreezeListActivity extends BaseActivity {
         androidx.core.content.ContextCompat.registerReceiver(this, statusReceiver,
                 new IntentFilter(SwipeFreeze.ACTION_STATUS_PONG),
                 androidx.core.content.ContextCompat.RECEIVER_EXPORTED);
+        // 磁贴开关只在应用内通知，不导出
+        androidx.core.content.ContextCompat.registerReceiver(this, tileRefreshReceiver,
+                new IntentFilter(ACTION_TILE_REFRESH),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
         applyWallpaperBackground();
         // 顺手问一次模块「预启动底板透明化」的状态：刚装模块时缓存里还没有，
         // 收到 pong 后就按真实状态显示，并把结果留给下次冷启动
@@ -3461,6 +3480,8 @@ public class FreezeListActivity extends BaseActivity {
         }
         // 选择应用页里也能改标签页，这里重读一次归属，否则返回列表后仍按旧内存数据分组
         loadAppTabs();
+        // 磁贴可能临时关掉隐藏应用模式：回到页面重读一次，操作菜单与标识跟着变
+        hideMode = HideSupport.modeOn(this) && HideSupport.available(this);
         // 每次回到页面都重新读一次系统真值
         reload();
         // 授权管理器里点完「允许」回到凚时自动重测：失败缓存有 TTL，这里强制重来一次
@@ -5057,6 +5078,26 @@ public class FreezeListActivity extends BaseActivity {
                 reload();
                 return;
             }
+        } else {
+            // 从磁贴临时关闭后又在设置里打开：按账本把仍记着要隐藏的应用重新隐藏
+            Set<String> keys = HideSupport.hiddenIntentKeys(this);
+            if (!keys.isEmpty()) {
+                working = true;
+                IO.execute(() -> {
+                    for (String key : keys) {
+                        HideSupport.hide(this, packagePart(key), userIdPart(key));
+                    }
+                    main.post(() -> {
+                        working = false;
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
+                        reload();
+                    });
+                });
+                reload();
+                return;
+            }
         }
         // 勾选 / 取消勾选都不弹 toast
         reload();
@@ -6409,6 +6450,9 @@ public class FreezeListActivity extends BaseActivity {
         // 暂停标识只跟随状态：正常 disable-user 冻结的图标不加任何标识；隐藏态让位给 ×
         cell.suspendBadge.setVisibility(it.suspended && !it.hidden ? View.VISIBLE : View.GONE);
         if (cell.hiddenBadge != null) {
+            // 隐藏应用模式被磁贴临时关闭时，× 标识变灰（应用已临时取消隐藏，名单仍记着）
+            cell.hiddenBadge.setBackgroundTintList(ColorStateList.valueOf(
+                    HideSupport.modeOn(this) ? 0xFFFF3B30 : 0xFF9E9E9E));
             cell.hiddenBadge.setVisibility(it.hidden ? View.VISIBLE : View.GONE);
             if (it.hidden
                     && cell.hiddenBadge.getLayoutParams() instanceof FrameLayout.LayoutParams) {
@@ -6429,7 +6473,8 @@ public class FreezeListActivity extends BaseActivity {
         if (cell.icon instanceof HalfGrayImageView) {
             ((HalfGrayImageView) cell.icon).setSplitStyle(splitStyle);
         }
-        boolean white = isWhitelisted(it.pkg);
+        boolean white = it.pkg != null && whitelistSet().contains(it.pkg);
+        boolean whiteOn = com.jin.freeze.core.Whitelist.enabled(this);
         if (cell.snow != null) {
             // 全彩：冻结时名称左侧显示雪花；白名单标识在图标左下角，两者互不冲突
             boolean showRow = it.frozen && splitStyle == 0;
@@ -6437,6 +6482,9 @@ public class FreezeListActivity extends BaseActivity {
             cell.snow.setVisibility(showRow ? View.VISIBLE : View.GONE);
         }
         if (cell.whiteBadge != null) {
+            // 白名单被磁贴临时关闭时，标识保留但加一道斜杠
+            cell.whiteBadge.setImageResource(whiteOn
+                    ? R.drawable.ic_whitelist_badge : R.drawable.ic_whitelist_badge_off);
             cell.whiteBadge.setVisibility(white ? View.VISIBLE : View.GONE);
             if (white) {
                 // 白名单标识贴左下角：图标位图自带一圈透明边，按位图里看得见的圆角来算，
@@ -7667,7 +7715,8 @@ public class FreezeListActivity extends BaseActivity {
     }
 
     private boolean isWhitelisted(String key) {
-        return key != null && whitelistSet().contains(key);
+        return key != null && com.jin.freeze.core.Whitelist.enabled(this)
+                && whitelistSet().contains(key);
     }
 
     private void setWhitelisted(String key, boolean on) {
@@ -9495,6 +9544,10 @@ public class FreezeListActivity extends BaseActivity {
         }
         try {
             unregisterReceiver(statusReceiver);
+        } catch (Throwable ignored) {
+        }
+        try {
+            unregisterReceiver(tileRefreshReceiver);
         } catch (Throwable ignored) {
         }
         super.onDestroy();
@@ -11943,9 +11996,9 @@ public class FreezeListActivity extends BaseActivity {
         }
         box.addView(its, Math.max(0, box.indexOfChild(fabHead)));
 
-        // 备份 / 恢复 / 旧版导入：放在所有开关与滑块之后，作为布局设置的最后入口
+        // 备份与恢复：独立分组，放在「其他」上面
         TextView backupTitle = new TextView(this);
-        backupTitle.setText("其他");
+        backupTitle.setText("备份与恢复");
         backupTitle.setTextSize(12);
         backupTitle.setTextColor(getColor(R.color.text_primary));
         backupTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4));
@@ -11962,9 +12015,20 @@ public class FreezeListActivity extends BaseActivity {
         restoreEntry.setTextColor(getColor(R.color.blue));
         restoreEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
 
-        box.addView(backupTitle);
-        box.addView(backupEntry);
-        box.addView(restoreEntry);
+        LinearLayout backupBody = new LinearLayout(this);
+        backupBody.setOrientation(LinearLayout.VERTICAL);
+        backupBody.addView(backupEntry);
+        backupBody.addView(restoreEntry);
+        box.addView(collapsibleHead(backupTitle, backupBody,
+                KEY_SETTINGS_BACKUP_COLLAPSED, null, null, R.drawable.ic_action_folder));
+        box.addView(backupBody);
+
+        // 其他：关于凚、更新日志、开源项目、致谢名单、赞赏开发者
+        TextView backupOtherTitle = new TextView(this);
+        backupOtherTitle.setText("其他");
+        backupOtherTitle.setTextSize(12);
+        backupOtherTitle.setTextColor(getColor(R.color.text_primary));
+        backupOtherTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4));
 
         // 恢复名单下方：关于凚（简要介绍与功能速览）
         TextView aboutEntry = new TextView(this);
@@ -11974,7 +12038,24 @@ public class FreezeListActivity extends BaseActivity {
         aboutEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
         box.addView(aboutEntry);
 
-        // 关于凚下方：致谢名单（赞赏与测试名单，点开查看）
+        // 关于凚下方：更新日志、开源项目，排在致谢名单上面
+        TextView changelogEntry = new TextView(this);
+        changelogEntry.setText("更新日志");
+        changelogEntry.setTextSize(12);
+        changelogEntry.setTextColor(getColor(R.color.blue));
+        changelogEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        changelogEntry.setOnClickListener(v -> showChangelogDialog());
+        box.addView(changelogEntry);
+
+        TextView openSourceEntry = new TextView(this);
+        openSourceEntry.setText("开源仓库");
+        openSourceEntry.setTextSize(12);
+        openSourceEntry.setTextColor(getColor(R.color.blue));
+        openSourceEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        openSourceEntry.setOnClickListener(v -> openExternal(OPEN_SOURCE_URL));
+        box.addView(openSourceEntry);
+
+        // 更新日志 / 开源项目下方：致谢名单（赞赏与测试名单，点开查看）
         TextView thanksEntry = new TextView(this);
         thanksEntry.setText("致谢名单");
         thanksEntry.setTextSize(12);
@@ -11990,15 +12071,16 @@ public class FreezeListActivity extends BaseActivity {
         donateEntry.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 8));
         box.addView(donateEntry);
 
-        // 「其他」标题可点：折叠下面的备份、恢复、关于凚、致谢名单、赞赏开发者；
+        // 「其他」标题可点：折叠下面的关于凚、更新日志、开源项目、致谢名单、赞赏开发者；
         // 版本号单独放在折叠区外，始终可见
         final LinearLayout otherGroup = new LinearLayout(this);
         otherGroup.setOrientation(LinearLayout.VERTICAL);
-        for (View child : new View[]{backupEntry, restoreEntry, aboutEntry, thanksEntry, donateEntry}) {
+        for (View child : new View[]{aboutEntry, changelogEntry,
+                openSourceEntry, thanksEntry, donateEntry}) {
             box.removeView(child);
             otherGroup.addView(child);
         }
-        box.addView(collapsibleHead(backupTitle, otherGroup,
+        box.addView(collapsibleHead(backupOtherTitle, otherGroup,
                 KEY_SETTINGS_OTHER_COLLAPSED, null, null, R.drawable.ic_qp_info));
         box.addView(otherGroup);
 
@@ -16147,18 +16229,6 @@ public class FreezeListActivity extends BaseActivity {
         developer.setGravity(Gravity.CENTER);
         developer.setPadding(0, Ui.dp(this, 4), 0, 0);
         card.addView(developer);
-
-        TextView changelogEntry = Ui.text(this, "更新日志", 12, getColor(R.color.blue), false);
-        changelogEntry.setGravity(Gravity.CENTER);
-        changelogEntry.setPadding(0, Ui.dp(this, 4), 0, 0);
-        changelogEntry.setOnClickListener(v -> showChangelogDialog());
-        card.addView(changelogEntry);
-
-        TextView openSourceEntry = Ui.text(this, "开源项目", 12, getColor(R.color.blue), false);
-        openSourceEntry.setGravity(Gravity.CENTER);
-        openSourceEntry.setPadding(0, Ui.dp(this, 4), 0, 0);
-        openSourceEntry.setOnClickListener(v -> openExternal(OPEN_SOURCE_URL));
-        card.addView(openSourceEntry);
 
         TextView intro = Ui.text(this,
                 "集百家之长，合凚之美\n做最人性化的应用冻结工具",

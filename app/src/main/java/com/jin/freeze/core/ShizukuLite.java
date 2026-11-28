@@ -170,7 +170,9 @@ public final class ShizukuLite {
     private static void push(Context app) {
         Set<String> swipe = SwipeFreeze.packagesForTags(app, SwipeFreeze.selectedTags(app));
         Set<String> lock = SwipeFreeze.packagesForTags(app, SwipeFreeze.lockSelectedTags(app));
-        Set<String> white = prefs(app).getStringSet("freeze_whitelist", null);
+        Set<String> white = Whitelist.enabled(app)
+                ? prefs(app).getStringSet("freeze_whitelist", null)
+                : null;
         Set<String> whitelist = white == null ? new HashSet<>() : new HashSet<>(white);
         whitelist.add(app.getPackageName());
         boolean suspend = prefs(app).getBoolean(KEY_KEEP_ICON, false);

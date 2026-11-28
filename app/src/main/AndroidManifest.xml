@@ -140,6 +140,51 @@
             </intent-filter>
         </activity>
 
+        <!-- 快捷设置磁贴：开关类直接切换，冻结/解冻直接执行 -->
+        <service
+            android:name=".tile.WhitelistTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_whitelist"
+            android:label="@string/tile_whitelist"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".tile.HideModeTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_hide"
+            android:label="@string/tile_hide_mode"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".tile.FreezeAllTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_freeze"
+            android:label="@string/tile_freeze_all"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".tile.UnfreezeAllTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_unfreeze"
+            android:label="@string/tile_unfreeze_all"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- Shizuku：无 root 时由它代为执行 pm -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

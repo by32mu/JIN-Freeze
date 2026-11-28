@@ -239,7 +239,7 @@ public final class AppActionSheet {
             addItem(c, content, sheet, R.drawable.ic_action_edit, "重命名",
                     actions::renameApp, fg, iconFg);
         }
-        addItem(c, content, sheet, R.drawable.ic_action_app_info, "在其他应用中配置", actions::appSettings, fg, iconFg);
+        addItem(c, content, sheet, R.drawable.ic_action_app_info, "应用管理", actions::appSettings, fg, iconFg);
         if (actions.pinHomeEnabled()) {
             addItem(c, content, sheet, R.drawable.ic_action_home, "添加到桌面", actions::pinHome, fg, iconFg);
         }
